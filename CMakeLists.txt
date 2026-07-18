@@ -25,7 +25,7 @@ if(BIGBUMPIN_PPC_SOURCES)
     target_link_libraries(BigBumpinPPC PRIVATE XenonUtils)
     target_compile_options(BigBumpinPPC PRIVATE -Wno-unused-label -Wno-unused-variable)
 
-    add_executable(BigBumpinHost host/main.cpp host/kernel_stubs.cpp)
+    add_executable(BigBumpinHost host/main.cpp host/kernel_stubs.cpp host/kernel_impl.cpp)
     target_include_directories(BigBumpinHost PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private/ppc")
     target_link_libraries(BigBumpinHost PRIVATE BigBumpinPPC XenonUtils fmt::fmt)
 endif()

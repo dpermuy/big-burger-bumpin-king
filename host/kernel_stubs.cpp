@@ -53,12 +53,6 @@ PPC_FUNC(__imp__ExTerminateThread)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__HalReturnToFirmware)
-{
-    fmt::println("[stub] HalReturnToFirmware(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__IoDismountVolumeByFileHandle)
 {
     fmt::println("[stub] IoDismountVolumeByFileHandle(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -68,12 +62,6 @@ PPC_FUNC(__imp__IoDismountVolumeByFileHandle)
 PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql)
 {
     fmt::println("[stub] KeAcquireSpinLockAtRaisedIrql(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeBugCheck)
-{
-    fmt::println("[stub] KeBugCheck(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -98,12 +86,6 @@ PPC_FUNC(__imp__KeEnableFpuExceptions)
 PPC_FUNC(__imp__KeEnterCriticalRegion)
 {
     fmt::println("[stub] KeEnterCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeGetCurrentProcessType)
-{
-    fmt::println("[stub] KeGetCurrentProcessType(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -185,12 +167,6 @@ PPC_FUNC(__imp__KeSetEvent)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeTlsAlloc)
-{
-    fmt::println("[stub] KeTlsAlloc(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeTlsFree)
 {
     fmt::println("[stub] KeTlsFree(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -200,12 +176,6 @@ PPC_FUNC(__imp__KeTlsFree)
 PPC_FUNC(__imp__KeTlsGetValue)
 {
     fmt::println("[stub] KeTlsGetValue(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeTlsSetValue)
-{
-    fmt::println("[stub] KeTlsSetValue(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -659,12 +629,6 @@ PPC_FUNC(__imp__RtlCompareMemoryUlong)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__RtlEnterCriticalSection)
-{
-    fmt::println("[stub] RtlEnterCriticalSection(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__RtlFillMemoryUlong)
 {
     fmt::println("[stub] RtlFillMemoryUlong(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -674,24 +638,6 @@ PPC_FUNC(__imp__RtlFillMemoryUlong)
 PPC_FUNC(__imp__RtlImageXexHeaderField)
 {
     fmt::println("[stub] RtlImageXexHeaderField(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__RtlInitAnsiString)
-{
-    fmt::println("[stub] RtlInitAnsiString(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__RtlInitializeCriticalSection)
-{
-    fmt::println("[stub] RtlInitializeCriticalSection(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__RtlLeaveCriticalSection)
-{
-    fmt::println("[stub] RtlLeaveCriticalSection(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -1178,12 +1124,6 @@ PPC_FUNC(__imp__XeKeysConsolePrivateKeySign)
 PPC_FUNC(__imp__XeKeysConsoleSignatureVerification)
 {
     fmt::println("[stub] XeKeysConsoleSignatureVerification(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XexCheckExecutablePrivilege)
-{
-    fmt::println("[stub] XexCheckExecutablePrivilege(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

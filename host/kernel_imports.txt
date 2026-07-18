@@ -6,15 +6,12 @@ ExCreateThread
 ExGetXConfigSetting
 ExRegisterTitleTerminateNotification
 ExTerminateThread
-HalReturnToFirmware
 IoDismountVolumeByFileHandle
 KeAcquireSpinLockAtRaisedIrql
-KeBugCheck
 KeBugCheckEx
 KeDelayExecutionThread
 KeEnableFpuExceptions
 KeEnterCriticalRegion
-KeGetCurrentProcessType
 KeInitializeSemaphore
 KeLeaveCriticalRegion
 KeLockL2
@@ -28,10 +25,8 @@ KeResumeThread
 KeSetAffinityThread
 KeSetBasePriorityThread
 KeSetEvent
-KeTlsAlloc
 KeTlsFree
 KeTlsGetValue
-KeTlsSetValue
 KeUnlockL2
 KeWaitForMultipleObjects
 KeWaitForSingleObject
@@ -107,12 +102,8 @@ ObDeleteSymbolicLink
 ObDereferenceObject
 ObReferenceObjectByHandle
 RtlCompareMemoryUlong
-RtlEnterCriticalSection
 RtlFillMemoryUlong
 RtlImageXexHeaderField
-RtlInitAnsiString
-RtlInitializeCriticalSection
-RtlLeaveCriticalSection
 RtlMultiByteToUnicodeN
 RtlNtStatusToDosError
 RtlRaiseException
@@ -194,7 +185,6 @@ XAudioUnregisterRenderDriverClient
 XeCryptSha
 XeKeysConsolePrivateKeySign
 XeKeysConsoleSignatureVerification
-XexCheckExecutablePrivilege
 XexGetModuleHandle
 XexGetModuleSection
 XexGetProcedureAddress
