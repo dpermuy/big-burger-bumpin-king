@@ -4,6 +4,7 @@
 #include <file.h>
 #include <image.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +19,7 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     void* mem = mmap(nullptr, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED)
     {
-        fmt::println("Failed to mmap {} bytes for guest memory image", PPC_MEMORY_SIZE);
+        fprintf(stderr, "Failed to mmap %llu bytes for guest memory image: %s\n", (unsigned long long)PPC_MEMORY_SIZE, strerror(errno));
         std::exit(1);
     }
     uint8_t* base = static_cast<uint8_t*>(mem);
@@ -26,13 +27,29 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     const auto file = LoadFile(xexPath);
     if (file.empty())
     {
-        fmt::println("Failed to load XEX file: {}", xexPath);
+        fprintf(stderr, "Failed to load XEX file: %s\n", xexPath);
         std::exit(1);
     }
 
     auto image = Image::ParseImage(file.data(), file.size());
     for (const auto& section : image.sections)
     {
+        // XenonUtils maps each section's size straight from the XEX's PE-style
+        // section header (VirtualSize), not clamped against the actual allocated
+        // image buffer (image.size, fixed at the XEX security header's imageSize).
+        // .reloc's declared VirtualSize legitimately extends past that allocation
+        // -- it's PE relocation-table metadata, never touched by the recompiled
+        // code, and was never actually decompressed into image.data. Copying it
+        // verbatim reads out of bounds. Skip any section whose declared range
+        // exceeds the real allocation rather than assuming every reported section
+        // is safe to copy.
+        size_t offsetIntoAllocation = section.data - image.data.get();
+        if (offsetIntoAllocation + section.size > image.size)
+        {
+            fmt::println("Skipping section '{}': declared range exceeds allocated image size "
+                "(loader metadata, not part of the runtime image)", section.name);
+            continue;
+        }
         std::memcpy(base + section.base, section.data, section.size);
     }
 
