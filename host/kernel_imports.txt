@@ -69,7 +69,6 @@ NetDll_XNetQosLookup
 NetDll_XNetQosRelease
 NetDll_XNetStartup
 NetDll_XNetXnAddrToInAddr
-NtAllocateVirtualMemory
 NtCancelTimer
 NtClearEvent
 NtClose

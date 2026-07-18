@@ -108,3 +108,25 @@ PPC_FUNC(__imp__XexCheckExecutablePrivilege)
     // we actually want disabled.
     ctx.r3.u64 = 1;
 }
+
+static uint32_t g_bumpAllocatorNext = 0xA0000000;
+
+PPC_FUNC(__imp__NtAllocateVirtualMemory)
+{
+    uint32_t baseAddressPtr = (uint32_t)ctx.r3.u64;
+    uint32_t regionSizePtr = (uint32_t)ctx.r4.u64;
+    uint32_t regionSize = PPC_LOAD_U32(regionSizePtr);
+
+    constexpr uint32_t kAllocGranularity = 0x10000; // 64 KiB, Xbox 360 allocation granularity
+    uint32_t alignedSize = (regionSize + (kAllocGranularity - 1)) & ~(kAllocGranularity - 1);
+
+    uint32_t allocatedAddress = g_bumpAllocatorNext;
+    g_bumpAllocatorNext += alignedSize;
+
+    PPC_STORE_U32(baseAddressPtr, allocatedAddress);
+    PPC_STORE_U32(regionSizePtr, alignedSize);
+
+    fmt::println("[kernel] NtAllocateVirtualMemory: {} bytes -> 0x{:X}", alignedSize, allocatedAddress);
+
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}

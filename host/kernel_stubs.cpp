@@ -431,12 +431,6 @@ PPC_FUNC(__imp__NetDll_XNetXnAddrToInAddr)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtAllocateVirtualMemory)
-{
-    fmt::println("[stub] NtAllocateVirtualMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtCancelTimer)
 {
     fmt::println("[stub] NtCancelTimer(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
