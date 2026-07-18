@@ -5,7 +5,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
+
+// Protects every piece of shared state below (handle table, critical
+// sections, bump allocator) now that ExCreateThread (Task 2) spawns real
+// host threads. Single coarse lock -- correctness over throughput at this
+// stage; fine-grained locking would introduce lock-ordering bugs this
+// project has no way to test for yet.
+static std::mutex g_stateMutex;
 
 PPC_FUNC(__imp__KeBugCheck)
 {
@@ -53,20 +62,23 @@ static std::unordered_map<uint32_t, CriticalSectionState> g_criticalSections;
 
 PPC_FUNC(__imp__RtlInitializeCriticalSection)
 {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
     g_criticalSections[csAddr] = CriticalSectionState{};
 }
 
 PPC_FUNC(__imp__RtlEnterCriticalSection)
 {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
     auto& state = g_criticalSections[csAddr];
     state.recursionCount++;
-    state.owningThread = 1; // single logical execution context; no real guest thread ID yet
+    state.owningThread = 1; // real threads exist now, but no per-thread ID scheme yet -- still a placeholder, not a real thread identifier
 }
 
 PPC_FUNC(__imp__RtlLeaveCriticalSection)
 {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
     auto& state = g_criticalSections[csAddr];
     state.recursionCount--;
@@ -76,11 +88,12 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection)
     }
 }
 
-static uint64_t g_tlsSlots[64] = {};
-static int g_tlsNextSlot = 0;
+static thread_local uint64_t g_tlsSlots[64] = {};
+static int g_tlsNextSlot = 0; // slot *numbering* is shared across threads; slot *values* (g_tlsSlots) are per-thread
 
 PPC_FUNC(__imp__KeTlsAlloc)
 {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_tlsNextSlot >= 64)
     {
         fmt::println("[kernel] KeTlsAlloc: out of TLS slots (64 max)");
@@ -121,8 +134,12 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     constexpr uint32_t kAllocGranularity = 0x10000; // 64 KiB, Xbox 360 allocation granularity
     uint32_t alignedSize = (regionSize + (kAllocGranularity - 1)) & ~(kAllocGranularity - 1);
 
-    uint32_t allocatedAddress = g_bumpAllocatorNext;
-    g_bumpAllocatorNext += alignedSize;
+    uint32_t allocatedAddress;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        allocatedAddress = g_bumpAllocatorNext;
+        g_bumpAllocatorNext += alignedSize;
+    }
 
     PPC_STORE_U32(baseAddressPtr, allocatedAddress);
     PPC_STORE_U32(regionSizePtr, alignedSize);
@@ -148,8 +165,12 @@ PPC_FUNC(__imp__NtCreateMutant)
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
     bool initialOwner = ctx.r5.u64 != 0;
 
-    uint32_t handle = g_nextHandle++;
-    g_handleTable[handle] = HandleObject{ HandleObjectType::Mutant, !initialOwner };
+    uint32_t handle;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        handle = g_nextHandle++;
+        g_handleTable[handle] = HandleObject{ HandleObjectType::Mutant, !initialOwner };
+    }
 
     PPC_STORE_U32(handleOutPtr, handle);
     ctx.r3.u64 = 0; // STATUS_SUCCESS
@@ -160,8 +181,12 @@ PPC_FUNC(__imp__NtCreateEvent)
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
     bool initialState = ctx.r6.u64 != 0;
 
-    uint32_t handle = g_nextHandle++;
-    g_handleTable[handle] = HandleObject{ HandleObjectType::Event, initialState };
+    uint32_t handle;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        handle = g_nextHandle++;
+        g_handleTable[handle] = HandleObject{ HandleObjectType::Event, initialState };
+    }
 
     PPC_STORE_U32(handleOutPtr, handle);
     ctx.r3.u64 = 0;
@@ -172,10 +197,13 @@ PPC_FUNC(__imp__NtReleaseMutant)
     uint32_t handle = (uint32_t)ctx.r3.u64;
     uint32_t previousCountOutPtr = (uint32_t)ctx.r4.u64;
 
-    auto it = g_handleTable.find(handle);
-    if (it != g_handleTable.end())
     {
-        it->second.signaled = true;
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_handleTable.find(handle);
+        if (it != g_handleTable.end())
+        {
+            it->second.signaled = true;
+        }
     }
 
     if (previousCountOutPtr != 0)
@@ -198,7 +226,10 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
 PPC_FUNC(__imp__NtClose)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
-    g_handleTable.erase(handle);
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_handleTable.erase(handle);
+    }
     ctx.r3.u64 = 0;
 }
 
@@ -359,8 +390,12 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
     // uses, rather than guessing which register (if any) is trustworthy.
     constexpr uint32_t kAllocGranularity = 0x10000;
 
-    uint32_t allocatedAddress = g_bumpAllocatorNext;
-    g_bumpAllocatorNext += kAllocGranularity;
+    uint32_t allocatedAddress;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        allocatedAddress = g_bumpAllocatorNext;
+        g_bumpAllocatorNext += kAllocGranularity;
+    }
 
     fmt::println("[kernel] MmAllocatePhysicalMemoryEx: {} bytes -> 0x{:X}", kAllocGranularity, allocatedAddress);
 
@@ -396,6 +431,7 @@ PPC_FUNC(__imp__XamInputGetState)
 
 PPC_FUNC(__imp__XamNotifyCreateListener)
 {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t handle = g_nextHandle++;
     g_handleTable[handle] = HandleObject{ HandleObjectType::Generic, false };
     ctx.r3.u64 = handle;
