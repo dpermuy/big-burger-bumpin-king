@@ -1,0 +1,4 @@
+*.iso
+private/
+build/
+.DS_Store
