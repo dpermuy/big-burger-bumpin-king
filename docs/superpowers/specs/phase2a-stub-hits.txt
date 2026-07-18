@@ -1,0 +1,11 @@
+HalReturnToFirmware
+KeBugCheck
+KeGetCurrentProcessType
+KeTlsAlloc
+KeTlsSetValue
+NtAllocateVirtualMemory
+RtlEnterCriticalSection
+RtlInitAnsiString
+RtlInitializeCriticalSection
+RtlLeaveCriticalSection
+XexCheckExecutablePrivilege
