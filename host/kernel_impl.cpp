@@ -400,3 +400,74 @@ PPC_FUNC(__imp__XamNotifyCreateListener)
     g_handleTable[handle] = HandleObject{ HandleObjectType::Generic, false };
     ctx.r3.u64 = handle;
 }
+
+PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)
+{
+    ctx.r3.u64 = 0; // old IRQL; no real interrupt masking under single-execution-context
+}
+
+PPC_FUNC(__imp__KfLowerIrql)
+{
+    // No-op -- argument (new IRQL) ignored, no real IRQL state tracked.
+}
+
+PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql)
+{
+    // No-op -- nothing can ever contend under single-execution-context, same
+    // reasoning as critical sections (Phase 2B).
+}
+
+PPC_FUNC(__imp__KeReleaseSpinLockFromRaisedIrql)
+{
+    // No-op.
+}
+
+PPC_FUNC(__imp__ObReferenceObjectByHandle)
+{
+    uint32_t objectOutPtr = (uint32_t)ctx.r5.u64;
+
+    // Fixed sentinel value -- the log shows this gets read back and reused
+    // as the "thread object" argument by KeSetBasePriorityThread/
+    // KeResumeThread/ObDereferenceObject, so it needs to be consistent, not
+    // that it needs to point at a real object (nothing dereferences it).
+    constexpr uint32_t kFakeObjectSentinel = 0xDEAD0001;
+
+    if (objectOutPtr != 0)
+    {
+        PPC_STORE_U32(objectOutPtr, kFakeObjectSentinel);
+    }
+
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__ObDereferenceObject)
+{
+    // No-op -- no real reference counting exists.
+}
+
+PPC_FUNC(__imp__KeSetBasePriorityThread)
+{
+    // No-op -- no real thread scheduling exists.
+}
+
+PPC_FUNC(__imp__KeResumeThread)
+{
+    ctx.r3.u64 = 0; // previous suspend count
+}
+
+PPC_FUNC(__imp__KeInitializeSemaphore)
+{
+    // No-op -- nothing observed waits on or releases this semaphore.
+}
+
+PPC_FUNC(__imp__ExRegisterTitleTerminateNotification)
+{
+    // No-op -- no evidence the registered notification needs to fire.
+}
+
+PPC_FUNC(__imp__XAudioRegisterRenderDriverClient)
+{
+    // No real audio driver semantics -- just unblocks the boot sequence.
+    // Real audio is its own future phase.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}

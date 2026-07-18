@@ -35,12 +35,6 @@ PPC_FUNC(__imp__ExCreateThread)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__ExRegisterTitleTerminateNotification)
-{
-    fmt::println("[stub] ExRegisterTitleTerminateNotification(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__ExTerminateThread)
 {
     fmt::println("[stub] ExTerminateThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -50,12 +44,6 @@ PPC_FUNC(__imp__ExTerminateThread)
 PPC_FUNC(__imp__IoDismountVolumeByFileHandle)
 {
     fmt::println("[stub] IoDismountVolumeByFileHandle(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeAcquireSpinLockAtRaisedIrql)
-{
-    fmt::println("[stub] KeAcquireSpinLockAtRaisedIrql(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -71,12 +59,6 @@ PPC_FUNC(__imp__KeEnterCriticalRegion)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeInitializeSemaphore)
-{
-    fmt::println("[stub] KeInitializeSemaphore(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeLeaveCriticalRegion)
 {
     fmt::println("[stub] KeLeaveCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -89,21 +71,9 @@ PPC_FUNC(__imp__KeLockL2)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)
-{
-    fmt::println("[stub] KeRaiseIrqlToDpcLevel(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeReleaseSemaphore)
 {
     fmt::println("[stub] KeReleaseSemaphore(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeReleaseSpinLockFromRaisedIrql)
-{
-    fmt::println("[stub] KeReleaseSpinLockFromRaisedIrql(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -113,21 +83,9 @@ PPC_FUNC(__imp__KeResetEvent)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeResumeThread)
-{
-    fmt::println("[stub] KeResumeThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeSetAffinityThread)
 {
     fmt::println("[stub] KeSetAffinityThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeSetBasePriorityThread)
-{
-    fmt::println("[stub] KeSetBasePriorityThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -164,12 +122,6 @@ PPC_FUNC(__imp__KeWaitForSingleObject)
 PPC_FUNC(__imp__KfAcquireSpinLock)
 {
     fmt::println("[stub] KfAcquireSpinLock(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KfLowerIrql)
-{
-    fmt::println("[stub] KfLowerIrql(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -494,18 +446,6 @@ PPC_FUNC(__imp__ObCreateSymbolicLink)
 PPC_FUNC(__imp__ObDeleteSymbolicLink)
 {
     fmt::println("[stub] ObDeleteSymbolicLink(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__ObDereferenceObject)
-{
-    fmt::println("[stub] ObDereferenceObject(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__ObReferenceObjectByHandle)
-{
-    fmt::println("[stub] ObReferenceObjectByHandle(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -944,12 +884,6 @@ PPC_FUNC(__imp__XAudioGetVoiceCategoryVolume)
 PPC_FUNC(__imp__XAudioGetVoiceCategoryVolumeChangeMask)
 {
     fmt::println("[stub] XAudioGetVoiceCategoryVolumeChangeMask(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XAudioRegisterRenderDriverClient)
-{
-    fmt::println("[stub] XAudioRegisterRenderDriverClient(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
