@@ -288,3 +288,53 @@ PPC_FUNC(__imp__RtlTimeToTimeFields)
     PPC_STORE_U16(outputFieldsPtr + 12, (uint16_t)milliseconds);
     PPC_STORE_U16(outputFieldsPtr + 14, (uint16_t)tmValue.tm_wday);
 }
+
+constexpr uint32_t kStatusNoSuchDevice = 0xC000000E;
+constexpr uint32_t kStatusInvalidHandle = 0xC0000008;
+
+PPC_FUNC(__imp__NtCreateFile)
+{
+    uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r6.u64;
+
+    if (handleOutPtr != 0)
+    {
+        PPC_STORE_U32(handleOutPtr, 0);
+    }
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
+        PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+    }
+
+    fmt::println("[kernel] NtCreateFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
+    ctx.r3.u64 = kStatusNoSuchDevice;
+}
+
+PPC_FUNC(__imp__NtOpenFile)
+{
+    uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+
+    if (handleOutPtr != 0)
+    {
+        PPC_STORE_U32(handleOutPtr, 0);
+    }
+
+    fmt::println("[kernel] NtOpenFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
+    ctx.r3.u64 = kStatusNoSuchDevice;
+}
+
+PPC_FUNC(__imp__NtReadFile)
+{
+    ctx.r3.u64 = kStatusInvalidHandle;
+}
+
+PPC_FUNC(__imp__NtWriteFile)
+{
+    ctx.r3.u64 = kStatusInvalidHandle;
+}
+
+PPC_FUNC(__imp__NtDeviceIoControlFile)
+{
+    ctx.r3.u64 = kStatusInvalidHandle;
+}

@@ -419,21 +419,9 @@ PPC_FUNC(__imp__NtClearEvent)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtCreateFile)
-{
-    fmt::println("[stub] NtCreateFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtCreateTimer)
 {
     fmt::println("[stub] NtCreateTimer(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtDeviceIoControlFile)
-{
-    fmt::println("[stub] NtDeviceIoControlFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -452,12 +440,6 @@ PPC_FUNC(__imp__NtFlushBuffersFile)
 PPC_FUNC(__imp__NtFreeVirtualMemory)
 {
     fmt::println("[stub] NtFreeVirtualMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtOpenFile)
-{
-    fmt::println("[stub] NtOpenFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -497,12 +479,6 @@ PPC_FUNC(__imp__NtQueueApcThread)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtReadFile)
-{
-    fmt::println("[stub] NtReadFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtResumeThread)
 {
     fmt::println("[stub] NtResumeThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -530,12 +506,6 @@ PPC_FUNC(__imp__NtSetTimerEx)
 PPC_FUNC(__imp__NtSuspendThread)
 {
     fmt::println("[stub] NtSuspendThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtWriteFile)
-{
-    fmt::println("[stub] NtWriteFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
