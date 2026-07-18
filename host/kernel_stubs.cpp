@@ -8,27 +8,9 @@ PPC_FUNC(__imp____C_specific_handler)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp___vsnprintf)
-{
-    fmt::println("[stub] _vsnprintf(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__DbgBreakPoint)
 {
     fmt::println("[stub] DbgBreakPoint(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__DbgPrint)
-{
-    fmt::println("[stub] DbgPrint(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__ExTerminateThread)
-{
-    fmt::println("[stub] ExTerminateThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -41,18 +23,6 @@ PPC_FUNC(__imp__IoDismountVolumeByFileHandle)
 PPC_FUNC(__imp__KeBugCheckEx)
 {
     fmt::println("[stub] KeBugCheckEx(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeEnterCriticalRegion)
-{
-    fmt::println("[stub] KeEnterCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeLeaveCriticalRegion)
-{
-    fmt::println("[stub] KeLeaveCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -71,18 +41,6 @@ PPC_FUNC(__imp__KeReleaseSemaphore)
 PPC_FUNC(__imp__KeResetEvent)
 {
     fmt::println("[stub] KeResetEvent(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeSetAffinityThread)
-{
-    fmt::println("[stub] KeSetAffinityThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeSetEvent)
-{
-    fmt::println("[stub] KeSetEvent(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -116,33 +74,15 @@ PPC_FUNC(__imp__KfReleaseSpinLock)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KiApcNormalRoutineNop)
-{
-    fmt::println("[stub] KiApcNormalRoutineNop(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
     fmt::println("[stub] MmFreePhysicalMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__MmGetPhysicalAddress)
-{
-    fmt::println("[stub] MmGetPhysicalAddress(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__MmQueryAddressProtect)
 {
     fmt::println("[stub] MmQueryAddressProtect(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__MmSetAddressProtect)
-{
-    fmt::println("[stub] MmSetAddressProtect(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -437,12 +377,6 @@ PPC_FUNC(__imp__ObDeleteSymbolicLink)
 PPC_FUNC(__imp__RtlCompareMemoryUlong)
 {
     fmt::println("[stub] RtlCompareMemoryUlong(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__RtlFillMemoryUlong)
-{
-    fmt::println("[stub] RtlFillMemoryUlong(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -899,18 +833,6 @@ PPC_FUNC(__imp__XeKeysConsolePrivateKeySign)
 PPC_FUNC(__imp__XeKeysConsoleSignatureVerification)
 {
     fmt::println("[stub] XeKeysConsoleSignatureVerification(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XexGetModuleHandle)
-{
-    fmt::println("[stub] XexGetModuleHandle(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XexGetModuleSection)
-{
-    fmt::println("[stub] XexGetModuleSection(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <mutex>
+#include <pthread.h>
 #include <thread>
 #include <unordered_map>
 
@@ -606,4 +607,105 @@ PPC_FUNC(__imp__KeWaitForSingleObject)
     // TimeoutPtr null (wait forever) or an unobserved absolute-time case:
     // keep existing behavior.
     ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__RtlFillMemoryUlong)
+{
+    uint32_t dest = (uint32_t)ctx.r3.u64;
+    uint32_t length = (uint32_t)ctx.r4.u64;
+    uint32_t pattern = (uint32_t)ctx.r5.u64;
+
+    for (uint32_t i = 0; i + 4 <= length; i += 4)
+    {
+        PPC_STORE_U32(dest + i, pattern);
+    }
+}
+
+PPC_FUNC(__imp__MmGetPhysicalAddress)
+{
+    // Identity mapping -- no real physical/virtual memory distinction in
+    // this harness. ctx.r3.u64 already holds the virtual address; leave it
+    // unchanged as the "physical" address.
+}
+
+PPC_FUNC(__imp__MmSetAddressProtect)
+{
+    // No-op -- no real page-protection enforcement.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__KeSetEvent)
+{
+    // No-op -- no real dispatcher-object state tracked, same reasoning as
+    // the existing KeResetEvent stub.
+    ctx.r3.u64 = 0; // previous signal state
+}
+
+PPC_FUNC(__imp__KeEnterCriticalRegion)
+{
+    // No-op -- APC delivery isn't emulated, nothing to disable.
+}
+
+PPC_FUNC(__imp__KeLeaveCriticalRegion)
+{
+    // No-op -- APC delivery isn't emulated, nothing to re-enable.
+}
+
+PPC_FUNC(__imp__KiApcNormalRoutineNop)
+{
+    // No-op by design -- name states its own real behavior.
+}
+
+PPC_FUNC(__imp__XexGetModuleHandle)
+{
+    uint32_t moduleHandleOutPtr = (uint32_t)ctx.r4.u64;
+    if (moduleHandleOutPtr != 0)
+    {
+        // Real convention: a module's "handle" is its own base load address.
+        // Observed call has ModuleName=NULL (r3=0), meaning "the current
+        // module" -- the only case seen.
+        PPC_STORE_U32(moduleHandleOutPtr, (uint32_t)PPC_IMAGE_BASE);
+    }
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__XexGetModuleSection)
+{
+    // No section-lookup infrastructure exists. Honestly report "not found"
+    // rather than fabricate section data, matching the no-hard-disk
+    // precedent (Phase 2D).
+    constexpr uint32_t kStatusNotFound = 0xC0000225;
+    ctx.r3.u64 = kStatusNotFound;
+}
+
+PPC_FUNC(__imp___vsnprintf)
+{
+    // No-op -- pure debug-formatting helper, no real PPC varargs support
+    // implemented (nontrivial calling convention, zero bearing on game
+    // logic correctness). Returns 0: no characters formatted.
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__DbgPrint)
+{
+    // No-op -- debug output only, no bearing on game logic.
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__ExTerminateThread)
+{
+    fmt::println("[kernel] ExTerminateThread: exitCode=0x{:X} -- terminating this thread", ctx.r3.u64);
+    pthread_exit(nullptr);
+}
+
+PPC_FUNC(__imp__KeSetAffinityThread)
+{
+    uint32_t previousAffinityOutPtr = (uint32_t)ctx.r5.u64;
+    if (previousAffinityOutPtr != 0)
+    {
+        PPC_STORE_U32(previousAffinityOutPtr, 0);
+    }
+    // Processor affinity ignored, matching ExCreateThread's CreationFlags
+    // handling (Phase 2H) -- the OS scheduler handles real placement.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
