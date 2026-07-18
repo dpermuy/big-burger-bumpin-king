@@ -539,11 +539,26 @@ PPC_FUNC(__imp__ExCreateThread)
         entryAddress, xApiThreadStartup != 0 ? "XApiThreadStartup" : "StartAddress directly",
         stackBase, stackBase + kStackSize, handle);
 
-    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, base]()
+    // XApiThreadStartup's calling convention (confirmed by reading its generated
+    // code, sub_820ABCE8 in private/ppc/ppc_recomp.2.cpp): r3=StartAddress,
+    // r4=StartContext -- it saves r3 into a non-volatile register, later moves
+    // it into ctr, and does an indirect call (bctrl) passing StartContext (from
+    // r4) in r3. Calling StartAddress directly (no trampoline) uses the plain
+    // thread-entry convention instead: r3=StartContext only.
+    bool viaTrampoline = xApiThreadStartup != 0;
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base]()
     {
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
-        threadCtx.r3.u64 = startContext;
+        if (viaTrampoline)
+        {
+            threadCtx.r3.u64 = startAddress;
+            threadCtx.r4.u64 = startContext;
+        }
+        else
+        {
+            threadCtx.r3.u64 = startContext;
+        }
 
         (PPC_LOOKUP_FUNC(base, entryAddress))(threadCtx, base);
     });
