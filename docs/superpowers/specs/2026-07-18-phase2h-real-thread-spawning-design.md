@@ -39,19 +39,14 @@ and thread-safety for all shared state built up across Phases 2B-2G.
 
 ### Thread state
 
-```cpp
-struct GuestThread
-{
-    std::thread hostThread;
-};
-
-static std::unordered_map<uint32_t, GuestThread> g_threads;
-```
-
-(No suspend/resume state — see the `CREATE_SUSPENDED` note under `ExCreateThread` below.)
-
-Tracked via a new `HandleObjectType::Thread` value in the existing handle table (Phase
-2C), so `NtClose`/other handle-generic code continues to work uniformly.
+No separate thread-registry structure. A spawned `std::thread` is `.detach()`ed
+immediately after creation — nothing yet needs to join or query it later (no evidence of
+that requirement), and storing a live, never-joined `std::thread` in a long-lived global
+would call `std::terminate()` at process exit if it's still running (a real footgun
+identified while translating this design to code, not a hypothetical). The handle itself
+is tracked the same way every other handle-returning function does: a new
+`HandleObjectType::Thread` value in the existing handle table (Phase 2C), so
+`NtClose`/other handle-generic code continues to work uniformly.
 
 ### ExCreateThread
 
@@ -94,7 +89,7 @@ Tracked via a new `HandleObjectType::Thread` value in the existing handle table 
 
 A single coarse global mutex (`g_stateMutex`) protects every piece of shared state
 introduced since Phase 2B: `g_handleTable`, `g_criticalSections`, `g_bumpAllocatorNext`,
-`g_nextHandle`, and the new `g_threads`. One lock, not fine-grained per-structure locking —
+`g_nextHandle`. One lock, not fine-grained per-structure locking —
 correctness matters far more than throughput at this stage, and fine-grained locking
 introduces lock-ordering bugs this project has no way to test for yet.
 
