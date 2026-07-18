@@ -440,123 +440,15 @@ PPC_FUNC(__imp__StfsCreateDevice)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__VdCallGraphicsNotificationRoutines)
-{
-    fmt::println("[stub] VdCallGraphicsNotificationRoutines(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__VdEnableDisableClockGating)
 {
     fmt::println("[stub] VdEnableDisableClockGating(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack)
-{
-    fmt::println("[stub] VdEnableRingBufferRPtrWriteBack(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
-{
-    fmt::println("[stub] VdGetCurrentDisplayGamma(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
-{
-    fmt::println("[stub] VdGetCurrentDisplayInformation(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdGetSystemCommandBuffer)
-{
-    fmt::println("[stub] VdGetSystemCommandBuffer(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdInitializeEngines)
-{
-    fmt::println("[stub] VdInitializeEngines(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdInitializeRingBuffer)
-{
-    fmt::println("[stub] VdInitializeRingBuffer(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdInitializeScalerCommandBuffer)
-{
-    fmt::println("[stub] VdInitializeScalerCommandBuffer(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
-{
-    fmt::println("[stub] VdIsHSIOTrainingSucceeded(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdPersistDisplay)
-{
-    fmt::println("[stub] VdPersistDisplay(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__VdQueryVideoFlags)
 {
     fmt::println("[stub] VdQueryVideoFlags(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdQueryVideoMode)
-{
-    fmt::println("[stub] VdQueryVideoMode(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdRetrainEDRAM)
-{
-    fmt::println("[stub] VdRetrainEDRAM(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdRetrainEDRAMWorker)
-{
-    fmt::println("[stub] VdRetrainEDRAMWorker(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdSetDisplayMode)
-{
-    fmt::println("[stub] VdSetDisplayMode(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
-{
-    fmt::println("[stub] VdSetGraphicsInterruptCallback(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress)
-{
-    fmt::println("[stub] VdSetSystemCommandBufferGpuIdentifierAddress(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdShutdownEngines)
-{
-    fmt::println("[stub] VdShutdownEngines(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__VdSwap)
-{
-    fmt::println("[stub] VdSwap(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -851,12 +743,6 @@ PPC_FUNC(__imp__XGetGameRegion)
 PPC_FUNC(__imp__XGetLanguage)
 {
     fmt::println("[stub] XGetLanguage(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XGetVideoMode)
-{
-    fmt::println("[stub] XGetVideoMode(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

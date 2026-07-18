@@ -709,3 +709,117 @@ PPC_FUNC(__imp__KeSetAffinityThread)
     // handling (Phase 2H) -- the OS scheduler handles real placement.
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
+
+PPC_FUNC(__imp__VdInitializeEngines)
+{
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdShutdownEngines)
+{
+    // No-op -- void real signature.
+}
+
+PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
+{
+    // Real semantics: registers a callback a GPU interrupt handler (e.g.
+    // vblank) would invoke. No-op for now -- nothing yet requires us to
+    // actually invoke it. Callback address is r3, context is r4, if future
+    // frame-pacing/vsync work needs them.
+}
+
+PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress)
+{
+    // No-op.
+}
+
+PPC_FUNC(__imp__VdInitializeRingBuffer)
+{
+    // No-op -- not parsing real GPU commands yet.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack)
+{
+    // No-op.
+}
+
+PPC_FUNC(__imp__VdQueryVideoMode)
+{
+    // No confirmed struct layout; return success without writing data,
+    // same conservative posture as MmQueryStatistics (Phase 2E).
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdCallGraphicsNotificationRoutines)
+{
+    // No-op.
+}
+
+PPC_FUNC(__imp__VdRetrainEDRAM)
+{
+    // No-op -- hardware-specific EDRAM calibration, no real hardware to calibrate.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdRetrainEDRAMWorker)
+{
+    // No-op.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
+{
+    // Report success -- no real EDRAM hardware to fail training.
+    ctx.r3.u64 = 1;
+}
+
+PPC_FUNC(__imp__VdGetSystemCommandBuffer)
+{
+    // No confirmed struct/pointer-pair layout; return success without
+    // writing data.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdSwap)
+{
+    // The frame-present call. No-op -- nothing to actually present, no
+    // renderer exists yet.
+}
+
+PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
+{
+    // No confirmed struct layout; return success without writing data.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdSetDisplayMode)
+{
+    // No-op -- accept whatever mode is requested.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdGetCurrentDisplayInformation)
+{
+    // No confirmed struct layout; return success without writing data.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdInitializeScalerCommandBuffer)
+{
+    // No-op.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__VdPersistDisplay)
+{
+    // No-op.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__XGetVideoMode)
+{
+    // No confirmed struct layout; return success without writing data,
+    // same conservative posture as VdQueryVideoMode.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
