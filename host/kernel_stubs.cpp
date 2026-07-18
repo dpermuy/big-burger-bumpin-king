@@ -26,15 +26,6 @@ PPC_FUNC(__imp__DbgPrint)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__ExCreateThread)
-{
-    fmt::println("[stub] ExCreateThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    // Deliberate Phase 2A scope cut: reports success but does not spawn a
-    // real host thread or execute the requested guest function. Real
-    // thread semantics are Phase 2B work.
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__ExTerminateThread)
 {
     fmt::println("[stub] ExTerminateThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);

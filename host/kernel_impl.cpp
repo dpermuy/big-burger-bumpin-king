@@ -149,7 +149,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-enum class HandleObjectType { Mutant, Event, Generic };
+enum class HandleObjectType { Mutant, Event, Generic, Thread };
 
 struct HandleObject
 {
@@ -505,5 +505,60 @@ PPC_FUNC(__imp__XAudioRegisterRenderDriverClient)
 {
     // No real audio driver semantics -- just unblocks the boot sequence.
     // Real audio is its own future phase.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+static uint32_t g_nextThreadId = 1;
+
+PPC_FUNC(__imp__ExCreateThread)
+{
+    uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t threadIdOutPtr = (uint32_t)ctx.r5.u64;
+    uint32_t xApiThreadStartup = (uint32_t)ctx.r6.u64;
+    uint32_t startAddress = (uint32_t)ctx.r7.u64;
+    uint64_t startContext = ctx.r8.u64;
+
+    constexpr uint32_t kStackSize = 0x40000; // 256 KiB
+    uint32_t entryAddress = (xApiThreadStartup != 0) ? xApiThreadStartup : startAddress;
+
+    uint32_t stackBase;
+    uint32_t handle;
+    uint32_t threadId;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        stackBase = g_bumpAllocatorNext;
+        g_bumpAllocatorNext += kStackSize;
+
+        handle = g_nextHandle++;
+        g_handleTable[handle] = HandleObject{ HandleObjectType::Thread, false };
+
+        threadId = g_nextThreadId++;
+    }
+
+    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X}",
+        entryAddress, xApiThreadStartup != 0 ? "XApiThreadStartup" : "StartAddress directly",
+        stackBase, stackBase + kStackSize, handle);
+
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, base]()
+    {
+        PPCContext threadCtx{};
+        threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
+        threadCtx.r3.u64 = startContext;
+
+        (PPC_LOOKUP_FUNC(base, entryAddress))(threadCtx, base);
+    });
+    hostThread.detach(); // never joined -- storing a live std::thread in a
+                          // long-lived container would call std::terminate()
+                          // at process exit if still running
+
+    if (handleOutPtr != 0)
+    {
+        PPC_STORE_U32(handleOutPtr, handle);
+    }
+    if (threadIdOutPtr != 0)
+    {
+        PPC_STORE_U32(threadIdOutPtr, threadId);
+    }
+
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }

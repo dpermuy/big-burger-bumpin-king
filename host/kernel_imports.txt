@@ -2,7 +2,6 @@ __C_specific_handler
 _vsnprintf
 DbgBreakPoint
 DbgPrint
-ExCreateThread
 ExTerminateThread
 IoDismountVolumeByFileHandle
 KeBugCheckEx
