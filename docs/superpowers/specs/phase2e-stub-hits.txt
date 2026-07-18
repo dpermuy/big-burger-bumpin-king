@@ -1,0 +1,6 @@
+ExCreateThread
+KeDelayExecutionThread
+KeTlsGetValue
+XamInputGetCapabilities
+XamInputGetState
+XamNotifyCreateListener
