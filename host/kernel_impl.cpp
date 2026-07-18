@@ -2,6 +2,7 @@
 #include <ppc_context.h>
 #include <fmt/core.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -576,4 +577,33 @@ PPC_FUNC(__imp__ExCreateThread)
     }
 
     ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__KeWaitForSingleObject)
+{
+    uint32_t timeoutPtr = (uint32_t)ctx.r7.u64;
+
+    if (timeoutPtr != 0)
+    {
+        int64_t timeoutValue = (int64_t)PPC_LOAD_U64(timeoutPtr);
+        if (timeoutValue < 0)
+        {
+            // Negative = relative time, in 100ns units (standard NT convention).
+            // Confirmed via captured runtime value from a real guest
+            // timeout-polling loop: -300000 = -30ms, a legitimate bounded poll,
+            // not an infinite/forever wait (see Phase 2I design spec).
+            int64_t hundredNsUnits = -timeoutValue;
+            auto durationMs = std::chrono::milliseconds(hundredNsUnits / 10000);
+            std::this_thread::sleep_for(durationMs);
+
+            ctx.r3.u64 = 258; // STATUS_TIMEOUT
+            return;
+        }
+        // Positive (absolute time) -- not observed yet, fall through to the
+        // existing immediate-success behavior rather than guess at handling.
+    }
+
+    // TimeoutPtr null (wait forever) or an unobserved absolute-time case:
+    // keep existing behavior.
+    ctx.r3.u64 = 0;
 }

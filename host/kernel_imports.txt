@@ -15,7 +15,6 @@ KeSetEvent
 KeTlsFree
 KeUnlockL2
 KeWaitForMultipleObjects
-KeWaitForSingleObject
 KfAcquireSpinLock
 KfReleaseSpinLock
 KiApcNormalRoutineNop
