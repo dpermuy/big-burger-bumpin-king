@@ -16,3 +16,12 @@ add_compile_options(
 
 add_subdirectory(thirdparty/XenonRecomp)
 add_subdirectory(tools)
+
+file(GLOB BIGBUMPIN_PPC_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/private/ppc/*.cpp")
+
+if(BIGBUMPIN_PPC_SOURCES)
+    add_library(BigBumpinPPC STATIC ${BIGBUMPIN_PPC_SOURCES})
+    target_include_directories(BigBumpinPPC PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private/ppc")
+    target_link_libraries(BigBumpinPPC PRIVATE XenonUtils)
+    target_compile_options(BigBumpinPPC PRIVATE -Wno-unused-label -Wno-unused-variable -Wno-switch)
+endif()
