@@ -1,0 +1,3 @@
+ExCreateThread
+MmAllocatePhysicalMemoryEx
+MmQueryStatistics
