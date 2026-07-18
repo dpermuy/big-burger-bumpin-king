@@ -1,0 +1,13 @@
+[main]
+file_path = "../private/default.xex"
+out_directory_path = "../private/ppc"
+switch_table_file_path = "../private/switch_tables.toml"
+
+restgprlr_14_address = 0x823F0820
+savegprlr_14_address = 0x823F07D0
+restfpr_14_address   = 0x823F16EC
+savefpr_14_address   = 0x823F16A0
+restvmx_14_address   = 0x823F2F08
+savevmx_14_address   = 0x823F2C70
+restvmx_64_address   = 0x823F2F9C
+savevmx_64_address   = 0x823F2D04
