@@ -50,6 +50,11 @@ Only pipeline glue — hand-written config, CMake, docs — is version controlle
 ## Toolchain
 
 - `cmake`, `ninja` — installed via Homebrew
+- `llvm` (Homebrew, provides Clang 18+) — used explicitly instead of Apple's
+  Xcode Clang. XenonRecomp's README states other compilers "have not been
+  tested and are not recommended" and relies on Clang-specific intrinsics;
+  Apple's Clang is a divergent fork with its own versioning, so Homebrew's
+  upstream LLVM Clang is the safer match for the project's assumptions.
 - `xdvdfs-cli` (antangelo/xdvdfs) — installed via `cargo install xdvdfs-cli`,
   used to unpack the Xbox 360 XDVDFS disc image
 - `XenonAnalyse`, `XenonRecomp`, `XenonTests` — built from the
@@ -81,9 +86,15 @@ is deferred — it's better justified later when chasing actual gameplay bugs
 
 Phase 1 is complete when all of the following hold:
 
-1. `XenonTests` builds and passes on this machine — validates the toolchain
-   itself (build config, arm64/simde path) independently of any
-   game-specific config issues.
+1. `XenonAnalyse` and `XenonRecomp` build successfully via CMake+Ninja and
+   run without crashing (invoked with no args, each prints usage) —
+   validates the toolchain compiles and runs on this machine (arm64/simde
+   path) independently of any game-specific config issues. (Originally
+   scoped as "XenonTests builds and passes," but XenonTests requires PPC
+   test binaries generated from a full Xenia build — a large separate
+   dependency — and its CMakeLists hardcodes an x86-only `-march=sandybridge`
+   flag that fails on arm64. Deferred; not worth the cost for a sanity
+   check.)
 2. `xdvdfs unpack` extracts a valid `default.xex` from the ISO.
 3. `XenonAnalyse` runs against `default.xex` without crashing and produces a
    switch-table TOML (may legitimately be empty on the first pass).
