@@ -35,12 +35,6 @@ PPC_FUNC(__imp__ExCreateThread)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__ExGetXConfigSetting)
-{
-    fmt::println("[stub] ExGetXConfigSetting(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__ExRegisterTitleTerminateNotification)
 {
     fmt::println("[stub] ExRegisterTitleTerminateNotification(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -77,12 +71,6 @@ PPC_FUNC(__imp__KeDelayExecutionThread)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeEnableFpuExceptions)
-{
-    fmt::println("[stub] KeEnableFpuExceptions(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeEnterCriticalRegion)
 {
     fmt::println("[stub] KeEnterCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -104,18 +92,6 @@ PPC_FUNC(__imp__KeLeaveCriticalRegion)
 PPC_FUNC(__imp__KeLockL2)
 {
     fmt::println("[stub] KeLockL2(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeQueryPerformanceFrequency)
-{
-    fmt::println("[stub] KeQueryPerformanceFrequency(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeQuerySystemTime)
-{
-    fmt::println("[stub] KeQuerySystemTime(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -611,12 +587,6 @@ PPC_FUNC(__imp__RtlMultiByteToUnicodeN)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__RtlNtStatusToDosError)
-{
-    fmt::println("[stub] RtlNtStatusToDosError(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__RtlRaiseException)
 {
     fmt::println("[stub] RtlRaiseException(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -626,12 +596,6 @@ PPC_FUNC(__imp__RtlRaiseException)
 PPC_FUNC(__imp__RtlTimeFieldsToTime)
 {
     fmt::println("[stub] RtlTimeFieldsToTime(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__RtlTimeToTimeFields)
-{
-    fmt::println("[stub] RtlTimeToTimeFields(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -1106,12 +1070,6 @@ PPC_FUNC(__imp__XexGetModuleSection)
 PPC_FUNC(__imp__XexGetProcedureAddress)
 {
     fmt::println("[stub] XexGetProcedureAddress(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XGetAVPack)
-{
-    fmt::println("[stub] XGetAVPack(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

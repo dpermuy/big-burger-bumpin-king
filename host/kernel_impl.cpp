@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <unordered_map>
 
 PPC_FUNC(__imp__KeBugCheck)
@@ -199,4 +200,91 @@ PPC_FUNC(__imp__NtClose)
     uint32_t handle = (uint32_t)ctx.r3.u64;
     g_handleTable.erase(handle);
     ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__XGetAVPack)
+{
+    // Real AV-pack enum value not independently confirmed; 0 is a
+    // deliberate low-confidence default, not an asserted-correct constant.
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__ExGetXConfigSetting)
+{
+    uint32_t bufferPtr = (uint32_t)ctx.r5.u64;
+    uint32_t bufferSize = (uint32_t)ctx.r6.u64;
+
+    for (uint32_t i = 0; i < bufferSize; i++)
+    {
+        PPC_STORE_U8(bufferPtr + i, 0);
+    }
+
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__KeQuerySystemTime)
+{
+    uint32_t outPtr = (uint32_t)ctx.r3.u64;
+
+    // Windows FILETIME: 100ns ticks since 1601-01-01. Unix epoch (1970-01-01)
+    // is 11644473600 seconds after that.
+    constexpr uint64_t kFiletimeEpochOffsetSeconds = 11644473600ULL;
+    uint64_t unixSeconds = (uint64_t)time(nullptr);
+    uint64_t filetime = (unixSeconds + kFiletimeEpochOffsetSeconds) * 10000000ULL;
+
+    PPC_STORE_U64(outPtr, filetime);
+}
+
+PPC_FUNC(__imp__KeQueryPerformanceFrequency)
+{
+    uint32_t outPtr = (uint32_t)ctx.r3.u64;
+    PPC_STORE_U64(outPtr, 50000000ULL); // Xbox 360's documented hardware timebase frequency
+}
+
+PPC_FUNC(__imp__KeEnableFpuExceptions)
+{
+    // No-op -- FPU exception trapping isn't emulated.
+}
+
+PPC_FUNC(__imp__RtlNtStatusToDosError)
+{
+    uint32_t status = (uint32_t)ctx.r3.u64;
+
+    constexpr uint32_t kStatusObjectNameNotFound = 0xC0000034;
+    constexpr uint32_t kErrorFileNotFound = 2;
+    constexpr uint32_t kErrorGenFailure = 31;
+
+    if (status == kStatusObjectNameNotFound)
+    {
+        ctx.r3.u64 = kErrorFileNotFound;
+    }
+    else
+    {
+        ctx.r3.u64 = kErrorGenFailure;
+    }
+}
+
+PPC_FUNC(__imp__RtlTimeToTimeFields)
+{
+    uint32_t inputTimePtr = (uint32_t)ctx.r3.u64;
+    uint32_t outputFieldsPtr = (uint32_t)ctx.r4.u64;
+
+    uint64_t filetime = PPC_LOAD_U64(inputTimePtr);
+
+    constexpr uint64_t kFiletimeEpochOffsetSeconds = 11644473600ULL;
+    time_t unixSeconds = (time_t)(filetime / 10000000ULL - kFiletimeEpochOffsetSeconds);
+    uint32_t milliseconds = (uint32_t)((filetime / 10000ULL) % 1000ULL);
+
+    std::tm tmValue{};
+    gmtime_r(&unixSeconds, &tmValue);
+
+    // TIME_FIELDS: Year, Month, Day, Hour, Minute, Second, Milliseconds, Weekday (8x int16)
+    PPC_STORE_U16(outputFieldsPtr + 0, (uint16_t)(tmValue.tm_year + 1900));
+    PPC_STORE_U16(outputFieldsPtr + 2, (uint16_t)(tmValue.tm_mon + 1));
+    PPC_STORE_U16(outputFieldsPtr + 4, (uint16_t)tmValue.tm_mday);
+    PPC_STORE_U16(outputFieldsPtr + 6, (uint16_t)tmValue.tm_hour);
+    PPC_STORE_U16(outputFieldsPtr + 8, (uint16_t)tmValue.tm_min);
+    PPC_STORE_U16(outputFieldsPtr + 10, (uint16_t)tmValue.tm_sec);
+    PPC_STORE_U16(outputFieldsPtr + 12, (uint16_t)milliseconds);
+    PPC_STORE_U16(outputFieldsPtr + 14, (uint16_t)tmValue.tm_wday);
 }
