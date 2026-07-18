@@ -130,3 +130,73 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
 
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
+
+enum class HandleObjectType { Mutant, Event };
+
+struct HandleObject
+{
+    HandleObjectType type;
+    bool signaled;
+};
+
+static std::unordered_map<uint32_t, HandleObject> g_handleTable;
+static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
+
+PPC_FUNC(__imp__NtCreateMutant)
+{
+    uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    bool initialOwner = ctx.r5.u64 != 0;
+
+    uint32_t handle = g_nextHandle++;
+    g_handleTable[handle] = HandleObject{ HandleObjectType::Mutant, !initialOwner };
+
+    PPC_STORE_U32(handleOutPtr, handle);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__NtCreateEvent)
+{
+    uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    bool initialState = ctx.r6.u64 != 0;
+
+    uint32_t handle = g_nextHandle++;
+    g_handleTable[handle] = HandleObject{ HandleObjectType::Event, initialState };
+
+    PPC_STORE_U32(handleOutPtr, handle);
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__NtReleaseMutant)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t previousCountOutPtr = (uint32_t)ctx.r4.u64;
+
+    auto it = g_handleTable.find(handle);
+    if (it != g_handleTable.end())
+    {
+        it->second.signaled = true;
+    }
+
+    if (previousCountOutPtr != 0)
+    {
+        PPC_STORE_U32(previousCountOutPtr, 0);
+    }
+
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__NtWaitForSingleObjectEx)
+{
+    // Always succeeds immediately -- correct, not just convenient, under a
+    // single-execution-context model: nothing else can run concurrently to
+    // change an object's state while we'd otherwise block. Revisit once
+    // ExCreateThread spawns real host threads.
+    ctx.r3.u64 = 0;
+}
+
+PPC_FUNC(__imp__NtClose)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    g_handleTable.erase(handle);
+    ctx.r3.u64 = 0;
+}

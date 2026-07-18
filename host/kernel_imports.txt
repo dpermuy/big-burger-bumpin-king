@@ -71,10 +71,7 @@ NetDll_XNetStartup
 NetDll_XNetXnAddrToInAddr
 NtCancelTimer
 NtClearEvent
-NtClose
-NtCreateEvent
 NtCreateFile
-NtCreateMutant
 NtCreateTimer
 NtDeviceIoControlFile
 NtDuplicateObject
@@ -88,13 +85,11 @@ NtQueryVirtualMemory
 NtQueryVolumeInformationFile
 NtQueueApcThread
 NtReadFile
-NtReleaseMutant
 NtResumeThread
 NtSetEvent
 NtSetInformationFile
 NtSetTimerEx
 NtSuspendThread
-NtWaitForSingleObjectEx
 NtWriteFile
 ObCreateSymbolicLink
 ObDeleteSymbolicLink

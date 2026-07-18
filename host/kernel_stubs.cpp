@@ -443,27 +443,9 @@ PPC_FUNC(__imp__NtClearEvent)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtClose)
-{
-    fmt::println("[stub] NtClose(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtCreateEvent)
-{
-    fmt::println("[stub] NtCreateEvent(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtCreateFile)
 {
     fmt::println("[stub] NtCreateFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtCreateMutant)
-{
-    fmt::println("[stub] NtCreateMutant(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -545,12 +527,6 @@ PPC_FUNC(__imp__NtReadFile)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtReleaseMutant)
-{
-    fmt::println("[stub] NtReleaseMutant(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtResumeThread)
 {
     fmt::println("[stub] NtResumeThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -578,12 +554,6 @@ PPC_FUNC(__imp__NtSetTimerEx)
 PPC_FUNC(__imp__NtSuspendThread)
 {
     fmt::println("[stub] NtSuspendThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtWaitForSingleObjectEx)
-{
-    fmt::println("[stub] NtWaitForSingleObjectEx(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
