@@ -7,8 +7,8 @@ Phase 2I ([spec](2026-07-18-phase2i-real-wait-timeout-design.md)) fixed the
 subsystem initialization — `VdInitializeEngines` through `VdPersistDisplay`, the standard
 XDK video boot order — entirely on generic do-nothing stubs, without a single failure.
 It was still making forward progress (not stuck) when the watchdog fired.
-`docs/superpowers/specs/phase2i-stub-hits.txt` lists 32 remaining imports: 11 non-graphics
-utilities and 21 graphics/display (`Vd*` plus `XGetVideoMode`) calls.
+`docs/superpowers/specs/phase2i-stub-hits.txt` lists 32 remaining imports: 13 non-graphics
+utilities and 19 graphics/display (`Vd*` plus `XGetVideoMode`) calls.
 
 The key finding driving this spec: the entire graphics boot sequence observed so far has
 tolerated no-op stubs without issue. This means the actual GPU command-buffer parsing and
@@ -20,15 +20,15 @@ rendering, rather than starting real GPU translation work speculatively.
 
 ## Goal
 
-Implement all 32 remaining imports. For the 11 non-graphics utilities, give real behavior
+Implement all 32 remaining imports. For the 13 non-graphics utilities, give real behavior
 where it's well-defined and low-risk (following established per-function precedent from
-prior phases); no-op where there's no evidence real behavior is needed. For the 21
+prior phases); no-op where there's no evidence real behavior is needed. For the 19
 graphics/display calls, implement as no-ops/plausible-success returns — explicitly not
 attempting real GPU command execution or display output.
 
 ## Design
 
-### Non-graphics utilities (11)
+### Non-graphics utilities (13)
 
 - **`RtlFillMemoryUlong(Destination, Length, Pattern)`** — real, well-defined behavior:
   fill `Length` bytes at `Destination` with the repeating 32-bit `Pattern`. A standard,
@@ -69,7 +69,7 @@ attempting real GPU command execution or display output.
   existing treatment of `CreationFlags`' affinity bits (Phase 2H) — the OS scheduler
   handles real placement on a modern multi-core host.
 
-### Graphics/display (21: `VdCallGraphicsNotificationRoutines`, `VdEnableRingBufferRPtrWriteBack`, `VdGetCurrentDisplayGamma`, `VdGetCurrentDisplayInformation`, `VdGetSystemCommandBuffer`, `VdInitializeEngines`, `VdInitializeRingBuffer`, `VdInitializeScalerCommandBuffer`, `VdIsHSIOTrainingSucceeded`, `VdPersistDisplay`, `VdQueryVideoMode`, `VdRetrainEDRAM`, `VdRetrainEDRAMWorker`, `VdSetDisplayMode`, `VdSetGraphicsInterruptCallback`, `VdSetSystemCommandBufferGpuIdentifierAddress`, `VdShutdownEngines`, `VdSwap`, `XGetVideoMode`)
+### Graphics/display (19: `VdCallGraphicsNotificationRoutines`, `VdEnableRingBufferRPtrWriteBack`, `VdGetCurrentDisplayGamma`, `VdGetCurrentDisplayInformation`, `VdGetSystemCommandBuffer`, `VdInitializeEngines`, `VdInitializeRingBuffer`, `VdInitializeScalerCommandBuffer`, `VdIsHSIOTrainingSucceeded`, `VdPersistDisplay`, `VdQueryVideoMode`, `VdRetrainEDRAM`, `VdRetrainEDRAMWorker`, `VdSetDisplayMode`, `VdSetGraphicsInterruptCallback`, `VdSetSystemCommandBufferGpuIdentifierAddress`, `VdShutdownEngines`, `VdSwap`, `XGetVideoMode`)
 
 All implemented as no-ops or minimal plausible-success returns — no real GPU command
 buffer parsing, no real display mode data, no real rendering. Two exceptions where a
