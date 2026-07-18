@@ -1,0 +1,10 @@
+ExCreateThread
+MmAllocatePhysicalMemoryEx
+MmQueryStatistics
+NtCreateFile
+NtDeviceIoControlFile
+NtOpenFile
+NtReadFile
+NtWriteFile
+XeCryptSha
+XeKeysConsolePrivateKeySign
