@@ -1,0 +1,12 @@
+ExCreateThread
+ExRegisterTitleTerminateNotification
+KeAcquireSpinLockAtRaisedIrql
+KeInitializeSemaphore
+KeRaiseIrqlToDpcLevel
+KeReleaseSpinLockFromRaisedIrql
+KeResumeThread
+KeSetBasePriorityThread
+KfLowerIrql
+ObDereferenceObject
+ObReferenceObjectByHandle
+XAudioRegisterRenderDriverClient
