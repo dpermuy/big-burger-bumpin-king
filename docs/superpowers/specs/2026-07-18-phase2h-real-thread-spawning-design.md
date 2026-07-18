@@ -43,13 +43,12 @@ and thread-safety for all shared state built up across Phases 2B-2G.
 struct GuestThread
 {
     std::thread hostThread;
-    bool suspended = false;
-    std::condition_variable resumeCv;
-    std::mutex resumeMutex;
 };
 
 static std::unordered_map<uint32_t, GuestThread> g_threads;
 ```
+
+(No suspend/resume state — see the `CREATE_SUSPENDED` note under `ExCreateThread` below.)
 
 Tracked via a new `HandleObjectType::Thread` value in the existing handle table (Phase
 2C), so `NtClose`/other handle-generic code continues to work uniformly.
@@ -70,23 +69,26 @@ Tracked via a new `HandleObjectType::Thread` value in the existing handle table 
    recompiled guest code, letting it do that (rather than us reimplementing its internal
    logic) is both simpler and more accurate. If `r6` is `0` (observed on 2 of 4 calls),
    call `StartAddress` (`r7`) directly instead.
-4. If `CreationFlags` (`r9`) bit 0 is set (`CREATE_SUSPENDED`), the spawned host thread
-   blocks on `resumeCv` before calling the entry point. Otherwise it proceeds immediately.
+4. `CreationFlags` (`r9`) bit 0 (`CREATE_SUSPENDED`) is **not honored** — the spawned host
+   thread runs immediately regardless. Revisiting this during plan-writing (re-reading the
+   exact call sequence around the `CREATE_SUSPENDED` observation) found the
+   `ObReferenceObjectByHandle`→`KeResumeThread` chain that looked like a plausible
+   "resume the thread I just created" call actually operates on a *current-thread*
+   pseudo-handle (`r3=0`), not the handle `ExCreateThread` returns, and reuses
+   `ObReferenceObjectByHandle`'s fixed sentinel rather than a real per-thread handle.
+   There's no confirmed call site that resumes an actual newly-created thread's real
+   handle. Building suspend/condition-variable synchronization around that unconfirmed
+   pattern risks a worse failure mode than the one being fixed: a thread stuck waiting on
+   a resume call that may never correctly target it. Running immediately directly attacks
+   the confirmed blocker (spawn a real thread, run its code) without speculative
+   synchronization. `KeResumeThread` is therefore unchanged from Phase 2G's no-op — not
+   revised in this phase. Revisit if a future run's evidence shows a real handle-based
+   resume call.
 5. Allocate a handle (`HandleObjectType::Thread`), write it to `*HandleOutPtr` (`r3`, the
    function's r3 argument — not to be confused with the new thread's own `PPCContext.r3`).
    If `ThreadIdOutPtr` (`r5`) is non-null, write a simple incrementing thread ID.
 6. Processor-affinity bits (`CreationFlags` high bits) are ignored entirely — meaningless
    on a modern multi-core host; the OS scheduler handles real placement.
-
-### KeResumeThread (revised from Phase 2G's no-op)
-
-Phase 2G's `KeResumeThread` implementation just returned `0` unconditionally, explicitly
-noting "no real thread scheduling exists" at the time. Now it does: look up the thread
-object (via the sentinel/handle convention `ObReferenceObjectByHandle` established in
-Phase 2G), and if it corresponds to a tracked `GuestThread` currently suspended, set
-`suspended = false` and notify `resumeCv`. Still returns `0` (previous suspend count) —
-real per-thread suspend-count tracking beyond a single suspended/not-suspended bit isn't
-warranted by any evidence so far (no nested suspend/resume calls observed).
 
 ### Thread safety
 
@@ -114,9 +116,9 @@ graceful shutdown/join logic for without evidence it matters.
 
 Phase 2H is complete when:
 
-1. `ExCreateThread` spawns a real host thread executing the requested guest entry point,
-   `KeResumeThread` actually resumes `CREATE_SUSPENDED` threads, and all shared state is
-   protected by `g_stateMutex`.
+1. `ExCreateThread` spawns a real host thread executing the requested guest entry point
+   (running immediately, `CREATE_SUSPENDED` not honored — see design rationale), and all
+   shared state is protected by `g_stateMutex`.
 2. `BigBumpinHost` builds clean (zero compiler errors).
 3. A fresh run either progresses further than Phase 2G's watchdog timeout or fails at a
    new, demonstrably different point (a crash from a genuine concurrency bug is plausible
@@ -127,7 +129,8 @@ Phase 2H is complete when:
 
 - Fine-grained locking / lock-free data structures — premature without evidence of
   contention or a specific correctness problem the coarse mutex causes.
-- Real per-thread suspend-count nesting beyond a single suspended/not-suspended bit.
+- `CREATE_SUSPENDED` / real suspend-resume synchronization — no confirmed evidence a real
+  handle-based resume call exists yet (see design rationale above).
 - Graceful process shutdown/thread joining.
 - Any of the still-untouched 163 kernel imports beyond what a fresh run's evidence
   surfaces next.
