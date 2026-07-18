@@ -15,3 +15,4 @@ add_compile_options(
 )
 
 add_subdirectory(thirdparty/XenonRecomp)
+add_subdirectory(tools)

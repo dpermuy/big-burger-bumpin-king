@@ -1,0 +1,2 @@
+add_executable(FindSpecialAddresses find_special_addresses.cpp)
+target_link_libraries(FindSpecialAddresses PRIVATE XenonUtils)
