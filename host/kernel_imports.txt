@@ -8,7 +8,6 @@ ExTerminateThread
 IoDismountVolumeByFileHandle
 KeAcquireSpinLockAtRaisedIrql
 KeBugCheckEx
-KeDelayExecutionThread
 KeEnterCriticalRegion
 KeInitializeSemaphore
 KeLeaveCriticalRegion
@@ -22,7 +21,6 @@ KeSetAffinityThread
 KeSetBasePriorityThread
 KeSetEvent
 KeTlsFree
-KeTlsGetValue
 KeUnlockL2
 KeWaitForMultipleObjects
 KeWaitForSingleObject
@@ -125,15 +123,12 @@ XamEnumerate
 XamFree
 XamGetExecutionId
 XamGetSystemVersion
-XamInputGetCapabilities
-XamInputGetState
 XamInputSetState
 XamLoaderGetLaunchData
 XamLoaderGetLaunchDataSize
 XamLoaderLaunchTitle
 XamLoaderSetLaunchData
 XamLoaderTerminateTitle
-XamNotifyCreateListener
 XamSessionCreateHandle
 XamSessionRefObjByHandle
 XamShowAchievementsUI

@@ -65,12 +65,6 @@ PPC_FUNC(__imp__KeBugCheckEx)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KeDelayExecutionThread)
-{
-    fmt::println("[stub] KeDelayExecutionThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__KeEnterCriticalRegion)
 {
     fmt::println("[stub] KeEnterCriticalRegion(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -146,12 +140,6 @@ PPC_FUNC(__imp__KeSetEvent)
 PPC_FUNC(__imp__KeTlsFree)
 {
     fmt::println("[stub] KeTlsFree(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KeTlsGetValue)
-{
-    fmt::println("[stub] KeTlsGetValue(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -767,18 +755,6 @@ PPC_FUNC(__imp__XamGetSystemVersion)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__XamInputGetCapabilities)
-{
-    fmt::println("[stub] XamInputGetCapabilities(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XamInputGetState)
-{
-    fmt::println("[stub] XamInputGetState(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__XamInputSetState)
 {
     fmt::println("[stub] XamInputSetState(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -812,12 +788,6 @@ PPC_FUNC(__imp__XamLoaderSetLaunchData)
 PPC_FUNC(__imp__XamLoaderTerminateTitle)
 {
     fmt::println("[stub] XamLoaderTerminateTitle(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__XamNotifyCreateListener)
-{
-    fmt::println("[stub] XamNotifyCreateListener(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

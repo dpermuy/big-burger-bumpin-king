@@ -132,7 +132,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-enum class HandleObjectType { Mutant, Event };
+enum class HandleObjectType { Mutant, Event, Generic };
 
 struct HandleObject
 {
@@ -365,4 +365,38 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
     fmt::println("[kernel] MmAllocatePhysicalMemoryEx: {} bytes -> 0x{:X}", kAllocGranularity, allocatedAddress);
 
     ctx.r3.u64 = allocatedAddress; // Mm* functions return the address directly, not a status code
+}
+
+PPC_FUNC(__imp__KeDelayExecutionThread)
+{
+    // Returns immediately without sleeping -- a real sleep here would burn
+    // the harness's 10s watchdog budget for no benefit, since nothing else
+    // runs concurrently to change state while we'd otherwise wait. Same
+    // reasoning as NtWaitForSingleObjectEx (Phase 2C).
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__KeTlsGetValue)
+{
+    uint32_t index = (uint32_t)ctx.r3.u64;
+    ctx.r3.u64 = (index < 64) ? g_tlsSlots[index] : 0;
+}
+
+constexpr uint32_t kErrorDeviceNotConnected = 0x48F;
+
+PPC_FUNC(__imp__XamInputGetCapabilities)
+{
+    ctx.r3.u64 = kErrorDeviceNotConnected;
+}
+
+PPC_FUNC(__imp__XamInputGetState)
+{
+    ctx.r3.u64 = kErrorDeviceNotConnected;
+}
+
+PPC_FUNC(__imp__XamNotifyCreateListener)
+{
+    uint32_t handle = g_nextHandle++;
+    g_handleTable[handle] = HandleObject{ HandleObjectType::Generic, false };
+    ctx.r3.u64 = handle;
 }
