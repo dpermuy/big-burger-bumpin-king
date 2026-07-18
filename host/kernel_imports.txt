@@ -30,11 +30,9 @@ KfAcquireSpinLock
 KfLowerIrql
 KfReleaseSpinLock
 KiApcNormalRoutineNop
-MmAllocatePhysicalMemoryEx
 MmFreePhysicalMemory
 MmGetPhysicalAddress
 MmQueryAddressProtect
-MmQueryStatistics
 MmSetAddressProtect
 NetDll___WSAFDIsSet
 NetDll_accept

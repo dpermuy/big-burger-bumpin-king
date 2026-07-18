@@ -197,12 +197,6 @@ PPC_FUNC(__imp__KiApcNormalRoutineNop)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
-{
-    fmt::println("[stub] MmAllocatePhysicalMemoryEx(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
     fmt::println("[stub] MmFreePhysicalMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -218,12 +212,6 @@ PPC_FUNC(__imp__MmGetPhysicalAddress)
 PPC_FUNC(__imp__MmQueryAddressProtect)
 {
     fmt::println("[stub] MmQueryAddressProtect(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__MmQueryStatistics)
-{
-    fmt::println("[stub] MmQueryStatistics(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

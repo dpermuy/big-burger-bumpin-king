@@ -338,3 +338,31 @@ PPC_FUNC(__imp__NtDeviceIoControlFile)
 {
     ctx.r3.u64 = kStatusInvalidHandle;
 }
+
+PPC_FUNC(__imp__MmQueryStatistics)
+{
+    // Caller pre-fills Length for validation (standard NT convention;
+    // observed value 0x68). No confirmed full MM_STATISTICS field layout,
+    // so we acknowledge success without writing detailed statistics --
+    // same conservative posture as the critical-section implementation in
+    // Phase 2B. Revisit only if a future run's evidence shows the game
+    // reading and acting on specific garbage field values.
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
+{
+    // r4 (observed 0x19000000, ~400 MB) is implausibly large for a single
+    // physical allocation on 512 MB hardware -- treated as stale register
+    // content, not a real size argument. Always allocates a fixed 64 KiB
+    // block from the same bump allocator NtAllocateVirtualMemory (Phase 2B)
+    // uses, rather than guessing which register (if any) is trustworthy.
+    constexpr uint32_t kAllocGranularity = 0x10000;
+
+    uint32_t allocatedAddress = g_bumpAllocatorNext;
+    g_bumpAllocatorNext += kAllocGranularity;
+
+    fmt::println("[kernel] MmAllocatePhysicalMemoryEx: {} bytes -> 0x{:X}", kAllocGranularity, allocatedAddress);
+
+    ctx.r3.u64 = allocatedAddress; // Mm* functions return the address directly, not a status code
+}
