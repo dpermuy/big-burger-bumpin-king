@@ -1,7 +1,10 @@
 #include "ppc_config.h"
 #include <ppc_context.h>
 #include <fmt/core.h>
+#include "xdvdfs.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -9,6 +12,7 @@
 #include <ctime>
 #include <mutex>
 #include <pthread.h>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -148,7 +152,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-enum class HandleObjectType { Mutant, Event, Generic, Thread };
+enum class HandleObjectType { Mutant, Event, Generic, Thread, File };
 
 struct HandleObject
 {
@@ -159,6 +163,13 @@ struct HandleObject
 static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
 static std::condition_variable g_handleSignalCv;
+
+struct FileHandleState
+{
+    XdvdfsEntry entry;
+    uint64_t position = 0;
+};
+static std::unordered_map<uint32_t, FileHandleState> g_fileState;
 
 PPC_FUNC(__imp__NtCreateMutant)
 {
@@ -347,37 +358,92 @@ PPC_FUNC(__imp__RtlTimeToTimeFields)
 
 constexpr uint32_t kStatusNoSuchDevice = 0xC000000E;
 constexpr uint32_t kStatusInvalidHandle = 0xC0000008;
+constexpr uint32_t kStatusObjectNameNotFound = 0xC0000034;
+
+static std::string ReadGuestAnsiString(uint8_t* base, uint32_t objectAttributesPtr)
+{
+    uint32_t objectNamePtr = PPC_LOAD_U32(objectAttributesPtr + 4);
+    uint16_t nameLength = PPC_LOAD_U16(objectNamePtr + 0);
+    uint32_t nameBufferPtr = PPC_LOAD_U32(objectNamePtr + 4);
+    std::string name;
+    for (uint16_t i = 0; i < nameLength; i++)
+    {
+        name.push_back((char)PPC_LOAD_U8(nameBufferPtr + i));
+    }
+    return name;
+}
+
+static uint32_t OpenGuestFile(const std::string& path, uint32_t& outHandle)
+{
+    std::string lowerPath = path;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    if (lowerPath.rfind("\\device\\", 0) == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        outHandle = g_nextHandle++;
+        g_handleTable[outHandle] = HandleObject{ HandleObjectType::Generic, true };
+        return 0; // STATUS_SUCCESS
+    }
+
+    if (lowerPath.rfind("d:\\", 0) == 0 || lowerPath.rfind("d:/", 0) == 0)
+    {
+        std::string subPath = path.substr(3);
+        XdvdfsEntry entry;
+        if (g_xdvdfsImage.ResolvePath(subPath, entry))
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            outHandle = g_nextHandle++;
+            g_handleTable[outHandle] = HandleObject{ HandleObjectType::File, true };
+            g_fileState[outHandle] = FileHandleState{ entry, 0 };
+            return 0; // STATUS_SUCCESS
+        }
+        return kStatusObjectNameNotFound;
+    }
+
+    return kStatusNoSuchDevice;
+}
 
 PPC_FUNC(__imp__NtCreateFile)
 {
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t objectAttributesPtr = (uint32_t)ctx.r5.u64;
     uint32_t ioStatusBlockPtr = (uint32_t)ctx.r6.u64;
+
+    std::string path = ReadGuestAnsiString(base, objectAttributesPtr);
+    uint32_t handle = 0;
+    uint32_t status = OpenGuestFile(path, handle);
 
     if (handleOutPtr != 0)
     {
-        PPC_STORE_U32(handleOutPtr, 0);
+        PPC_STORE_U32(handleOutPtr, status == 0 ? handle : 0);
     }
     if (ioStatusBlockPtr != 0)
     {
-        PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
-        PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        PPC_STORE_U32(ioStatusBlockPtr + 0, status);
+        PPC_STORE_U32(ioStatusBlockPtr + 4, status == 0 ? 1 : 0); // FILE_OPENED
     }
 
-    fmt::println("[kernel] NtCreateFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
-    ctx.r3.u64 = kStatusNoSuchDevice;
+    fmt::println("[kernel] NtCreateFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    ctx.r3.u64 = status;
 }
 
 PPC_FUNC(__imp__NtOpenFile)
 {
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t objectAttributesPtr = (uint32_t)ctx.r5.u64;
+
+    std::string path = ReadGuestAnsiString(base, objectAttributesPtr);
+    uint32_t handle = 0;
+    uint32_t status = OpenGuestFile(path, handle);
 
     if (handleOutPtr != 0)
     {
-        PPC_STORE_U32(handleOutPtr, 0);
+        PPC_STORE_U32(handleOutPtr, status == 0 ? handle : 0);
     }
 
-    fmt::println("[kernel] NtOpenFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
-    ctx.r3.u64 = kStatusNoSuchDevice;
+    fmt::println("[kernel] NtOpenFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    ctx.r3.u64 = status;
 }
 
 PPC_FUNC(__imp__NtReadFile)
