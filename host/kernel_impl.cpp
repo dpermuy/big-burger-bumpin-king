@@ -265,8 +265,7 @@ PPC_FUNC(__imp__KeQuerySystemTime)
 
 PPC_FUNC(__imp__KeQueryPerformanceFrequency)
 {
-    uint32_t outPtr = (uint32_t)ctx.r3.u64;
-    PPC_STORE_U64(outPtr, 50000000ULL); // Xbox 360's documented hardware timebase frequency
+    ctx.r3.u64 = 50000000ULL; // Xbox 360's documented hardware timebase frequency
 }
 
 PPC_FUNC(__imp__KeEnableFpuExceptions)
