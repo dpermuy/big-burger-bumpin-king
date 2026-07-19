@@ -448,7 +448,50 @@ PPC_FUNC(__imp__NtOpenFile)
 
 PPC_FUNC(__imp__NtReadFile)
 {
-    ctx.r3.u64 = kStatusInvalidHandle;
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r7.u64;
+    uint32_t bufferPtr = (uint32_t)ctx.r8.u64;
+    uint32_t length = (uint32_t)ctx.r9.u64;
+    uint32_t byteOffsetPtr = (uint32_t)ctx.r10.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+    uint64_t offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
+
+    uint32_t bytesToRead = 0;
+    if (offset < state.entry.fileSize)
+    {
+        uint64_t remaining = state.entry.fileSize - offset;
+        bytesToRead = (uint32_t)(remaining < length ? remaining : length);
+    }
+
+    if (bytesToRead > 0)
+    {
+        g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
+    }
+    state.position = offset + bytesToRead;
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, bytesToRead);
+    }
+
+    fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
 PPC_FUNC(__imp__NtWriteFile)
