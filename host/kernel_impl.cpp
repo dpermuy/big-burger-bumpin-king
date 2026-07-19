@@ -216,11 +216,37 @@ PPC_FUNC(__imp__NtReleaseMutant)
 
 PPC_FUNC(__imp__NtWaitForSingleObjectEx)
 {
-    // Always succeeds immediately -- correct, not just convenient, under a
-    // single-execution-context model: nothing else can run concurrently to
-    // change an object's state while we'd otherwise block. Revisit once
-    // ExCreateThread spawns real host threads.
-    ctx.r3.u64 = 0;
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t timeoutPtr = (uint32_t)ctx.r6.u64;
+
+    std::unique_lock<std::mutex> lock(g_stateMutex);
+    auto it = g_handleTable.find(handle);
+    if (it == g_handleTable.end())
+    {
+        fmt::println("[kernel] NtWaitForSingleObjectEx: unknown handle 0x{:X}", handle);
+        ctx.r3.u64 = 0xC0000008; // STATUS_INVALID_HANDLE
+        return;
+    }
+
+    if (timeoutPtr != 0)
+    {
+        int64_t timeoutValue = (int64_t)PPC_LOAD_U64(timeoutPtr);
+        if (timeoutValue < 0)
+        {
+            // Same relative-timeout convention established for
+            // KeWaitForSingleObject (Phase 2I): negative = relative 100ns ticks.
+            auto durationMs = std::chrono::milliseconds(-timeoutValue / 10000);
+            bool signaled = g_handleSignalCv.wait_for(lock, durationMs,
+                [&] { return g_handleTable[handle].signaled; });
+            ctx.r3.u64 = signaled ? 0 : 258; // STATUS_SUCCESS or STATUS_TIMEOUT
+            return;
+        }
+        // Positive (absolute time) -- not observed yet, fall through to the
+        // unbounded wait rather than guess at handling.
+    }
+
+    g_handleSignalCv.wait(lock, [&] { return g_handleTable[handle].signaled; });
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
 PPC_FUNC(__imp__NtClose)
