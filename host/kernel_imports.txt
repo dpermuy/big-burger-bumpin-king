@@ -49,12 +49,10 @@ NtFlushBuffersFile
 NtFreeVirtualMemory
 NtQueryDirectoryFile
 NtQueryFullAttributesFile
-NtQueryInformationFile
 NtQueryVirtualMemory
 NtQueryVolumeInformationFile
 NtQueueApcThread
 NtResumeThread
-NtSetInformationFile
 NtSetTimerEx
 NtSuspendThread
 ObCreateSymbolicLink

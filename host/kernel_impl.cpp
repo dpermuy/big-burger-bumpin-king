@@ -494,6 +494,126 @@ PPC_FUNC(__imp__NtReadFile)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
+// Real, observed FILE_INFORMATION_CLASS values (standard NT enum, confirmed via a live
+// capture during Phase 3B): 0xE = FilePositionInformation (8-byte LARGE_INTEGER
+// CurrentByteOffset), 0x22 = FileNetworkOpenInformation (56-byte struct: 4x LARGE_INTEGER
+// timestamps we don't track [zeroed, no evidence anything reads them], AllocationSize,
+// EndOfFile [the real file size], FileAttributes). Any other class: no evidence yet,
+// not guessed at.
+constexpr uint32_t kFilePositionInformation = 0xE;
+constexpr uint32_t kFileNetworkOpenInformation = 0x22;
+
+PPC_FUNC(__imp__NtQueryInformationFile)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r4.u64;
+    uint32_t fileInformationPtr = (uint32_t)ctx.r5.u64;
+    uint32_t infoClass = (uint32_t)ctx.r7.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtQueryInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+    uint32_t written = 0;
+
+    if (infoClass == kFilePositionInformation)
+    {
+        PPC_STORE_U64(fileInformationPtr, state.position);
+        written = 8;
+    }
+    else if (infoClass == kFileNetworkOpenInformation)
+    {
+        PPC_STORE_U64(fileInformationPtr + 0, 0);  // CreationTime -- no evidence anything reads it
+        PPC_STORE_U64(fileInformationPtr + 8, 0);  // LastAccessTime
+        PPC_STORE_U64(fileInformationPtr + 16, 0); // LastWriteTime
+        PPC_STORE_U64(fileInformationPtr + 24, 0); // ChangeTime
+        PPC_STORE_U64(fileInformationPtr + 32, state.entry.fileSize); // AllocationSize
+        PPC_STORE_U64(fileInformationPtr + 40, state.entry.fileSize); // EndOfFile
+        PPC_STORE_U32(fileInformationPtr + 48, 0x20); // FileAttributes: FILE_ATTRIBUTE_ARCHIVE
+        written = 56;
+    }
+    else
+    {
+        fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusNoSuchDevice;
+        return;
+    }
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, written);
+    }
+
+    fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} class=0x{:X} -> {} bytes", handle, infoClass, written);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__NtSetInformationFile)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r4.u64;
+    uint32_t fileInformationPtr = (uint32_t)ctx.r5.u64;
+    uint32_t infoClass = (uint32_t)ctx.r7.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtSetInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+
+    if (infoClass == kFilePositionInformation)
+    {
+        state.position = PPC_LOAD_U64(fileInformationPtr);
+    }
+    else
+    {
+        fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusNoSuchDevice;
+        return;
+    }
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+    }
+
+    fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} class=0x{:X} position={}", handle, infoClass, state.position);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
 PPC_FUNC(__imp__NtWriteFile)
 {
     ctx.r3.u64 = kStatusInvalidHandle;
