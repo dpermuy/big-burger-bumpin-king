@@ -1,0 +1,4 @@
+KfAcquireSpinLock
+KfReleaseSpinLock
+sprintf
+XamLoaderLaunchTitle
