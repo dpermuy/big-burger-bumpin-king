@@ -1,0 +1,6 @@
+KeReleaseSemaphore
+KfAcquireSpinLock
+KfReleaseSpinLock
+NtSetEvent
+XamLoaderLaunchTitle
+XNotifyGetNext
