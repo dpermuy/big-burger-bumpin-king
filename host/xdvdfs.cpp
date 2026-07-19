@@ -130,12 +130,16 @@ bool XdvdfsImage::SearchDirectory(uint32_t tableSector, uint32_t tableSize, cons
 
         if (targetLower < entryNameLower)
         {
-            if (leftOffset == 0xFFFF) return false;
+            // Confirmed via real captured data (a genuine right_offset=0 on a non-root
+            // entry): 0 is also a "no child" sentinel alongside 0xFFFF, not a pointer
+            // back to the root entry at offset 0 -- treating 0 as a real offset here
+            // caused an infinite loop cycling back to the root.
+            if (leftOffset == 0xFFFF || leftOffset == 0) return false;
             entryOffset = (uint32_t)leftOffset * 4;
         }
         else
         {
-            if (rightOffset == 0xFFFF) return false;
+            if (rightOffset == 0xFFFF || rightOffset == 0) return false;
             entryOffset = (uint32_t)rightOffset * 4;
         }
     }
