@@ -54,7 +54,6 @@ NtQueryVirtualMemory
 NtQueryVolumeInformationFile
 NtQueueApcThread
 NtResumeThread
-NtSetEvent
 NtSetInformationFile
 NtSetTimerEx
 NtSuspendThread

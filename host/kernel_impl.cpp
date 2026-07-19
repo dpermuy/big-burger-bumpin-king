@@ -875,3 +875,26 @@ PPC_FUNC(__imp__XGetVideoMode)
     // same conservative posture as VdQueryVideoMode.
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
+
+PPC_FUNC(__imp__NtSetEvent)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t previousStateOutPtr = (uint32_t)ctx.r4.u64;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_handleTable.find(handle);
+        if (it != g_handleTable.end())
+        {
+            it->second.signaled = true;
+        }
+    }
+    g_handleSignalCv.notify_all();
+
+    if (previousStateOutPtr != 0)
+    {
+        PPC_STORE_U32(previousStateOutPtr, 0);
+    }
+
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
