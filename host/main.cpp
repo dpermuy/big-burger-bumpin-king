@@ -3,6 +3,7 @@
 #include <fmt/core.h>
 #include <file.h>
 #include <image.h>
+#include "xdvdfs.h"
 
 #include <cerrno>
 #include <chrono>
@@ -81,7 +82,17 @@ int main(int argc, char** argv)
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
+    const char* isoPath = argc > 2 ? argv[2] : "Big Bumpin' (USA).iso";
     uint8_t* base = SetupMemoryImage(xexPath);
+
+    if (!g_xdvdfsImage.Open(isoPath))
+    {
+        fmt::println("Warning: failed to open ISO '{}' -- disc file access will report not-found for everything.", isoPath);
+    }
+    else
+    {
+        fmt::println("Opened disc image: {}", isoPath);
+    }
 
     // Advances the tick field the guest reads via the pointer SetupMemoryImage wrote
     // at 0x82670100. Detached, matching ExCreateThread's precedent (host/kernel_impl.cpp)
