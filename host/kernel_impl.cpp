@@ -3,6 +3,7 @@
 #include <fmt/core.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
@@ -17,6 +18,7 @@
 // stage; fine-grained locking would introduce lock-ordering bugs this
 // project has no way to test for yet.
 static std::mutex g_stateMutex;
+static thread_local uint32_t g_currentThreadHandle = 0; // this thread's own ExCreateThread handle, 0 if not a guest-spawned thread
 
 PPC_FUNC(__imp__KeBugCheck)
 {
@@ -156,6 +158,7 @@ struct HandleObject
 
 static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
+static std::condition_variable g_handleSignalCv;
 
 PPC_FUNC(__imp__NtCreateMutant)
 {
@@ -542,8 +545,10 @@ PPC_FUNC(__imp__ExCreateThread)
     // r4) in r3. Calling StartAddress directly (no trampoline) uses the plain
     // thread-entry convention instead: r3=StartContext only.
     bool viaTrampoline = xApiThreadStartup != 0;
-    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base]()
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle]()
     {
+        g_currentThreadHandle = handle;
+
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
         if (viaTrampoline)
@@ -557,6 +562,21 @@ PPC_FUNC(__imp__ExCreateThread)
         }
 
         (PPC_LOOKUP_FUNC(base, entryAddress))(threadCtx, base);
+
+        // Direct-entry threads (no XApiThreadStartup trampoline) return here
+        // normally without ever calling ExTerminateThread -- mark completion
+        // ourselves. Harmless no-op if ExTerminateThread already did it
+        // (trampoline path, which never reaches this line since
+        // ExTerminateThread calls pthread_exit).
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            auto it = g_handleTable.find(handle);
+            if (it != g_handleTable.end())
+            {
+                it->second.signaled = true;
+            }
+        }
+        g_handleSignalCv.notify_all();
     });
     hostThread.detach(); // never joined -- storing a live std::thread in a
                           // long-lived container would call std::terminate()
@@ -689,6 +709,18 @@ PPC_FUNC(__imp__DbgPrint)
 PPC_FUNC(__imp__ExTerminateThread)
 {
     fmt::println("[kernel] ExTerminateThread: exitCode=0x{:X} -- terminating this thread", ctx.r3.u64);
+
+    if (g_currentThreadHandle != 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_handleTable.find(g_currentThreadHandle);
+        if (it != g_handleTable.end())
+        {
+            it->second.signaled = true;
+        }
+    }
+    g_handleSignalCv.notify_all();
+
     pthread_exit(nullptr);
 }
 
