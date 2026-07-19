@@ -78,6 +78,7 @@ int main(int argc, char** argv)
 
     PPCContext ctx{};
     ctx.r1.u64 = kStackBase + kStackSize - 0x10;
+    ctx.r13.u64 = 0x82670000; // small-data-area base (confirmed via cross-reference, Phase 2R)
 
     fmt::println("Calling _xstart...");
 

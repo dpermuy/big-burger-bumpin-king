@@ -577,6 +577,7 @@ PPC_FUNC(__imp__ExCreateThread)
 
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
+        threadCtx.r13.u64 = 0x82670000; // small-data-area base, same as main thread (Phase 2R)
         if (viaTrampoline)
         {
             threadCtx.r3.u64 = startAddress;
