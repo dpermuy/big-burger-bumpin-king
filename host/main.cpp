@@ -11,6 +11,7 @@
 #include <cstring>
 #include <future>
 #include <sys/mman.h>
+#include <thread>
 
 PPC_EXTERN_FUNC(_xstart);
 
@@ -63,6 +64,15 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     fmt::println("Guest memory image ready: base={}, {} sections loaded, {} function mappings installed",
         static_cast<void*>(base), image.sections.size(), mappingCount);
 
+    // Real Xbox 360 kernel/HAL boot code (outside any title's own executable) populates
+    // this slot with a pointer to a kernel-shared tick structure before the title's
+    // entry point runs. This project never emulates that boot sequence, and the raw
+    // XEX's .data section genuinely contains zero here (confirmed, Phase 2S) -- so the
+    // host writes it directly, pointing at a small host-owned structure (Phase 2T).
+    constexpr uint32_t kKernelTickStructAddr = 0x7FFF0000;
+    constexpr uint32_t kKernelTickPointerSlot = 0x82670100; // r13(0x82670000) + 256
+    PPC_STORE_U32(kKernelTickPointerSlot, kKernelTickStructAddr);
+
     return base;
 }
 
@@ -72,6 +82,23 @@ int main(int argc, char** argv)
 
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
     uint8_t* base = SetupMemoryImage(xexPath);
+
+    // Advances the tick field the guest reads via the pointer SetupMemoryImage wrote
+    // at 0x82670100. Detached, matching ExCreateThread's precedent (host/kernel_impl.cpp)
+    // -- never joined, runs harmlessly for the process's lifetime.
+    std::thread tickThread([base]()
+    {
+        constexpr uint32_t kTickFieldAddr = 0x7FFF0000 + 88;
+        auto start = std::chrono::steady_clock::now();
+        while (true)
+        {
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            PPC_STORE_U32(kTickFieldAddr, (uint32_t)elapsedMs);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    tickThread.detach();
 
     constexpr uint32_t kStackBase = 0x90000000;
     constexpr uint32_t kStackSize = 0x100000;
