@@ -54,40 +54,35 @@ PPC_FUNC(__imp__RtlInitAnsiString)
     PPC_STORE_U32(destAddr + 4, sourceAddr);
 }
 
-struct CriticalSectionState
-{
-    int32_t recursionCount = 0;
-    uint32_t owningThread = 0;
-};
+static std::unordered_map<uint32_t, std::unique_ptr<std::recursive_mutex>> g_criticalSections;
 
-static std::unordered_map<uint32_t, CriticalSectionState> g_criticalSections;
+static std::recursive_mutex& GetCriticalSection(uint32_t csAddr)
+{
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto& slot = g_criticalSections[csAddr];
+    if (!slot)
+    {
+        slot = std::make_unique<std::recursive_mutex>();
+    }
+    return *slot;
+}
 
 PPC_FUNC(__imp__RtlInitializeCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    g_criticalSections[csAddr] = CriticalSectionState{};
+    GetCriticalSection(csAddr);
 }
 
 PPC_FUNC(__imp__RtlEnterCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    auto& state = g_criticalSections[csAddr];
-    state.recursionCount++;
-    state.owningThread = 1; // real threads exist now, but no per-thread ID scheme yet -- still a placeholder, not a real thread identifier
+    GetCriticalSection(csAddr).lock();
 }
 
 PPC_FUNC(__imp__RtlLeaveCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    auto& state = g_criticalSections[csAddr];
-    state.recursionCount--;
-    if (state.recursionCount <= 0)
-    {
-        state.owningThread = 0;
-    }
+    GetCriticalSection(csAddr).unlock();
 }
 
 static thread_local uint64_t g_tlsSlots[64] = {};
