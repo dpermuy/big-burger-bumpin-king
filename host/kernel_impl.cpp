@@ -92,6 +92,38 @@ PPC_FUNC(__imp__RtlLeaveCriticalSection)
     GetCriticalSection(csAddr).unlock();
 }
 
+// Real spinlocks (Phase 3I). Kf{Acquire,Release}SpinLock only ever use r3
+// (PKSPIN_LOCK) and, on release, r4 (KIRQL to restore) -- confirmed against
+// the real NT signature; the generic stub's r5/r6 dump was leftover register
+// noise, not real arguments. This project models no interrupt levels, so the
+// "old IRQL" KfAcquireSpinLock returns in r3 is a meaningless placeholder --
+// mutual exclusion by address is the only real behavior needed here.
+static std::unordered_map<uint32_t, std::unique_ptr<std::recursive_mutex>> g_spinLocks;
+
+static std::recursive_mutex& GetSpinLock(uint32_t addr)
+{
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto& slot = g_spinLocks[addr];
+    if (!slot)
+    {
+        slot = std::make_unique<std::recursive_mutex>();
+    }
+    return *slot;
+}
+
+PPC_FUNC(__imp__KfAcquireSpinLock)
+{
+    uint32_t spinLockAddr = (uint32_t)ctx.r3.u64;
+    GetSpinLock(spinLockAddr).lock();
+    ctx.r3.u64 = 0; // old IRQL -- not modeled
+}
+
+PPC_FUNC(__imp__KfReleaseSpinLock)
+{
+    uint32_t spinLockAddr = (uint32_t)ctx.r3.u64;
+    GetSpinLock(spinLockAddr).unlock();
+}
+
 static thread_local uint64_t g_tlsSlots[64] = {};
 static int g_tlsNextSlot = 0; // slot *numbering* is shared across threads; slot *values* (g_tlsSlots) are per-thread
 

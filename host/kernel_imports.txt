@@ -8,8 +8,6 @@ KeResetEvent
 KeTlsFree
 KeUnlockL2
 KeWaitForMultipleObjects
-KfAcquireSpinLock
-KfReleaseSpinLock
 MmFreePhysicalMemory
 MmQueryAddressProtect
 NetDll___WSAFDIsSet
