@@ -2,6 +2,7 @@
 #include <ppc_context.h>
 #include <fmt/core.h>
 #include "xdvdfs.h"
+#include "gpu_trace.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1130,20 +1131,41 @@ PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
     // frame-pacing/vsync work needs them.
 }
 
+// Real signature confirmed live (private/ppc/ppc_recomp.4.cpp:14684-14686,14977-14981):
+// called once at startup with r3=0 (reset) and again with a real address once the ring
+// buffer is set up (offset+8 into the same buffer struct VdInitializeRingBuffer uses).
+// Looks like a fence/identifier slot, not the ring buffer itself -- stored but not yet
+// acted on (Phase 3K design spec).
 PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress)
 {
-    // No-op.
+    uint32_t addr = (uint32_t)ctx.r3.u64;
+    if (addr != 0)
+    {
+        g_gpuTracer.SetIdentifierAddr(addr);
+    }
 }
 
+// Real signature confirmed live (private/ppc/ppc_recomp.4.cpp:14842-14856): r3 is the
+// physical address of a buffer the game itself allocated via MmAllocatePhysicalMemoryEx
+// (already real in this project) and resolved through MmGetPhysicalAddress (already an
+// identity mapping, Phase 2J) -- so r3 is already a valid, already-owned guest address.
+// The kernel doesn't allocate the ring buffer, it's told where one already is.
 PPC_FUNC(__imp__VdInitializeRingBuffer)
 {
-    // No-op -- not parsing real GPU commands yet.
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    uint32_t physAddr = (uint32_t)ctx.r3.u64;
+    uint32_t sizeLog2Raw = (uint32_t)ctx.r4.u64;
+    g_gpuTracer.RegisterRingBuffer(physAddr, sizeLog2Raw);
 }
 
+// Real semantics: the GPU writes its "consumed up to here" read pointer to this address
+// so the CPU knows how much ring space is free. Handled in GpuCommandTracer::
+// ScanAndTraceFrame, called once per VdSwap -- see there for why this always reports
+// "caught up" rather than left unanswered (Phase 3H's APC-delivery lesson applied here
+// deliberately).
 PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack)
 {
-    // No-op.
+    uint32_t addr = (uint32_t)ctx.r3.u64;
+    g_gpuTracer.SetRptrWriteBackAddr(addr);
 }
 
 PPC_FUNC(__imp__VdQueryVideoMode)
@@ -1176,17 +1198,52 @@ PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
     ctx.r3.u64 = 1;
 }
 
+static uint32_t g_systemCommandBufferAddr = 0;
+static constexpr uint32_t kSystemCommandBufferSize = 65536;
+
+// Real signature confirmed live (private/ppc/ppc_recomp.6.cpp:24604-24625): writes an
+// address and a size back through two caller-stack out-pointers (r3, r4), and also
+// returns the address directly in r3 -- the caller saves that return value separately
+// right after the call. A second, smaller, kernel-owned buffer distinct from the game's
+// main ring buffer; given a real, non-crashing region here rather than treated as a
+// primary command stream (Phase 3K design spec).
 PPC_FUNC(__imp__VdGetSystemCommandBuffer)
 {
-    // No confirmed struct/pointer-pair layout; return success without
-    // writing data.
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    uint32_t addrOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t sizeOutPtr = (uint32_t)ctx.r4.u64;
+
+    if (g_systemCommandBufferAddr == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        if (g_systemCommandBufferAddr == 0)
+        {
+            g_systemCommandBufferAddr = g_bumpAllocatorNext;
+            g_bumpAllocatorNext += kSystemCommandBufferSize;
+        }
+    }
+
+    if (addrOutPtr != 0)
+    {
+        PPC_STORE_U32(addrOutPtr, g_systemCommandBufferAddr);
+    }
+    if (sizeOutPtr != 0)
+    {
+        PPC_STORE_U32(sizeOutPtr, kSystemCommandBufferSize);
+    }
+
+    ctx.r3.u64 = g_systemCommandBufferAddr;
 }
 
 PPC_FUNC(__imp__VdSwap)
 {
-    // The frame-present call. No-op -- nothing to actually present, no
-    // renderer exists yet.
+    // The frame-present call. Still no real rendering -- nothing to actually present,
+    // no renderer exists yet (Phase 3K only adds command-buffer tracing). Real frame
+    // presentation is future work once the renderer design (informed by this phase's
+    // trace output) exists.
+    if (g_gpuTracer.HasRingBuffer())
+    {
+        g_gpuTracer.ScanAndTraceFrame(base);
+    }
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
