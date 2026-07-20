@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <mutex>
 #include <pthread.h>
 #include <string>
@@ -164,6 +165,18 @@ static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
 static std::condition_variable g_handleSignalCv;
 
+// Real user-mode APC queueing (Phase 3H). Xbox 360 worker threads (e.g. the
+// XApiThreadStartup pool thread) block in an alertable NtWaitForSingleObjectEx
+// waiting to be handed work via NtQueueApcThread; delivery happens when that
+// wait wakes up (see TryDeliverOneApc / NtWaitForSingleObjectEx below), not here.
+struct ApcEntry
+{
+    uint32_t routine;
+    uint32_t context;
+    uint32_t sysArg1;
+};
+static std::unordered_map<uint32_t, std::deque<ApcEntry>> g_apcQueues; // keyed by target thread handle
+
 struct FileHandleState
 {
     XdvdfsEntry entry;
@@ -225,10 +238,43 @@ PPC_FUNC(__imp__NtReleaseMutant)
     ctx.r3.u64 = 0;
 }
 
+// Real NT alertable-wait semantics (Phase 3G/3H): an alertable wait wakes and
+// delivers a queued APC even when the waited-on object never becomes
+// signaled -- the wait does NOT get satisfied by APC delivery, it returns
+// STATUS_USER_APC early and the caller's own loop re-enters the wait to
+// drain further APCs or keep waiting on the object. Confirmed live: the
+// XApiThreadStartup worker thread (handle 0x1005) blocks forever in exactly
+// this call (alertable=true, object never signaled) while NtQueueApcThread
+// later targets it -- without APC-aware wakeup here, the queued APC (which
+// is what's supposed to clear the stuck "pending work" counter downstream
+// callers busy-poll on) never runs.
+static bool TryDeliverOneApc(PPCContext& ctx, uint8_t* base, uint32_t threadHandle)
+{
+    ApcEntry apc;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_apcQueues.find(threadHandle);
+        if (it == g_apcQueues.end() || it->second.empty())
+        {
+            return false;
+        }
+        apc = it->second.front();
+        it->second.pop_front();
+    }
+
+    ctx.r3.u64 = apc.context;
+    ctx.r4.u64 = apc.sysArg1;
+    ctx.r5.u64 = 0;
+    PPC_CALL_INDIRECT_FUNC(apc.routine);
+    return true;
+}
+
 PPC_FUNC(__imp__NtWaitForSingleObjectEx)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
+    bool alertable = ctx.r5.u64 != 0;
     uint32_t timeoutPtr = (uint32_t)ctx.r6.u64;
+    uint32_t selfHandle = g_currentThreadHandle;
 
     std::unique_lock<std::mutex> lock(g_stateMutex);
     auto it = g_handleTable.find(handle);
@@ -239,6 +285,12 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
         return;
     }
 
+    auto hasPendingApc = [&] {
+        auto apcIt = g_apcQueues.find(selfHandle);
+        return apcIt != g_apcQueues.end() && !apcIt->second.empty();
+    };
+    auto wakePredicate = [&] { return g_handleTable[handle].signaled || (alertable && hasPendingApc()); };
+
     if (timeoutPtr != 0)
     {
         int64_t timeoutValue = (int64_t)PPC_LOAD_U64(timeoutPtr);
@@ -247,16 +299,50 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
             // Same relative-timeout convention established for
             // KeWaitForSingleObject (Phase 2I): negative = relative 100ns ticks.
             auto durationMs = std::chrono::milliseconds(-timeoutValue / 10000);
-            bool signaled = g_handleSignalCv.wait_for(lock, durationMs,
-                [&] { return g_handleTable[handle].signaled; });
-            ctx.r3.u64 = signaled ? 0 : 258; // STATUS_SUCCESS or STATUS_TIMEOUT
+            bool woke = g_handleSignalCv.wait_for(lock, durationMs, wakePredicate);
+            if (alertable && hasPendingApc())
+            {
+                lock.unlock();
+                TryDeliverOneApc(ctx, base, selfHandle);
+                ctx.r3.u64 = 0xC0; // STATUS_USER_APC
+                return;
+            }
+            ctx.r3.u64 = woke ? 0 : 258; // STATUS_SUCCESS or STATUS_TIMEOUT
             return;
         }
         // Positive (absolute time) -- not observed yet, fall through to the
         // unbounded wait rather than guess at handling.
     }
 
-    g_handleSignalCv.wait(lock, [&] { return g_handleTable[handle].signaled; });
+    g_handleSignalCv.wait(lock, wakePredicate);
+    if (alertable && hasPendingApc())
+    {
+        lock.unlock();
+        TryDeliverOneApc(ctx, base, selfHandle);
+        ctx.r3.u64 = 0xC0; // STATUS_USER_APC
+        return;
+    }
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+// Real APC queueing (Phase 3H). Signature confirmed live: r3=target thread
+// handle, r4=ApcRoutine, r5=ApcContext, r6=SystemArgument1. Delivery happens
+// in NtWaitForSingleObjectEx above when the target thread's alertable wait
+// wakes -- this call only enqueues and wakes any thread currently blocked
+// there.
+PPC_FUNC(__imp__NtQueueApcThread)
+{
+    uint32_t targetThreadHandle = (uint32_t)ctx.r3.u64;
+    uint32_t apcRoutine = (uint32_t)ctx.r4.u64;
+    uint32_t apcContext = (uint32_t)ctx.r5.u64;
+    uint32_t sysArg1 = (uint32_t)ctx.r6.u64;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1 });
+    }
+    g_handleSignalCv.notify_all();
+
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 

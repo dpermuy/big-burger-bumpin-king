@@ -51,7 +51,6 @@ NtQueryDirectoryFile
 NtQueryFullAttributesFile
 NtQueryVirtualMemory
 NtQueryVolumeInformationFile
-NtQueueApcThread
 NtResumeThread
 NtSetTimerEx
 NtSuspendThread
