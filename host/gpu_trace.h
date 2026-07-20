@@ -13,6 +13,14 @@ public:
 
 private:
     void EnsureLogOpen();
+    // Parses PM4 packets starting at (bufferAddr, startOffsetBytes) up to sizeBytes,
+    // logs them (indented by depth), and returns the offset reached. Used for the main
+    // ring buffer (depth 0, resumed from the last frame's offset) and recursively for
+    // PM4_INDIRECT_BUFFER (opcode 0x3F) targets, which are short-lived "call into this
+    // other buffer" jumps -- always scanned fresh from 0 rather than incrementally
+    // tracked like the main ring. depth is capped to guard against a malformed or
+    // cyclic indirect-buffer chain.
+    uint32_t ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth);
 
     uint32_t ringBufferBase_ = 0;
     uint32_t ringBufferSize_ = 0;
