@@ -70,6 +70,17 @@ void GpuCommandTracer::ScanAndTraceFrame(uint8_t* base)
     while (offsetBytes + 4 <= ringBufferSize_)
     {
         uint32_t header = LoadU32(base, ringBufferBase_ + offsetBytes);
+        if (header == 0)
+        {
+            // Confirmed live: a genuine all-zero dword decodes as a "valid" TYPE0
+            // reg=0 count=1 packet under the rules below, but real unwritten ring
+            // buffer memory is zero-filled and the game never actually emits that as
+            // a real packet (real no-ops use TYPE2, observed elsewhere in the same
+            // trace). Treat a zero header as the end of real data, not a packet.
+            if (logFile_) fprintf(logFile_, "(zero padding at offset %u, stopping)\n", offsetBytes);
+            break;
+        }
+
         uint32_t type = (header >> 30) & 0x3;
 
         if (type == 0x2)
