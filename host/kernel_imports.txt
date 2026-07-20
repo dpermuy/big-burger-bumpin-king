@@ -8,8 +8,6 @@ KeResetEvent
 KeTlsFree
 KeUnlockL2
 KeWaitForMultipleObjects
-KfAcquireSpinLock
-KfReleaseSpinLock
 MmFreePhysicalMemory
 MmQueryAddressProtect
 NetDll___WSAFDIsSet
@@ -49,13 +47,9 @@ NtFlushBuffersFile
 NtFreeVirtualMemory
 NtQueryDirectoryFile
 NtQueryFullAttributesFile
-NtQueryInformationFile
 NtQueryVirtualMemory
 NtQueryVolumeInformationFile
-NtQueueApcThread
 NtResumeThread
-NtSetEvent
-NtSetInformationFile
 NtSetTimerEx
 NtSuspendThread
 ObCreateSymbolicLink
@@ -68,7 +62,6 @@ RtlTimeFieldsToTime
 RtlTryEnterCriticalSection
 RtlUnicodeToMultiByteN
 RtlUnwind
-sprintf
 StfsControlDevice
 StfsCreateDevice
 VdEnableDisableClockGating

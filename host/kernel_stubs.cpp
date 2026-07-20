@@ -62,18 +62,6 @@ PPC_FUNC(__imp__KeWaitForMultipleObjects)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__KfAcquireSpinLock)
-{
-    fmt::println("[stub] KfAcquireSpinLock(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__KfReleaseSpinLock)
-{
-    fmt::println("[stub] KfReleaseSpinLock(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
     fmt::println("[stub] MmFreePhysicalMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -308,12 +296,6 @@ PPC_FUNC(__imp__NtQueryFullAttributesFile)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtQueryInformationFile)
-{
-    fmt::println("[stub] NtQueryInformationFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtQueryVirtualMemory)
 {
     fmt::println("[stub] NtQueryVirtualMemory(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
@@ -326,27 +308,9 @@ PPC_FUNC(__imp__NtQueryVolumeInformationFile)
     ctx.r3.u64 = 0;
 }
 
-PPC_FUNC(__imp__NtQueueApcThread)
-{
-    fmt::println("[stub] NtQueueApcThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
 PPC_FUNC(__imp__NtResumeThread)
 {
     fmt::println("[stub] NtResumeThread(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtSetEvent)
-{
-    fmt::println("[stub] NtSetEvent(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__NtSetInformationFile)
-{
-    fmt::println("[stub] NtSetInformationFile(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 
@@ -419,12 +383,6 @@ PPC_FUNC(__imp__RtlUnicodeToMultiByteN)
 PPC_FUNC(__imp__RtlUnwind)
 {
     fmt::println("[stub] RtlUnwind(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
-}
-
-PPC_FUNC(__imp__sprintf)
-{
-    fmt::println("[stub] sprintf(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
     ctx.r3.u64 = 0;
 }
 

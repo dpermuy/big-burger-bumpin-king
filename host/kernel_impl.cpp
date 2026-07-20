@@ -1,15 +1,23 @@
 #include "ppc_config.h"
 #include <ppc_context.h>
 #include <fmt/core.h>
+#include "xdvdfs.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <mutex>
 #include <pthread.h>
+#include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 // Protects every piece of shared state below (handle table, critical
 // sections, bump allocator) now that ExCreateThread (Task 2) spawns real
@@ -17,6 +25,7 @@
 // stage; fine-grained locking would introduce lock-ordering bugs this
 // project has no way to test for yet.
 static std::mutex g_stateMutex;
+static thread_local uint32_t g_currentThreadHandle = 0; // this thread's own ExCreateThread handle, 0 if not a guest-spawned thread
 
 PPC_FUNC(__imp__KeBugCheck)
 {
@@ -54,40 +63,67 @@ PPC_FUNC(__imp__RtlInitAnsiString)
     PPC_STORE_U32(destAddr + 4, sourceAddr);
 }
 
-struct CriticalSectionState
-{
-    int32_t recursionCount = 0;
-    uint32_t owningThread = 0;
-};
+static std::unordered_map<uint32_t, std::unique_ptr<std::recursive_mutex>> g_criticalSections;
 
-static std::unordered_map<uint32_t, CriticalSectionState> g_criticalSections;
+static std::recursive_mutex& GetCriticalSection(uint32_t csAddr)
+{
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto& slot = g_criticalSections[csAddr];
+    if (!slot)
+    {
+        slot = std::make_unique<std::recursive_mutex>();
+    }
+    return *slot;
+}
 
 PPC_FUNC(__imp__RtlInitializeCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    g_criticalSections[csAddr] = CriticalSectionState{};
+    GetCriticalSection(csAddr);
 }
 
 PPC_FUNC(__imp__RtlEnterCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    auto& state = g_criticalSections[csAddr];
-    state.recursionCount++;
-    state.owningThread = 1; // real threads exist now, but no per-thread ID scheme yet -- still a placeholder, not a real thread identifier
+    GetCriticalSection(csAddr).lock();
 }
 
 PPC_FUNC(__imp__RtlLeaveCriticalSection)
 {
-    std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t csAddr = (uint32_t)ctx.r3.u64;
-    auto& state = g_criticalSections[csAddr];
-    state.recursionCount--;
-    if (state.recursionCount <= 0)
+    GetCriticalSection(csAddr).unlock();
+}
+
+// Real spinlocks (Phase 3I). Kf{Acquire,Release}SpinLock only ever use r3
+// (PKSPIN_LOCK) and, on release, r4 (KIRQL to restore) -- confirmed against
+// the real NT signature; the generic stub's r5/r6 dump was leftover register
+// noise, not real arguments. This project models no interrupt levels, so the
+// "old IRQL" KfAcquireSpinLock returns in r3 is a meaningless placeholder --
+// mutual exclusion by address is the only real behavior needed here.
+static std::unordered_map<uint32_t, std::unique_ptr<std::recursive_mutex>> g_spinLocks;
+
+static std::recursive_mutex& GetSpinLock(uint32_t addr)
+{
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto& slot = g_spinLocks[addr];
+    if (!slot)
     {
-        state.owningThread = 0;
+        slot = std::make_unique<std::recursive_mutex>();
     }
+    return *slot;
+}
+
+PPC_FUNC(__imp__KfAcquireSpinLock)
+{
+    uint32_t spinLockAddr = (uint32_t)ctx.r3.u64;
+    GetSpinLock(spinLockAddr).lock();
+    ctx.r3.u64 = 0; // old IRQL -- not modeled
+}
+
+PPC_FUNC(__imp__KfReleaseSpinLock)
+{
+    uint32_t spinLockAddr = (uint32_t)ctx.r3.u64;
+    GetSpinLock(spinLockAddr).unlock();
 }
 
 static thread_local uint64_t g_tlsSlots[64] = {};
@@ -151,7 +187,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-enum class HandleObjectType { Mutant, Event, Generic, Thread };
+enum class HandleObjectType { Mutant, Event, Generic, Thread, File };
 
 struct HandleObject
 {
@@ -161,6 +197,26 @@ struct HandleObject
 
 static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
+static std::condition_variable g_handleSignalCv;
+
+// Real user-mode APC queueing (Phase 3H). Xbox 360 worker threads (e.g. the
+// XApiThreadStartup pool thread) block in an alertable NtWaitForSingleObjectEx
+// waiting to be handed work via NtQueueApcThread; delivery happens when that
+// wait wakes up (see TryDeliverOneApc / NtWaitForSingleObjectEx below), not here.
+struct ApcEntry
+{
+    uint32_t routine;
+    uint32_t context;
+    uint32_t sysArg1;
+};
+static std::unordered_map<uint32_t, std::deque<ApcEntry>> g_apcQueues; // keyed by target thread handle
+
+struct FileHandleState
+{
+    XdvdfsEntry entry;
+    uint64_t position = 0;
+};
+static std::unordered_map<uint32_t, FileHandleState> g_fileState;
 
 PPC_FUNC(__imp__NtCreateMutant)
 {
@@ -216,13 +272,112 @@ PPC_FUNC(__imp__NtReleaseMutant)
     ctx.r3.u64 = 0;
 }
 
+// Real NT alertable-wait semantics (Phase 3G/3H): an alertable wait wakes and
+// delivers a queued APC even when the waited-on object never becomes
+// signaled -- the wait does NOT get satisfied by APC delivery, it returns
+// STATUS_USER_APC early and the caller's own loop re-enters the wait to
+// drain further APCs or keep waiting on the object. Confirmed live: the
+// XApiThreadStartup worker thread (handle 0x1005) blocks forever in exactly
+// this call (alertable=true, object never signaled) while NtQueueApcThread
+// later targets it -- without APC-aware wakeup here, the queued APC (which
+// is what's supposed to clear the stuck "pending work" counter downstream
+// callers busy-poll on) never runs.
+static bool TryDeliverOneApc(PPCContext& ctx, uint8_t* base, uint32_t threadHandle)
+{
+    ApcEntry apc;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_apcQueues.find(threadHandle);
+        if (it == g_apcQueues.end() || it->second.empty())
+        {
+            return false;
+        }
+        apc = it->second.front();
+        it->second.pop_front();
+    }
+
+    ctx.r3.u64 = apc.context;
+    ctx.r4.u64 = apc.sysArg1;
+    ctx.r5.u64 = 0;
+    PPC_CALL_INDIRECT_FUNC(apc.routine);
+    return true;
+}
+
 PPC_FUNC(__imp__NtWaitForSingleObjectEx)
 {
-    // Always succeeds immediately -- correct, not just convenient, under a
-    // single-execution-context model: nothing else can run concurrently to
-    // change an object's state while we'd otherwise block. Revisit once
-    // ExCreateThread spawns real host threads.
-    ctx.r3.u64 = 0;
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    bool alertable = ctx.r5.u64 != 0;
+    uint32_t timeoutPtr = (uint32_t)ctx.r6.u64;
+    uint32_t selfHandle = g_currentThreadHandle;
+
+    std::unique_lock<std::mutex> lock(g_stateMutex);
+    auto it = g_handleTable.find(handle);
+    if (it == g_handleTable.end())
+    {
+        fmt::println("[kernel] NtWaitForSingleObjectEx: unknown handle 0x{:X}", handle);
+        ctx.r3.u64 = 0xC0000008; // STATUS_INVALID_HANDLE
+        return;
+    }
+
+    auto hasPendingApc = [&] {
+        auto apcIt = g_apcQueues.find(selfHandle);
+        return apcIt != g_apcQueues.end() && !apcIt->second.empty();
+    };
+    auto wakePredicate = [&] { return g_handleTable[handle].signaled || (alertable && hasPendingApc()); };
+
+    if (timeoutPtr != 0)
+    {
+        int64_t timeoutValue = (int64_t)PPC_LOAD_U64(timeoutPtr);
+        if (timeoutValue < 0)
+        {
+            // Same relative-timeout convention established for
+            // KeWaitForSingleObject (Phase 2I): negative = relative 100ns ticks.
+            auto durationMs = std::chrono::milliseconds(-timeoutValue / 10000);
+            bool woke = g_handleSignalCv.wait_for(lock, durationMs, wakePredicate);
+            if (alertable && hasPendingApc())
+            {
+                lock.unlock();
+                TryDeliverOneApc(ctx, base, selfHandle);
+                ctx.r3.u64 = 0xC0; // STATUS_USER_APC
+                return;
+            }
+            ctx.r3.u64 = woke ? 0 : 258; // STATUS_SUCCESS or STATUS_TIMEOUT
+            return;
+        }
+        // Positive (absolute time) -- not observed yet, fall through to the
+        // unbounded wait rather than guess at handling.
+    }
+
+    g_handleSignalCv.wait(lock, wakePredicate);
+    if (alertable && hasPendingApc())
+    {
+        lock.unlock();
+        TryDeliverOneApc(ctx, base, selfHandle);
+        ctx.r3.u64 = 0xC0; // STATUS_USER_APC
+        return;
+    }
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+// Real APC queueing (Phase 3H). Signature confirmed live: r3=target thread
+// handle, r4=ApcRoutine, r5=ApcContext, r6=SystemArgument1. Delivery happens
+// in NtWaitForSingleObjectEx above when the target thread's alertable wait
+// wakes -- this call only enqueues and wakes any thread currently blocked
+// there.
+PPC_FUNC(__imp__NtQueueApcThread)
+{
+    uint32_t targetThreadHandle = (uint32_t)ctx.r3.u64;
+    uint32_t apcRoutine = (uint32_t)ctx.r4.u64;
+    uint32_t apcContext = (uint32_t)ctx.r5.u64;
+    uint32_t sysArg1 = (uint32_t)ctx.r6.u64;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1 });
+    }
+    g_handleSignalCv.notify_all();
+
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
 PPC_FUNC(__imp__NtClose)
@@ -270,8 +425,7 @@ PPC_FUNC(__imp__KeQuerySystemTime)
 
 PPC_FUNC(__imp__KeQueryPerformanceFrequency)
 {
-    uint32_t outPtr = (uint32_t)ctx.r3.u64;
-    PPC_STORE_U64(outPtr, 50000000ULL); // Xbox 360's documented hardware timebase frequency
+    ctx.r3.u64 = 50000000ULL; // Xbox 360's documented hardware timebase frequency
 }
 
 PPC_FUNC(__imp__KeEnableFpuExceptions)
@@ -324,42 +478,260 @@ PPC_FUNC(__imp__RtlTimeToTimeFields)
 
 constexpr uint32_t kStatusNoSuchDevice = 0xC000000E;
 constexpr uint32_t kStatusInvalidHandle = 0xC0000008;
+constexpr uint32_t kStatusObjectNameNotFound = 0xC0000034;
+
+static std::string ReadGuestAnsiString(uint8_t* base, uint32_t objectAttributesPtr)
+{
+    uint32_t objectNamePtr = PPC_LOAD_U32(objectAttributesPtr + 4);
+    uint16_t nameLength = PPC_LOAD_U16(objectNamePtr + 0);
+    uint32_t nameBufferPtr = PPC_LOAD_U32(objectNamePtr + 4);
+    std::string name;
+    for (uint16_t i = 0; i < nameLength; i++)
+    {
+        name.push_back((char)PPC_LOAD_U8(nameBufferPtr + i));
+    }
+    return name;
+}
+
+static uint32_t OpenGuestFile(const std::string& path, uint32_t& outHandle)
+{
+    std::string lowerPath = path;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    if (lowerPath.rfind("\\device\\", 0) == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        outHandle = g_nextHandle++;
+        g_handleTable[outHandle] = HandleObject{ HandleObjectType::Generic, true };
+        return 0; // STATUS_SUCCESS
+    }
+
+    if (lowerPath.rfind("d:\\", 0) == 0 || lowerPath.rfind("d:/", 0) == 0)
+    {
+        std::string subPath = path.substr(3);
+        XdvdfsEntry entry;
+        if (g_xdvdfsImage.ResolvePath(subPath, entry))
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            outHandle = g_nextHandle++;
+            g_handleTable[outHandle] = HandleObject{ HandleObjectType::File, true };
+            g_fileState[outHandle] = FileHandleState{ entry, 0 };
+            return 0; // STATUS_SUCCESS
+        }
+        return kStatusObjectNameNotFound;
+    }
+
+    return kStatusNoSuchDevice;
+}
 
 PPC_FUNC(__imp__NtCreateFile)
 {
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t objectAttributesPtr = (uint32_t)ctx.r5.u64;
     uint32_t ioStatusBlockPtr = (uint32_t)ctx.r6.u64;
+
+    std::string path = ReadGuestAnsiString(base, objectAttributesPtr);
+    uint32_t handle = 0;
+    uint32_t status = OpenGuestFile(path, handle);
 
     if (handleOutPtr != 0)
     {
-        PPC_STORE_U32(handleOutPtr, 0);
+        PPC_STORE_U32(handleOutPtr, status == 0 ? handle : 0);
     }
     if (ioStatusBlockPtr != 0)
     {
-        PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
-        PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        PPC_STORE_U32(ioStatusBlockPtr + 0, status);
+        PPC_STORE_U32(ioStatusBlockPtr + 4, status == 0 ? 1 : 0); // FILE_OPENED
     }
 
-    fmt::println("[kernel] NtCreateFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
-    ctx.r3.u64 = kStatusNoSuchDevice;
+    fmt::println("[kernel] NtCreateFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    ctx.r3.u64 = status;
 }
 
 PPC_FUNC(__imp__NtOpenFile)
 {
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t objectAttributesPtr = (uint32_t)ctx.r5.u64;
+
+    std::string path = ReadGuestAnsiString(base, objectAttributesPtr);
+    uint32_t handle = 0;
+    uint32_t status = OpenGuestFile(path, handle);
 
     if (handleOutPtr != 0)
     {
-        PPC_STORE_U32(handleOutPtr, 0);
+        PPC_STORE_U32(handleOutPtr, status == 0 ? handle : 0);
     }
 
-    fmt::println("[kernel] NtOpenFile: reporting STATUS_NO_SUCH_DEVICE (no virtual hard disk backing)");
-    ctx.r3.u64 = kStatusNoSuchDevice;
+    fmt::println("[kernel] NtOpenFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    ctx.r3.u64 = status;
 }
 
 PPC_FUNC(__imp__NtReadFile)
 {
-    ctx.r3.u64 = kStatusInvalidHandle;
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r7.u64;
+    uint32_t bufferPtr = (uint32_t)ctx.r8.u64;
+    uint32_t length = (uint32_t)ctx.r9.u64;
+    uint32_t byteOffsetPtr = (uint32_t)ctx.r10.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+    uint64_t offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
+
+    uint32_t bytesToRead = 0;
+    if (offset < state.entry.fileSize)
+    {
+        uint64_t remaining = state.entry.fileSize - offset;
+        bytesToRead = (uint32_t)(remaining < length ? remaining : length);
+    }
+
+    if (bytesToRead > 0)
+    {
+        g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
+    }
+    state.position = offset + bytesToRead;
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, bytesToRead);
+    }
+
+    fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+// Real, observed FILE_INFORMATION_CLASS values (standard NT enum, confirmed via a live
+// capture during Phase 3B): 0xE = FilePositionInformation (8-byte LARGE_INTEGER
+// CurrentByteOffset), 0x22 = FileNetworkOpenInformation (56-byte struct: 4x LARGE_INTEGER
+// timestamps we don't track [zeroed, no evidence anything reads them], AllocationSize,
+// EndOfFile [the real file size], FileAttributes). Any other class: no evidence yet,
+// not guessed at.
+constexpr uint32_t kFilePositionInformation = 0xE;
+constexpr uint32_t kFileNetworkOpenInformation = 0x22;
+
+PPC_FUNC(__imp__NtQueryInformationFile)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r4.u64;
+    uint32_t fileInformationPtr = (uint32_t)ctx.r5.u64;
+    uint32_t infoClass = (uint32_t)ctx.r7.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtQueryInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+    uint32_t written = 0;
+
+    if (infoClass == kFilePositionInformation)
+    {
+        PPC_STORE_U64(fileInformationPtr, state.position);
+        written = 8;
+    }
+    else if (infoClass == kFileNetworkOpenInformation)
+    {
+        PPC_STORE_U64(fileInformationPtr + 0, 0);  // CreationTime -- no evidence anything reads it
+        PPC_STORE_U64(fileInformationPtr + 8, 0);  // LastAccessTime
+        PPC_STORE_U64(fileInformationPtr + 16, 0); // LastWriteTime
+        PPC_STORE_U64(fileInformationPtr + 24, 0); // ChangeTime
+        PPC_STORE_U64(fileInformationPtr + 32, state.entry.fileSize); // AllocationSize
+        PPC_STORE_U64(fileInformationPtr + 40, state.entry.fileSize); // EndOfFile
+        PPC_STORE_U32(fileInformationPtr + 48, 0x20); // FileAttributes: FILE_ATTRIBUTE_ARCHIVE
+        written = 56;
+    }
+    else
+    {
+        fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusNoSuchDevice;
+        return;
+    }
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, written);
+    }
+
+    fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} class=0x{:X} -> {} bytes", handle, infoClass, written);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__NtSetInformationFile)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t ioStatusBlockPtr = (uint32_t)ctx.r4.u64;
+    uint32_t fileInformationPtr = (uint32_t)ctx.r5.u64;
+    uint32_t infoClass = (uint32_t)ctx.r7.u64;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_fileState.find(handle);
+    if (it == g_fileState.end())
+    {
+        fmt::println("[kernel] NtSetInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusInvalidHandle;
+        return;
+    }
+
+    FileHandleState& state = it->second;
+
+    if (infoClass == kFilePositionInformation)
+    {
+        state.position = PPC_LOAD_U64(fileInformationPtr);
+    }
+    else
+    {
+        fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        if (ioStatusBlockPtr != 0)
+        {
+            PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
+            PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+        }
+        ctx.r3.u64 = kStatusNoSuchDevice;
+        return;
+    }
+
+    if (ioStatusBlockPtr != 0)
+    {
+        PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
+        PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
+    }
+
+    fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} class=0x{:X} position={}", handle, infoClass, state.position);
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
 PPC_FUNC(__imp__NtWriteFile)
@@ -548,10 +920,13 @@ PPC_FUNC(__imp__ExCreateThread)
     // r4) in r3. Calling StartAddress directly (no trampoline) uses the plain
     // thread-entry convention instead: r3=StartContext only.
     bool viaTrampoline = xApiThreadStartup != 0;
-    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base]()
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle]()
     {
+        g_currentThreadHandle = handle;
+
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
+        threadCtx.r13.u64 = 0x82670000; // small-data-area base, same as main thread (Phase 2R)
         if (viaTrampoline)
         {
             threadCtx.r3.u64 = startAddress;
@@ -563,6 +938,21 @@ PPC_FUNC(__imp__ExCreateThread)
         }
 
         (PPC_LOOKUP_FUNC(base, entryAddress))(threadCtx, base);
+
+        // Direct-entry threads (no XApiThreadStartup trampoline) return here
+        // normally without ever calling ExTerminateThread -- mark completion
+        // ourselves. Harmless no-op if ExTerminateThread already did it
+        // (trampoline path, which never reaches this line since
+        // ExTerminateThread calls pthread_exit).
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            auto it = g_handleTable.find(handle);
+            if (it != g_handleTable.end())
+            {
+                it->second.signaled = true;
+            }
+        }
+        g_handleSignalCv.notify_all();
     });
     hostThread.detach(); // never joined -- storing a live std::thread in a
                           // long-lived container would call std::terminate()
@@ -695,6 +1085,18 @@ PPC_FUNC(__imp__DbgPrint)
 PPC_FUNC(__imp__ExTerminateThread)
 {
     fmt::println("[kernel] ExTerminateThread: exitCode=0x{:X} -- terminating this thread", ctx.r3.u64);
+
+    if (g_currentThreadHandle != 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_handleTable.find(g_currentThreadHandle);
+        if (it != g_handleTable.end())
+        {
+            it->second.signaled = true;
+        }
+    }
+    g_handleSignalCv.notify_all();
+
     pthread_exit(nullptr);
 }
 
@@ -822,4 +1224,150 @@ PPC_FUNC(__imp__XGetVideoMode)
     // No confirmed struct layout; return success without writing data,
     // same conservative posture as VdQueryVideoMode.
     ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+PPC_FUNC(__imp__NtSetEvent)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t previousStateOutPtr = (uint32_t)ctx.r4.u64;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_handleTable.find(handle);
+        if (it != g_handleTable.end())
+        {
+            it->second.signaled = true;
+        }
+    }
+    g_handleSignalCv.notify_all();
+
+    if (previousStateOutPtr != 0)
+    {
+        PPC_STORE_U32(previousStateOutPtr, 0);
+    }
+
+    ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+// Real sprintf (Phase 3J). The XEX doesn't link real libc, so this is a
+// genuine kernel-surface gap, not a libc passthrough. Variadic args after
+// r3 (buffer) and r4 (format) follow the standard PPC EABI integer-argument
+// register sequence r5..r10 -- confirmed sufficient for every real call site
+// observed live so far (at most 2 variadic args). Floating-point conversions
+// are not observed live yet and are deliberately left unhandled (consumes
+// one GPR slot to keep later specifiers aligned, emits the literal specifier
+// text) rather than guessing at FPR-based argument passing.
+PPC_FUNC(__imp__sprintf)
+{
+    uint32_t bufferPtr = (uint32_t)ctx.r3.u64;
+    uint32_t formatPtr = (uint32_t)ctx.r4.u64;
+
+    std::string format;
+    for (uint32_t i = 0; ; i++)
+    {
+        uint8_t c = PPC_LOAD_U8(formatPtr + i);
+        if (c == 0) break;
+        format.push_back((char)c);
+    }
+
+    uint64_t gprArgs[6] = { ctx.r5.u64, ctx.r6.u64, ctx.r7.u64, ctx.r8.u64, ctx.r9.u64, ctx.r10.u64 };
+    int nextGpr = 0;
+
+    std::string result;
+    for (size_t i = 0; i < format.size(); i++)
+    {
+        char c = format[i];
+        if (c != '%')
+        {
+            result.push_back(c);
+            continue;
+        }
+
+        size_t specStart = i;
+        i++;
+        while (i < format.size() && (format[i] == '-' || format[i] == '+' || format[i] == '0' ||
+               format[i] == ' ' || format[i] == '#' || (format[i] >= '0' && format[i] <= '9') || format[i] == '.'))
+        {
+            i++;
+        }
+        while (i < format.size() && (format[i] == 'l' || format[i] == 'h' || format[i] == 'L'))
+        {
+            i++;
+        }
+
+        if (i >= format.size())
+        {
+            result += format.substr(specStart);
+            break;
+        }
+
+        char conv = format[i];
+        std::string spec = format.substr(specStart, i - specStart + 1);
+        char specBuf[64];
+
+        switch (conv)
+        {
+        case '%':
+            result.push_back('%');
+            break;
+        case 'd': case 'i':
+        {
+            int32_t v = (int32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 'u': case 'x': case 'X': case 'o':
+        {
+            uint32_t v = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 'c':
+        {
+            int v = (int)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 's':
+        {
+            uint32_t strPtr = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            std::string arg;
+            if (strPtr != 0)
+            {
+                for (uint32_t k = 0; ; k++)
+                {
+                    uint8_t ch = PPC_LOAD_U8(strPtr + k);
+                    if (ch == 0) break;
+                    arg.push_back((char)ch);
+                }
+            }
+            std::vector<char> tmp(arg.size() + 64);
+            snprintf(tmp.data(), tmp.size(), spec.c_str(), arg.c_str());
+            result += tmp.data();
+            break;
+        }
+        case 'p':
+        {
+            uint32_t v = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), "0x%X", v);
+            result += specBuf;
+            break;
+        }
+        default:
+            if (nextGpr < 6) nextGpr++;
+            result += spec;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < result.size(); i++)
+    {
+        PPC_STORE_U8(bufferPtr + (uint32_t)i, (uint8_t)result[i]);
+    }
+    PPC_STORE_U8(bufferPtr + (uint32_t)result.size(), 0);
+
+    ctx.r3.u64 = (uint32_t)result.size();
 }

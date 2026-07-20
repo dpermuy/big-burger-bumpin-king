@@ -1,0 +1,7 @@
+KfAcquireSpinLock
+KfReleaseSpinLock
+NtQueryInformationFile
+NtQueueApcThread
+NtSetInformationFile
+sprintf
+XamLoaderLaunchTitle
