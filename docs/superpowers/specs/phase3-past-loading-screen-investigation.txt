@@ -1,0 +1,88 @@
+Investigation: what's actually stalling past the loading screen
+
+Goal: find why the game never visibly progresses past the loading screen, now that
+the file-I/O + APC + spinlock + sprintf chain (Phase 3H-3J) is fixed and the game
+runs a real, continuous per-frame loop.
+
+--- Finding 1: the "healthy 2 calls/sec" measurement was wrong ---
+
+Initial call-rate instrumentation on sub_8212EC78 (the queue-poll wrapper fixed in
+Phase 3H) mislabeled sparse activity as "~1s" cadence. Fixed to report real elapsed
+time. Corrected result: sub_8212EC78 is called a total of TWO times, ever, in the
+entire post-file-load execution -- not a steady rate. A 4-minute patience run (real
+wall-clock, watchdog temporarily raised) confirmed zero further kernel-visible
+activity for the remaining ~235 seconds, while CPU stayed pegged at 100%+. This is
+a second, genuinely different stall from anything fixed in Phase 3H-3J -- the queue
+system itself is not looping; something else entirely is.
+
+--- Finding 2: real call-stack structure of the stuck state ---
+
+Repeated lldb sampling of the active thread found a stable 11-deep call chain that
+persists for minutes, with the leaf function varying (real, ongoing execution, not
+a frozen PC):
+
+  __xstart -> sub_825DEC18 -> sub_8212B130 -> sub_8244B040 -> sub_8244AFB0 ->
+  sub_8244AE70 -> sub_82461D28 -> sub_825E8D28 -> sub_82446D50 -> sub_8212EC78 ->
+  sub_8212EAF0 -> [varies: sub_8212EA80 / sub_82125DF8 / mutex lock]
+
+Read each function's real generated code (private/ppc/*.cpp) to find the actual
+loop. Confirmed NOT loops (all-forward-branch dispatchers or straight-line code):
+  - sub_825DEC18: calls sub_8212B130 exactly once, then a permanent `b $` trap --
+    this is the correct, expected "title entry point should never return" pattern,
+    not a bug.
+  - sub_8244B040: large (~1080 line) dispatcher, all branches forward, no loop.
+  - sub_825E8D28: jump-table switch dispatcher, all branches forward, no loop.
+  - sub_82446D50: one small, correctly-bounded input-state bit-packing loop
+    (iterates a real count field, terminates normally), otherwise straight-line.
+
+Confirmed REAL loops, both apparently correctly bounded:
+  - sub_82461D28 (private/ppc/ppc_recomp.59.cpp:25072-25323): iterates a real
+    item list, count reloaded from memory each iteration, dispatches each item via
+    an indirect (vtable-style) function call. Live-instrumented: count was a sane
+    3, and the loop-back check was hit only once in the whole run -- meaning
+    item[0]'s own indirect call is what doesn't return, not the loop itself.
+  - sub_8244AE70 (private/ppc/ppc_recomp.57.cpp:1801-1831): a tight retry loop --
+    call sub_8212EC78(), call sub_82128EB0(fixedAddr), check the low 16 bits of
+    the result, loop again if zero. This is the most likely site of the real
+    stall: a classic "wait for condition via repeated polling" shape, the same
+    class of bug found and fixed in Phase 3H.
+
+--- Finding 3: sub_82128EB0 / sub_82128DB0 lead into real ambiguity ---
+
+sub_82128EB0 (private/ppc/ppc_recomp.12.cpp:1590) branches on a global flag at
+[-32158 base + 10104]:
+  - flag == 0 (the branch taken on essentially every call, per live evidence):
+    treats its first argument (a fixed address computed by the caller, not
+    obviously a function pointer at the source level) as a function pointer and
+    calls it directly via mtctr/bctrl, then unconditionally returns 1 (success).
+  - flag != 0: calls sub_82128DB0 for real queue submission against the same
+    0x82670000+5632 structure central to Phase 3H-3G's earlier investigation
+    (checks field4 against a cap of 128, submits into a slot, decrements/increments
+    bookkeeping, wakes via sub_82128D08 if field12 is set).
+
+Live instrumentation at sub_82128DB0's field4 check found: field4=0 (queue not
+full -- my initial "queue full forever" hypothesis was wrong), and this check
+point was reached only ONCE in the entire run. This means the flag==0 branch (the
+indirect bctrl call to a caller-supplied address) is the path actually being taken
+on essentially every retry iteration -- and that indirect call is the most likely
+real hang: either the target address doesn't point to code that returns quickly,
+or (an open possibility, not confirmed) the address is genuinely data being
+mis-treated as code, which would itself be a real bug matching the "call an
+address as if it always contains valid trampoline code" pattern already seen once
+this session in a different function.
+
+--- Status: investigation paused here, not resolved ---
+
+This is now real, deep uncertainty -- multiple nested indirect/virtual function
+calls where the actual target resolved at runtime isn't yet traced, unlike every
+prior bug this session (which were single, nameable, well-evidenced root causes).
+Continuing requires either:
+  1. Tracing what sub_8244AE70 actually passes as the "fixed address" argument and
+     what real data/code lives there (would need reading further back in
+     sub_8244AE70/sub_8244AFB0's own setup code to find where that address comes
+     from), or
+  2. Instrumenting the bctrl call itself (in sub_82128EB0) to log the resolved
+     target address and whether/how long it takes to return.
+
+Deliberately stopped here rather than continuing to guess -- this deserves a
+focused follow-up pass with fresh context budget, not a rushed conclusion.
