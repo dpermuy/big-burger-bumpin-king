@@ -50,3 +50,46 @@ Regression check: no crash, same steady completion as the Phase 3J baseline (the
 per-VdSwap tracer work is lightweight and doesn't touch any locking/wait primitive, so the
 established lldb call-stack-evolution check from Phase 3I wasn't re-run this phase -- no
 plausible mechanism for this change to introduce a new stall).
+
+--- Follow-up: decoding 0x3F/0x48 and chasing indirect-buffer content ---
+
+Both opcodes decoded with real, structural evidence (not assumed from generic docs):
+
+  0x48 = ME_INIT: appears exactly once, always the first packet, 18-dword payload copied
+  from a static data table baked into the XEX itself (confirmed at the real call site,
+  private/ppc/ppc_recomp.4.cpp:14982-15013) -- matches ME_INIT's real one-time
+  microengine-configuration role.
+
+  0x3F = INDIRECT_BUFFER: every real instance has exactly 2 payload dwords, matching the
+  textbook {address, dwordCount} shape. Live payload dump confirmed this: addresses in the
+  0x18Dxxxxx family, counts small plausible dword sizes (0xB-0x98F). Two of the observed
+  target addresses (0x18D69840, 0x18D69880) sit in the exact same memory region as a real
+  KfAcquireSpinLock address captured back in Phase 3I (0x18D69B00) -- real, consistent
+  driver structure, not coincidental garbage.
+
+GpuCommandTracer now follows INDIRECT_BUFFER jumps recursively (depth-capped at 3). Every
+target buffer read as all-zero at inspection time (synchronously, inside the same VdSwap
+call that found the reference).
+
+Chased down WHEN that content is supposed to appear. Instrumented PPC_STORE_U32 AND
+PPC_STORE_U64 (the only two guest-memory store paths that exist in this project's whole
+recompilation model -- confirmed via grep, no separate vector/SIMD store macro exists) to
+watch every write into the address range, first narrowly (0x18D00000-0x18D80000), then
+broadly (0x10000000-0x20000000, a full 256 MiB net) across an entire 10-second real run.
+Result: zero stores, of any kind, ever land in that range. Not a scaling error, not a
+timing issue caught too early -- genuinely nothing writes there through any real PPC store
+instruction during this run's execution.
+
+This is a decisive, honestly-reported negative result, not a solved mystery. Two live
+possibilities, neither yet confirmed:
+  1. The real fill genuinely doesn't happen until later game state (past the loading
+     screen this run is confined to) -- these indirect buffers might be queued early but
+     stay logically unused/unreferenced-by-the-GPU until much later.
+  2. The address itself needs a translation this project doesn't apply yet -- Xbox 360
+     real hardware has multiple address-aliasing conventions (the bit-twiddling seen in
+     VdEnableRingBufferRPtrWriteBack's own call site is one concrete example already found
+     in this game's code) and INDIRECT_BUFFER's address field might need a similar,
+     as-yet-unidentified transform before use.
+Deliberately not guessing further without new evidence -- next step would be getting the
+game further past the loading screen (a separate, larger effort) to see if richer opcode
+traffic and populated indirect buffers appear once more of the game runs for real.
