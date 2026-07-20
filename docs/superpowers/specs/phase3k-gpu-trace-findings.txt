@@ -1,0 +1,52 @@
+Phase 3K verification run: real PM4 command-buffer trace
+
+Run: BigBumpinHost against the real ISO, 60s extended watchdog (temporary, reverted after).
+
+Ring buffer registration (real, first time ever):
+  base=0xB911D000  sizeLog2Raw=14  decodedSize=1048576 bytes (1 MiB)
+
+VdSwap call count over 60 real seconds: 4 total. VdSwap's cadence is not tied to a steady
+per-frame wall-clock rate during this loading-screen phase -- gated behind something else
+not yet identified. Honest finding, not a tracer bug (confirmed via the game's own
+NtCreateFile/NtReadFile sequence completing normally in the same run).
+
+Real PM4 packets observed (post zero-header-fix, i.e. only genuine written data):
+  opcode=0x3F  x8   (TYPE3, count=2 each observation)
+  opcode=0x48  x1   (TYPE3, count=18)
+  no TYPE0 (register write) or TYPE2 (filler) packets observed as genuine content in this
+  run -- both types appeared in the pre-fix trace but only inside the zero-padding region,
+  confirming they were misparsed padding, not real packets.
+
+Frame-by-frame excerpt (full trace, this run only had 4 frames of real data):
+
+[init] ring buffer base=0xB911D000 sizeLog2Raw=14 decodedSize=1048576 bytes
+--- frame 1 (starting offset 0) ---
+TYPE3 opcode=0x48 count=18
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+(zero padding at offset 100, stopping)
+--- frame 1: parsed 3 packets, offset 0 -> 100 ---
+--- frame 2 (starting offset 100) ---
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+(zero padding at offset 172, stopping)
+--- frame 2: parsed 6 packets, offset 100 -> 172 ---
+
+Interpretation: the game genuinely, incrementally writes real PM4 command data into the
+ring buffer between frames (frame 2 finds new real packets in exactly the byte range that
+was zero in frame 1) -- this is real GPU command submission happening for the first time in
+this project's history, not a parser artifact. opcode=0x3F repeating with a small fixed
+count (2 dwords) most likely a lightweight, frequently-issued state-set command (register
+write pairs are a common shape for small PM4 state packets); opcode=0x48 with a larger
+count (18 dwords) appearing once at the very start is more likely a one-time setup/init
+packet. Neither opcode's exact real semantics are decoded yet -- that's the next phase's
+work, informed by this real evidence rather than guessed.
+
+Regression check: no crash, same steady completion as the Phase 3J baseline (the extra
+per-VdSwap tracer work is lightweight and doesn't touch any locking/wait primitive, so the
+established lldb call-stack-evolution check from Phase 3I wasn't re-run this phase -- no
+plausible mechanism for this change to introduce a new stall).
