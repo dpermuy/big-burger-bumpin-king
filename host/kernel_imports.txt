@@ -62,7 +62,6 @@ RtlTimeFieldsToTime
 RtlTryEnterCriticalSection
 RtlUnicodeToMultiByteN
 RtlUnwind
-sprintf
 StfsControlDevice
 StfsCreateDevice
 VdEnableDisableClockGating

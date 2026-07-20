@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <deque>
@@ -16,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 // Protects every piece of shared state below (handle table, critical
 // sections, bump allocator) now that ExCreateThread (Task 2) spawns real
@@ -1245,4 +1247,127 @@ PPC_FUNC(__imp__NtSetEvent)
     }
 
     ctx.r3.u64 = 0; // STATUS_SUCCESS
+}
+
+// Real sprintf (Phase 3J). The XEX doesn't link real libc, so this is a
+// genuine kernel-surface gap, not a libc passthrough. Variadic args after
+// r3 (buffer) and r4 (format) follow the standard PPC EABI integer-argument
+// register sequence r5..r10 -- confirmed sufficient for every real call site
+// observed live so far (at most 2 variadic args). Floating-point conversions
+// are not observed live yet and are deliberately left unhandled (consumes
+// one GPR slot to keep later specifiers aligned, emits the literal specifier
+// text) rather than guessing at FPR-based argument passing.
+PPC_FUNC(__imp__sprintf)
+{
+    uint32_t bufferPtr = (uint32_t)ctx.r3.u64;
+    uint32_t formatPtr = (uint32_t)ctx.r4.u64;
+
+    std::string format;
+    for (uint32_t i = 0; ; i++)
+    {
+        uint8_t c = PPC_LOAD_U8(formatPtr + i);
+        if (c == 0) break;
+        format.push_back((char)c);
+    }
+
+    uint64_t gprArgs[6] = { ctx.r5.u64, ctx.r6.u64, ctx.r7.u64, ctx.r8.u64, ctx.r9.u64, ctx.r10.u64 };
+    int nextGpr = 0;
+
+    std::string result;
+    for (size_t i = 0; i < format.size(); i++)
+    {
+        char c = format[i];
+        if (c != '%')
+        {
+            result.push_back(c);
+            continue;
+        }
+
+        size_t specStart = i;
+        i++;
+        while (i < format.size() && (format[i] == '-' || format[i] == '+' || format[i] == '0' ||
+               format[i] == ' ' || format[i] == '#' || (format[i] >= '0' && format[i] <= '9') || format[i] == '.'))
+        {
+            i++;
+        }
+        while (i < format.size() && (format[i] == 'l' || format[i] == 'h' || format[i] == 'L'))
+        {
+            i++;
+        }
+
+        if (i >= format.size())
+        {
+            result += format.substr(specStart);
+            break;
+        }
+
+        char conv = format[i];
+        std::string spec = format.substr(specStart, i - specStart + 1);
+        char specBuf[64];
+
+        switch (conv)
+        {
+        case '%':
+            result.push_back('%');
+            break;
+        case 'd': case 'i':
+        {
+            int32_t v = (int32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 'u': case 'x': case 'X': case 'o':
+        {
+            uint32_t v = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 'c':
+        {
+            int v = (int)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), spec.c_str(), v);
+            result += specBuf;
+            break;
+        }
+        case 's':
+        {
+            uint32_t strPtr = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            std::string arg;
+            if (strPtr != 0)
+            {
+                for (uint32_t k = 0; ; k++)
+                {
+                    uint8_t ch = PPC_LOAD_U8(strPtr + k);
+                    if (ch == 0) break;
+                    arg.push_back((char)ch);
+                }
+            }
+            std::vector<char> tmp(arg.size() + 64);
+            snprintf(tmp.data(), tmp.size(), spec.c_str(), arg.c_str());
+            result += tmp.data();
+            break;
+        }
+        case 'p':
+        {
+            uint32_t v = (uint32_t)(nextGpr < 6 ? gprArgs[nextGpr++] : 0);
+            snprintf(specBuf, sizeof(specBuf), "0x%X", v);
+            result += specBuf;
+            break;
+        }
+        default:
+            if (nextGpr < 6) nextGpr++;
+            result += spec;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < result.size(); i++)
+    {
+        PPC_STORE_U8(bufferPtr + (uint32_t)i, (uint8_t)result[i]);
+    }
+    PPC_STORE_U8(bufferPtr + (uint32_t)result.size(), 0);
+
+    ctx.r3.u64 = (uint32_t)result.size();
 }
