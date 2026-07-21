@@ -749,3 +749,48 @@ real Xbox 360 TEB is a superset structure that contains -- or is adjacent
 to -- the small-data pointer, so both roles need to coexist correctly,
 not just one or the other). This is a real architectural fix, not a
 narrow patch, and is the concrete next step.
+
+--- Finding 16: implemented and verified the per-thread TEB fix -- real
+    forward progress, next gap identified ---
+
+Implemented Finding 15's proposed fix in host/kernel_impl.cpp's
+ExCreateThread: every spawned thread now gets its own private 64 KiB
+small-data/TLS block (g_bumpAllocatorNext-allocated, same allocator as
+stacks), seeded by copying the current content of the previously-shared
+window at thread-creation time, with r13 pointing to the block's middle
+(preserving the existing +/-32 KiB addressing range). [r13+268] is then
+overwritten with a real, unique, monotonically-increasing per-thread
+value via a new g_nextTlsSlotIndex counter.
+
+Verified live (temporary instrumentation, reverted after capture): all
+five field4-subsystem worker threads (handles 0x1009/100B/100D/100F, plus
+0x1005) now compute distinct, correctly-paired event handles matching
+their own real signaled events one-to-one (0x1004/100A/100C/100E/1010) --
+this is the exact, direct, confirmed fix for Finding 15's root cause.
+
+One known minor edge case: the 6th XApiThreadStartup-based thread (handle
+0x1011, a separately-purposed worker, not one of the five field4-subsystem
+ones) falls outside the 5-entry table this specific subsystem sizes for
+and reads an unset (0) handle -- low-impact (returns STATUS_INVALID_HANDLE
+immediately, no crash, no change from this fix's baseline since it was
+equally broken before) and a candidate for later refinement, not treated
+as urgent since it doesn't block progress on the primary loading-screen
+path.
+
+Confirmed real forward progress: with the fix in place, execution now
+reaches a materially later point than any previous session state --
+specifically into sub_8212DAE8's one-time boot-sequence retry loop
+(sub_8212BF78 -> sub_821298C0 -> sub_820AB238 -> NtWaitForSingleObjectEx),
+traced live via lldb breakpoint + backtrace on the MAIN thread. The wait
+handle there is read from an ABSOLUTE address (kernelbase+7240+20 =
+0x82671C5C) -- confirmed unrelated to r13/TLS, a separate, genuine gap:
+something is expected to populate a real event handle at that address
+before this retry loop can proceed, and nothing currently does.
+
+--- Status: the confirmed Finding 15 root cause is fixed and shipped.
+    The loading-screen investigation has advanced to a new, later,
+    concrete blocker (the uninitialized handle at 0x82671C5C in the boot
+    retry loop) -- this is the next lead for a future pass, using the
+    same methodology (trace who's supposed to write it, likely another
+    NtCreateEvent + population step this project hasn't implemented or
+    reached yet). ---
