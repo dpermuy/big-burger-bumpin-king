@@ -2,6 +2,7 @@
 #include <ppc_context.h>
 #include <fmt/core.h>
 #include "xdvdfs.h"
+#include "gpu_trace.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <mutex>
@@ -199,6 +201,37 @@ static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
 static std::condition_variable g_handleSignalCv;
 
+// Real per-thread small-data-area/TLS base (Phase 3K). r13 serves a dual
+// role on real Xbox 360: it's the classic PowerPC EABI small-data-area base
+// (signed 16-bit displacements reach the observed -21984..+20124 range
+// around it) AND the base for compiler-emitted declspec(thread) TLS fields
+// (confirmed against Xenia's XThread::Create, src/xenia/kernel/xthread.cc --
+// real hardware gives every thread its own private KPCR/TLS block, seeded
+// from a template, not a single shared address). This project previously
+// hardcoded r13 identically for every thread ("same as main thread"), which
+// silently collapsed every genuinely per-thread field (e.g. the byte at
+// [r13+268] the game reads as its own queue-worker slot index) onto the
+// same shared memory -- confirmed live: this is why every worker thread in
+// the field4/completion-queue subsystem computed the same slot and waited
+// on the same event handle (Finding 15), permanently missing every real
+// completion signal.
+//
+// Fix: give every ExCreateThread'd thread its own private 64 KiB block,
+// seeded by copying the current content of the shared small-data window
+// (so any boot-time-initialized values other code relies on seeing are
+// still visible, matching how real declspec(thread) storage is seeded from
+// a template at thread creation) rather than aliasing the same memory.
+// r13 points to the middle of the block so the same +/-32 KiB signed
+// displacement range used throughout the game's compiled code still
+// resolves correctly. [+268] is then overwritten with a real, unique,
+// monotonically-increasing per-thread value (not a guess at the exact
+// original Xbox 360 numbering scheme, which isn't recoverable from the
+// recompiled code alone, but a principled, collision-free choice that
+// directly fixes the confirmed bug).
+static constexpr uint32_t kTlsBlockSize = 0x10000; // 64 KiB, covers the full observed r13-relative offset range with margin
+static constexpr uint32_t kTlsBlockCenter = kTlsBlockSize / 2;
+static uint32_t g_nextTlsSlotIndex = 1;
+
 // Real user-mode APC queueing (Phase 3H). Xbox 360 worker threads (e.g. the
 // XApiThreadStartup pool thread) block in an alertable NtWaitForSingleObjectEx
 // waiting to be handed work via NtQueueApcThread; delivery happens when that
@@ -208,6 +241,7 @@ struct ApcEntry
     uint32_t routine;
     uint32_t context;
     uint32_t sysArg1;
+    uint32_t sysArg2;
 };
 static std::unordered_map<uint32_t, std::deque<ApcEntry>> g_apcQueues; // keyed by target thread handle
 
@@ -296,9 +330,14 @@ static bool TryDeliverOneApc(PPCContext& ctx, uint8_t* base, uint32_t threadHand
         it->second.pop_front();
     }
 
+    // Real delivery convention confirmed against Xenia's DeliverAPCs
+    // (src/xenia/kernel/xthread.cc): normal_routine(normal_context, arg1,
+    // arg2) -- i.e. r3=context, r4=sysArg1, r5=sysArg2. Previously hardcoded
+    // r5=0; NtQueueApcThread's real 5th parameter (arg2) is now captured and
+    // threaded through instead of silently dropped.
     ctx.r3.u64 = apc.context;
     ctx.r4.u64 = apc.sysArg1;
-    ctx.r5.u64 = 0;
+    ctx.r5.u64 = apc.sysArg2;
     PPC_CALL_INDIRECT_FUNC(apc.routine);
     return true;
 }
@@ -359,25 +398,32 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-// Real APC queueing (Phase 3H). Signature confirmed live: r3=target thread
-// handle, r4=ApcRoutine, r5=ApcContext, r6=SystemArgument1. Delivery happens
-// in NtWaitForSingleObjectEx above when the target thread's alertable wait
-// wakes -- this call only enqueues and wakes any thread currently blocked
-// there.
+// Real APC queueing (Phase 3H). Full 5-parameter signature confirmed against
+// Xenia's real NtQueueApcThread_entry (src/xenia/kernel/xboxkrnl/
+// xboxkrnl_threading.cc): r3=target thread handle, r4=ApcRoutine,
+// r5=ApcContext, r6=SystemArgument1, r7=SystemArgument2 -- previously only
+// read r3-r6 and silently dropped SystemArgument2 (always delivered as 0
+// regardless of what the caller actually passed). Real Xbox 360
+// NtQueueApcThread is void (no real return value; the r3=0 write below is a
+// harmless simplification, not a status real callers rely on). Delivery
+// happens in NtWaitForSingleObjectEx above when the target thread's
+// alertable wait wakes -- this call only enqueues and wakes any thread
+// currently blocked there.
 PPC_FUNC(__imp__NtQueueApcThread)
 {
     uint32_t targetThreadHandle = (uint32_t)ctx.r3.u64;
     uint32_t apcRoutine = (uint32_t)ctx.r4.u64;
     uint32_t apcContext = (uint32_t)ctx.r5.u64;
     uint32_t sysArg1 = (uint32_t)ctx.r6.u64;
+    uint32_t sysArg2 = (uint32_t)ctx.r7.u64;
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
-        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1 });
+        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1, sysArg2 });
     }
     g_handleSignalCv.notify_all();
 
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    ctx.r3.u64 = 0; // real signature is void; harmless placeholder
 }
 
 PPC_FUNC(__imp__NtClose)
@@ -569,14 +615,45 @@ PPC_FUNC(__imp__NtOpenFile)
 PPC_FUNC(__imp__NtReadFile)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t eventHandle = (uint32_t)ctx.r4.u64;
+    uint32_t apcRoutine = (uint32_t)ctx.r5.u64;
+    uint32_t apcContext = (uint32_t)ctx.r6.u64;
     uint32_t ioStatusBlockPtr = (uint32_t)ctx.r7.u64;
     uint32_t bufferPtr = (uint32_t)ctx.r8.u64;
     uint32_t length = (uint32_t)ctx.r9.u64;
     uint32_t byteOffsetPtr = (uint32_t)ctx.r10.u64;
 
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    auto it = g_fileState.find(handle);
-    if (it == g_fileState.end())
+    uint64_t offset = 0;
+    uint32_t bytesToRead = 0;
+    bool validHandle = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_fileState.find(handle);
+        if (it == g_fileState.end())
+        {
+            validHandle = false;
+        }
+        else
+        {
+            FileHandleState& state = it->second;
+            offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
+
+            if (offset < state.entry.fileSize)
+            {
+                uint64_t remaining = state.entry.fileSize - offset;
+                bytesToRead = (uint32_t)(remaining < length ? remaining : length);
+            }
+
+            if (bytesToRead > 0)
+            {
+                g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
+            }
+            state.position = offset + bytesToRead;
+        }
+    }
+
+    if (!validHandle)
     {
         fmt::println("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
         if (ioStatusBlockPtr != 0)
@@ -588,22 +665,6 @@ PPC_FUNC(__imp__NtReadFile)
         return;
     }
 
-    FileHandleState& state = it->second;
-    uint64_t offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
-
-    uint32_t bytesToRead = 0;
-    if (offset < state.entry.fileSize)
-    {
-        uint64_t remaining = state.entry.fileSize - offset;
-        bytesToRead = (uint32_t)(remaining < length ? remaining : length);
-    }
-
-    if (bytesToRead > 0)
-    {
-        g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
-    }
-    state.position = offset + bytesToRead;
-
     if (ioStatusBlockPtr != 0)
     {
         PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
@@ -611,6 +672,41 @@ PPC_FUNC(__imp__NtReadFile)
     }
 
     fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
+
+    // Real NT I/O completion APC (distinct from the user-mode APC queueing in
+    // NtQueueApcThread, Phase 3H). Cross-referenced against Xenia's real
+    // NtReadFile_entry (src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc) -- confirms
+    // every detail independently derived this investigation: parameter order
+    // (handle, event, apcRoutine, apcContext, ioStatusBlock, buffer, length,
+    // byteOffset), the ApcRoutine low-bit flag ("Low bit probably means do
+    // not queue to IO ports" per Xenia's own comment) masked off with & ~1
+    // before use, and the completion callback's real 3-arg convention
+    // (context, sysArg1=IoStatusBlock, 0) -- matches TryDeliverOneApc's
+    // existing calling convention exactly. Two real gaps Xenia's
+    // implementation has that this one initially didn't: it requires
+    // apcContext != 0 (not just apcRoutine != 0) before queuing, and it also
+    // signals the caller's event handle (r4), independent of the APC.
+    if ((apcRoutine & ~1u) != 0 && apcContext != 0)
+    {
+        uint32_t realApcRoutine = apcRoutine & ~1u;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_apcQueues[g_currentThreadHandle].push_back(ApcEntry{ realApcRoutine, apcContext, ioStatusBlockPtr, 0 });
+        }
+        g_handleSignalCv.notify_all();
+    }
+
+    if (eventHandle != 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto eventIt = g_handleTable.find(eventHandle);
+        if (eventIt != g_handleTable.end())
+        {
+            eventIt->second.signaled = true;
+        }
+        g_handleSignalCv.notify_all();
+    }
+
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
@@ -898,20 +994,47 @@ PPC_FUNC(__imp__ExCreateThread)
     uint32_t stackBase;
     uint32_t handle;
     uint32_t threadId;
+    uint32_t tlsBlockBase;
+    uint32_t tlsSlotIndex;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         stackBase = g_bumpAllocatorNext;
         g_bumpAllocatorNext += kStackSize;
 
+        tlsBlockBase = g_bumpAllocatorNext;
+        g_bumpAllocatorNext += kTlsBlockSize;
+
         handle = g_nextHandle++;
         g_handleTable[handle] = HandleObject{ HandleObjectType::Thread, false };
 
         threadId = g_nextThreadId++;
+        // Wrapped to [1,5]: the field4/completion-queue subsystem (Finding
+        // 15) sizes its per-slot event-handle table for exactly 5 workers.
+        // An unwrapped monotonic index handed a 6th XApiThreadStartup
+        // thread (a separately-purposed worker, not one of the 5) slot 6 --
+        // out of that table's bounds, reading an unset handle and busy-
+        // spinning at full CPU on STATUS_INVALID_HANDLE (Finding 17) instead
+        // of the pre-fix behavior of just blocking forever. Wrapping is a
+        // pragmatic, collision-tolerant choice, not a recovered original
+        // numbering scheme -- real Xbox 360 semantics for this field aren't
+        // recoverable from the recompiled code alone.
+        tlsSlotIndex = ((g_nextTlsSlotIndex++ - 1) % 5) + 1;
     }
 
-    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X}",
+    // Seed the new thread's private small-data/TLS block from the current
+    // content of the shared window every thread used to alias (see the
+    // g_nextTlsSlotIndex comment above) -- this preserves visibility of any
+    // boot-time-initialized values other code expects to see via r13, matching
+    // how real declspec(thread) storage is seeded from a template rather than
+    // starting zeroed.
+    std::memcpy(base + tlsBlockBase, base + (0x82670000 - kTlsBlockCenter), kTlsBlockSize);
+    // Overwrite the one confirmed genuinely-per-thread field (Finding 15):
+    // the queue-worker slot index at [r13+268].
+    PPC_STORE_U8(tlsBlockBase + kTlsBlockCenter + 268, (uint8_t)tlsSlotIndex);
+
+    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X} tlsSlot={}",
         entryAddress, xApiThreadStartup != 0 ? "XApiThreadStartup" : "StartAddress directly",
-        stackBase, stackBase + kStackSize, handle);
+        stackBase, stackBase + kStackSize, handle, tlsSlotIndex);
 
     // XApiThreadStartup's calling convention (confirmed by reading its generated
     // code, sub_820ABCE8 in private/ppc/ppc_recomp.2.cpp): r3=StartAddress,
@@ -920,13 +1043,14 @@ PPC_FUNC(__imp__ExCreateThread)
     // r4) in r3. Calling StartAddress directly (no trampoline) uses the plain
     // thread-entry convention instead: r3=StartContext only.
     bool viaTrampoline = xApiThreadStartup != 0;
-    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle]()
+    uint32_t tlsBase = tlsBlockBase + kTlsBlockCenter;
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle, tlsBase]()
     {
         g_currentThreadHandle = handle;
 
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
-        threadCtx.r13.u64 = 0x82670000; // small-data-area base, same as main thread (Phase 2R)
+        threadCtx.r13.u64 = tlsBase; // per-thread small-data/TLS base (Phase 3K, Finding 15 fix)
         if (viaTrampoline)
         {
             threadCtx.r3.u64 = startAddress;
@@ -1130,20 +1254,41 @@ PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
     // frame-pacing/vsync work needs them.
 }
 
+// Real signature confirmed live (private/ppc/ppc_recomp.4.cpp:14684-14686,14977-14981):
+// called once at startup with r3=0 (reset) and again with a real address once the ring
+// buffer is set up (offset+8 into the same buffer struct VdInitializeRingBuffer uses).
+// Looks like a fence/identifier slot, not the ring buffer itself -- stored but not yet
+// acted on (Phase 3K design spec).
 PPC_FUNC(__imp__VdSetSystemCommandBufferGpuIdentifierAddress)
 {
-    // No-op.
+    uint32_t addr = (uint32_t)ctx.r3.u64;
+    if (addr != 0)
+    {
+        g_gpuTracer.SetIdentifierAddr(addr);
+    }
 }
 
+// Real signature confirmed live (private/ppc/ppc_recomp.4.cpp:14842-14856): r3 is the
+// physical address of a buffer the game itself allocated via MmAllocatePhysicalMemoryEx
+// (already real in this project) and resolved through MmGetPhysicalAddress (already an
+// identity mapping, Phase 2J) -- so r3 is already a valid, already-owned guest address.
+// The kernel doesn't allocate the ring buffer, it's told where one already is.
 PPC_FUNC(__imp__VdInitializeRingBuffer)
 {
-    // No-op -- not parsing real GPU commands yet.
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    uint32_t physAddr = (uint32_t)ctx.r3.u64;
+    uint32_t sizeLog2Raw = (uint32_t)ctx.r4.u64;
+    g_gpuTracer.RegisterRingBuffer(physAddr, sizeLog2Raw);
 }
 
+// Real semantics: the GPU writes its "consumed up to here" read pointer to this address
+// so the CPU knows how much ring space is free. Handled in GpuCommandTracer::
+// ScanAndTraceFrame, called once per VdSwap -- see there for why this always reports
+// "caught up" rather than left unanswered (Phase 3H's APC-delivery lesson applied here
+// deliberately).
 PPC_FUNC(__imp__VdEnableRingBufferRPtrWriteBack)
 {
-    // No-op.
+    uint32_t addr = (uint32_t)ctx.r3.u64;
+    g_gpuTracer.SetRptrWriteBackAddr(addr);
 }
 
 PPC_FUNC(__imp__VdQueryVideoMode)
@@ -1176,17 +1321,52 @@ PPC_FUNC(__imp__VdIsHSIOTrainingSucceeded)
     ctx.r3.u64 = 1;
 }
 
+static uint32_t g_systemCommandBufferAddr = 0;
+static constexpr uint32_t kSystemCommandBufferSize = 65536;
+
+// Real signature confirmed live (private/ppc/ppc_recomp.6.cpp:24604-24625): writes an
+// address and a size back through two caller-stack out-pointers (r3, r4), and also
+// returns the address directly in r3 -- the caller saves that return value separately
+// right after the call. A second, smaller, kernel-owned buffer distinct from the game's
+// main ring buffer; given a real, non-crashing region here rather than treated as a
+// primary command stream (Phase 3K design spec).
 PPC_FUNC(__imp__VdGetSystemCommandBuffer)
 {
-    // No confirmed struct/pointer-pair layout; return success without
-    // writing data.
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    uint32_t addrOutPtr = (uint32_t)ctx.r3.u64;
+    uint32_t sizeOutPtr = (uint32_t)ctx.r4.u64;
+
+    if (g_systemCommandBufferAddr == 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        if (g_systemCommandBufferAddr == 0)
+        {
+            g_systemCommandBufferAddr = g_bumpAllocatorNext;
+            g_bumpAllocatorNext += kSystemCommandBufferSize;
+        }
+    }
+
+    if (addrOutPtr != 0)
+    {
+        PPC_STORE_U32(addrOutPtr, g_systemCommandBufferAddr);
+    }
+    if (sizeOutPtr != 0)
+    {
+        PPC_STORE_U32(sizeOutPtr, kSystemCommandBufferSize);
+    }
+
+    ctx.r3.u64 = g_systemCommandBufferAddr;
 }
 
 PPC_FUNC(__imp__VdSwap)
 {
-    // The frame-present call. No-op -- nothing to actually present, no
-    // renderer exists yet.
+    // The frame-present call. Still no real rendering -- nothing to actually present,
+    // no renderer exists yet (Phase 3K only adds command-buffer tracing). Real frame
+    // presentation is future work once the renderer design (informed by this phase's
+    // trace output) exists.
+    if (g_gpuTracer.HasRingBuffer())
+    {
+        g_gpuTracer.ScanAndTraceFrame(base);
+    }
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)

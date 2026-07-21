@@ -1,0 +1,95 @@
+Phase 3K verification run: real PM4 command-buffer trace
+
+Run: BigBumpinHost against the real ISO, 60s extended watchdog (temporary, reverted after).
+
+Ring buffer registration (real, first time ever):
+  base=0xB911D000  sizeLog2Raw=14  decodedSize=1048576 bytes (1 MiB)
+
+VdSwap call count over 60 real seconds: 4 total. VdSwap's cadence is not tied to a steady
+per-frame wall-clock rate during this loading-screen phase -- gated behind something else
+not yet identified. Honest finding, not a tracer bug (confirmed via the game's own
+NtCreateFile/NtReadFile sequence completing normally in the same run).
+
+Real PM4 packets observed (post zero-header-fix, i.e. only genuine written data):
+  opcode=0x3F  x8   (TYPE3, count=2 each observation)
+  opcode=0x48  x1   (TYPE3, count=18)
+  no TYPE0 (register write) or TYPE2 (filler) packets observed as genuine content in this
+  run -- both types appeared in the pre-fix trace but only inside the zero-padding region,
+  confirming they were misparsed padding, not real packets.
+
+Frame-by-frame excerpt (full trace, this run only had 4 frames of real data):
+
+[init] ring buffer base=0xB911D000 sizeLog2Raw=14 decodedSize=1048576 bytes
+--- frame 1 (starting offset 0) ---
+TYPE3 opcode=0x48 count=18
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+(zero padding at offset 100, stopping)
+--- frame 1: parsed 3 packets, offset 0 -> 100 ---
+--- frame 2 (starting offset 100) ---
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+TYPE3 opcode=0x3F count=2
+(zero padding at offset 172, stopping)
+--- frame 2: parsed 6 packets, offset 100 -> 172 ---
+
+Interpretation: the game genuinely, incrementally writes real PM4 command data into the
+ring buffer between frames (frame 2 finds new real packets in exactly the byte range that
+was zero in frame 1) -- this is real GPU command submission happening for the first time in
+this project's history, not a parser artifact. opcode=0x3F repeating with a small fixed
+count (2 dwords) most likely a lightweight, frequently-issued state-set command (register
+write pairs are a common shape for small PM4 state packets); opcode=0x48 with a larger
+count (18 dwords) appearing once at the very start is more likely a one-time setup/init
+packet. Neither opcode's exact real semantics are decoded yet -- that's the next phase's
+work, informed by this real evidence rather than guessed.
+
+Regression check: no crash, same steady completion as the Phase 3J baseline (the extra
+per-VdSwap tracer work is lightweight and doesn't touch any locking/wait primitive, so the
+established lldb call-stack-evolution check from Phase 3I wasn't re-run this phase -- no
+plausible mechanism for this change to introduce a new stall).
+
+--- Follow-up: decoding 0x3F/0x48 and chasing indirect-buffer content ---
+
+Both opcodes decoded with real, structural evidence (not assumed from generic docs):
+
+  0x48 = ME_INIT: appears exactly once, always the first packet, 18-dword payload copied
+  from a static data table baked into the XEX itself (confirmed at the real call site,
+  private/ppc/ppc_recomp.4.cpp:14982-15013) -- matches ME_INIT's real one-time
+  microengine-configuration role.
+
+  0x3F = INDIRECT_BUFFER: every real instance has exactly 2 payload dwords, matching the
+  textbook {address, dwordCount} shape. Live payload dump confirmed this: addresses in the
+  0x18Dxxxxx family, counts small plausible dword sizes (0xB-0x98F). Two of the observed
+  target addresses (0x18D69840, 0x18D69880) sit in the exact same memory region as a real
+  KfAcquireSpinLock address captured back in Phase 3I (0x18D69B00) -- real, consistent
+  driver structure, not coincidental garbage.
+
+GpuCommandTracer now follows INDIRECT_BUFFER jumps recursively (depth-capped at 3). Every
+target buffer read as all-zero at inspection time (synchronously, inside the same VdSwap
+call that found the reference).
+
+Chased down WHEN that content is supposed to appear. Instrumented PPC_STORE_U32 AND
+PPC_STORE_U64 (the only two guest-memory store paths that exist in this project's whole
+recompilation model -- confirmed via grep, no separate vector/SIMD store macro exists) to
+watch every write into the address range, first narrowly (0x18D00000-0x18D80000), then
+broadly (0x10000000-0x20000000, a full 256 MiB net) across an entire 10-second real run.
+Result: zero stores, of any kind, ever land in that range. Not a scaling error, not a
+timing issue caught too early -- genuinely nothing writes there through any real PPC store
+instruction during this run's execution.
+
+This is a decisive, honestly-reported negative result, not a solved mystery. Two live
+possibilities, neither yet confirmed:
+  1. The real fill genuinely doesn't happen until later game state (past the loading
+     screen this run is confined to) -- these indirect buffers might be queued early but
+     stay logically unused/unreferenced-by-the-GPU until much later.
+  2. The address itself needs a translation this project doesn't apply yet -- Xbox 360
+     real hardware has multiple address-aliasing conventions (the bit-twiddling seen in
+     VdEnableRingBufferRPtrWriteBack's own call site is one concrete example already found
+     in this game's code) and INDIRECT_BUFFER's address field might need a similar,
+     as-yet-unidentified transform before use.
+Deliberately not guessing further without new evidence -- next step would be getting the
+game further past the loading screen (a separate, larger effort) to see if richer opcode
+traffic and populated indirect buffers appear once more of the game runs for real.
