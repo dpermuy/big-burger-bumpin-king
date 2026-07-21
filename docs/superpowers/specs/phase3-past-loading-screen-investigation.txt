@@ -423,3 +423,106 @@ This is a substantial, multi-session-worthy investigation at this point --
 every fact recorded here is real, verified, hard evidence (live
 instrumentation or direct reading of generated code), not speculation.
 Stopping here with a clean, fully-committed, non-regressing tree.
+
+--- Finding 11: cross-referenced NtReadFile and NtQueueApcThread against
+    Xenia's real kernel implementation -- caught two real, silent bugs ---
+
+Before continuing the game-internal trace, cross-referenced everything this
+investigation had independently derived for NtReadFile and NtQueueApcThread
+against Xenia's ground-truth implementation (xenia-project/xenia,
+src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc, xboxkrnl_threading.cc, and
+xthread.cc's EnqueueApc/DeliverAPCs). Every structural detail already
+shipped matched exactly: parameter order, the ApcRoutine low-bit flag and
+masking, and the completion callback's real calling convention. This
+confirms the Finding 7/8 fix is correct by more than "doesn't crash."
+
+Found and fixed two real, previously-silent gaps the reference caught that
+empirical testing alone had not surfaced (the one live call this
+investigation observed happened to have zero values in exactly the fields
+that were wrong, so nothing manifested as an observable bug yet):
+  - NtReadFile: Xenia requires ApcContext != 0 (not just a non-null masked
+    ApcRoutine) before queuing the completion APC, and also signals the
+    caller's event handle (r4) independent of the APC -- this
+    implementation checked neither.
+  - NtQueueApcThread: Xenia's real signature has 5 parameters, not 4 --
+    (thread_handle, apc_routine, apc_routine_context, arg1, arg2). This
+    implementation only read r3-r6, silently dropping the real
+    SystemArgument2 (r7) and always delivering 0 in its place. Added
+    sysArg2 to ApcEntry and threaded it through TryDeliverOneApc's real
+    3-argument delivery convention (confirmed against DeliverAPCs:
+    normal_routine(context, arg1, arg2)).
+
+Both committed and verified with no regression. Important scope note for
+future passes: this cross-referencing only applies to real kernel-boundary
+exports (the ~130 functions in host/kernel_imports.txt this project
+implements). Xenia is an emulator, not a decompilation -- for the game's
+own compiled logic (everything traced in Findings 1-10, all "sub_XXXXXXXX"
+addresses inside the title's own XEX), Xenia has no special insight either;
+it just executes that same binary blindly, the same as this project's
+recompiled C++ does. Confirmed empirically too: grepped a full real run for
+every stub-only kernel call (there were none) and specifically for XMsg*
+(the cross-thread message-queue kernel API, structurally similar to
+field4/field12's shape) -- never called. The remaining field4/field12
+mechanism is 100% game-internal; no more kernel cross-referencing applies
+to it specifically.
+
+--- Finding 12: traced sub_8212D1F0's caller -- confirms the boot sequence
+    is a completed, one-time step, not the active stall; traced the real
+    I/O-completion chain to its actual terminus ---
+
+Traced sub_8212D1F0's caller (sub_8212DAE8, itself called once from
+sub_8244B040 at the very start of the game's real entry point, before any
+of the per-frame dispatch logic). Read it in full: a real, linear,
+multi-stage one-time boot sequence (sub_8212F400 -> readiness check ->
+sub_8248D060/sub_8212BF78 with its own retry loop -> sub_8212D1F0, the
+subsystem-registration call that sets field12=1 -> sub_8212B698 ->
+sub_8249D760 with another retry loop -> more). It does not loop back to
+touch field12/field4 again after sub_8212D1F0 returns; it continues on to
+unrelated engine subsystems.
+
+This closes off the boot-sequence line of inquiry with confidence: since
+the actual observed hang lives in a completely different call chain
+(sub_8244AFB0 -> ... -> sub_8212EC78, confirmed via repeated lldb
+sampling in Findings 2 and 6), sub_8212DAE8 must have already run to
+completion by the time the hang is observed. field12's initialization is
+a finished, one-time boot step -- not where execution is currently stuck,
+and not itself responsible for ever clearing it.
+
+Given that, went back to Finding 8's one remaining open thread instead:
+the runtime-populated final callback in sub_82127E78
+(private/ppc/ppc_recomp.11.cpp:37455-37463, `[r31+308]`). Instrumented it
+directly: reached live, resolving to a real, mapped function,
+sub_82127E18. Read it: searches the same object table sub_8212CAC8 uses
+(base -32153*65536-9344) for the entry matching the callback's argument
+(r3=0 in the observed call), then walks to a SEPARATE, distinct structure
+-- a real array of 340-byte-stride task/resource objects at a different
+base (-32153*65536-29464) -- and sets bit 4 (|16) on that entry's own
+[+324] flags field. This is a genuine, verified "mark this resource ready"
+completion signal -- the real terminus of the entire NT I/O completion
+chain traced across Findings 7, 8, and this one.
+
+This confirms the full chain (NtReadFile -> real I/O completion APC ->
+sub_8212F720 trampoline -> sub_8212A9E8 progressive-read tracker ->
+sub_82127E78 -> sub_82127E18) now works correctly end to end, verified
+live with no crash. It does NOT touch field4/field12 directly -- meaning
+field4/field12 are cleared by a SEPARATE consumer that must poll this
+340-stride array's [+324] bit-4 flag, not by this completion chain itself.
+
+--- Status: the I/O completion chain is now fully traced, verified, and
+    correct end to end; field4/field12's real consumer is a distinct,
+    not-yet-identified poller of the resource-ready flag this chain sets --
+    this is the concrete next lead ---
+
+For a future pass: find what reads bit 4 (0x10) of [+324] on the
+340-byte-stride array at (-32153*65536-29464) + index*340, and confirm
+whether that same code path also decrements field4 and/or clears field12
+once it observes the flag. The most direct way to find it, following this
+session's own established playbook: grep the recompiled codebase for the
+same base-address computation pattern (a small, exact set of real
+candidates, the same technique that found field12's writer in Finding 10)
+rather than guessing or adding broad instrumentation.
+
+Stopping here with a clean, fully-committed, non-regressing tree -- three
+real, Xenia-verified kernel fixes shipped tonight (Findings 7, 8, 11) plus
+a fully-traced, verified-correct real completion chain (Findings 8, 12),
+with one precise, narrow, well-evidenced remaining lead for next time.
