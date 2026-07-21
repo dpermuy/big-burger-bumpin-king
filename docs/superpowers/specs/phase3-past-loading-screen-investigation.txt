@@ -274,3 +274,84 @@ Deliberately stopped here with a fully reverted, clean tree rather than
 shipping a fix built on an unconfirmed and now-disproven hypothesis -- this is
 real progress (the exact call site is found) with a clear, narrow, safe next
 step, not a dead end.
+
+--- Finding 8: corrected the fix (mask the low bit) -- real, verified progress
+    three layers deeper, but field4 still doesn't clear ---
+
+Checked the narrow next step directly: is 0x8212F720 (0x8212F721 with the low
+bit masked off) a real, mapped function? Yes -- confirmed in
+private/ppc/ppc_func_mapping.cpp. Read it: a genuine IO-completion trampoline
+(`sub_8212F720(realCallback, IoStatusBlockPtr)` -- reads the status/bytes-
+transferred fields out of its 2nd argument, then calls its 1st argument with
+(status, bytesTransferred, IoStatusBlockPtr)). Its two parameters map exactly
+onto (ApcContext, IoStatusBlockPtr) with zero changes needed to
+TryDeliverOneApc's existing calling convention.
+
+Re-implemented the fix with the mask applied (`apcRoutine & ~1u`), rebuilt,
+and re-tested. No crash this time. Instrumented TryDeliverOneApc directly:
+confirmed BOTH APCs now deliver in sequence (the original loading-screen one,
+then this new completion one), and traced the real callback chain three more
+layers deep than ever reached before (sub_8212F720 -> sub_8212A9E8, the real
+user callback, a genuine progressive-read byte-tracking state machine ->
+sub_82127E78, called when byte-tracking reaches zero -> a THIRD real indirect
+call through a runtime-populated struct field, [r31+308], not statically
+resolvable from source alone).
+
+Despite all of this executing successfully with no crash, field4 remains
+stuck at 1 (reconfirmed live across 180M+ loop iterations after the fix).
+This specific completion chain is NOT what clears field4 -- either the
+runtime-populated final callback does something else, or field4's real
+clearer lives entirely outside this chain.
+
+Committed this fix anyway (host/kernel_impl.cpp, "Real NT I/O completion APC
+delivery for NtReadFile") -- it is independently correct (real NT semantics,
+verified no regression, executes real game logic three layers deeper than
+any previous state of this project), even though it alone doesn't resolve
+the hang.
+
+--- Finding 9: field12 has NO real writer anywhere in the recompiled code --
+    same class of gap as the r13/tick-counter precedent, not yet fixed ---
+
+Reconsidered sub_8212EC78's loop from scratch: it has TWO independent exit
+paths, not one -- `sub_82128F58() != 0` (field4-driven, the one chased all
+session) OR `field12 == 0` (a completely separate condition, checked every
+iteration, that returns immediately without touching field4 at all). This
+second path had never been chased.
+
+Instrumented PPC_STORE_U32 globally (the same proven technique from Phase
+3G/3M, live store-watching, not static guessing) for the exact address
+0x8267160C (field12) across an entire real run. Result: exactly ONE store,
+ever -- setting it to 1, early, once. Never touched again by any real PPC
+store instruction anywhere in the whole recompiled codebase for the rest of
+the run. This mirrors the r13 small-data-area register and the kernel tick
+counter (Phase 2R/2T) precisely: a value the real Xbox 360 kernel/HAL boot
+sequence or an interrupt-driven completion this project doesn't emulate
+would normally clear, with no corresponding code path in the title's own
+recompiled logic.
+
+Deliberately did NOT implement a host-side clear this pass: the right
+timing is unknown (clearing it too early -- e.g. immediately in
+NtReadFile -- would let sub_8212EC78's loop exit before the game's own real
+completion processing, including the layers traced in Finding 8, has run,
+risking the exact same class of premature/wrong-timing mistake that caused
+the Finding 7 crash). This needs one more piece of evidence before touching
+it: whether field12 is meant to be cleared once per real completion event
+(matching Finding 8's chain finishing) or is a one-time boot-level value
+Set-and-cleared by real kernel infrastructure independent of any specific
+I/O operation.
+
+--- Status: two independent, confirmed real gaps found; one fix (Finding 8)
+    shipped and verified safe; field12's fix intentionally deferred ---
+
+Next concrete step for a future pass: determine what field12 is really
+counting by reading more of sub_8212EC78's surrounding context and/or
+whatever sets it to 1 in the first place (not yet traced -- only its address
+and single write event are confirmed), then decide the correct clearing
+point (likely inside or right after Finding 8's completion chain finishes,
+if that chain is truly the "loading operation" field12 tracks) before
+writing a host-side clear.
+
+Deliberately stopped here with a clean, fully-committed tree (Finding 8's fix
+is real and shipped; Finding 9's fix is correctly withheld pending more
+evidence) rather than guessing at field12's clearing timing -- this is two
+solid, independent leads for the next pass, not a dead end.
