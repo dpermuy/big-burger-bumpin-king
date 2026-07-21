@@ -570,6 +570,7 @@ PPC_FUNC(__imp__NtOpenFile)
 PPC_FUNC(__imp__NtReadFile)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t eventHandle = (uint32_t)ctx.r4.u64;
     uint32_t apcRoutine = (uint32_t)ctx.r5.u64;
     uint32_t apcContext = (uint32_t)ctx.r6.u64;
     uint32_t ioStatusBlockPtr = (uint32_t)ctx.r7.u64;
@@ -628,25 +629,35 @@ PPC_FUNC(__imp__NtReadFile)
     fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
 
     // Real NT I/O completion APC (distinct from the user-mode APC queueing in
-    // NtQueueApcThread, Phase 3H). Confirmed live: a real, non-null
-    // ApcRoutine/ApcContext pair is passed on a second read of the same
-    // loading-screen file. The raw ApcRoutine value's low bit is a real flag,
-    // not part of the address -- confirmed by reading the real generated code:
-    // masking it off (& ~1) lands on a genuine mapped function (sub_8212F720)
-    // whose own body reads an IO_STATUS_BLOCK from its 2nd argument and calls
-    // its 1st argument as the real user callback with (status, bytesTransferred,
-    // IoStatusBlockPtr) -- i.e. sub_8212F720(realCallback, IoStatusBlock) is
-    // itself a real IO-completion trampoline, and its two arguments map exactly
-    // onto (ApcContext, IoStatusBlockPtr). Without this, the game waits forever
-    // for a completion signal that never comes -- the mechanism behind the
-    // stuck "pending work" counter this investigation traced
-    // (0x82670000+5636 stuck non-zero indefinitely).
-    if (apcRoutine != 0)
+    // NtQueueApcThread, Phase 3H). Cross-referenced against Xenia's real
+    // NtReadFile_entry (src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc) -- confirms
+    // every detail independently derived this investigation: parameter order
+    // (handle, event, apcRoutine, apcContext, ioStatusBlock, buffer, length,
+    // byteOffset), the ApcRoutine low-bit flag ("Low bit probably means do
+    // not queue to IO ports" per Xenia's own comment) masked off with & ~1
+    // before use, and the completion callback's real 3-arg convention
+    // (context, sysArg1=IoStatusBlock, 0) -- matches TryDeliverOneApc's
+    // existing calling convention exactly. Two real gaps Xenia's
+    // implementation has that this one initially didn't: it requires
+    // apcContext != 0 (not just apcRoutine != 0) before queuing, and it also
+    // signals the caller's event handle (r4), independent of the APC.
+    if ((apcRoutine & ~1u) != 0 && apcContext != 0)
     {
         uint32_t realApcRoutine = apcRoutine & ~1u;
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
             g_apcQueues[g_currentThreadHandle].push_back(ApcEntry{ realApcRoutine, apcContext, ioStatusBlockPtr });
+        }
+        g_handleSignalCv.notify_all();
+    }
+
+    if (eventHandle != 0)
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto eventIt = g_handleTable.find(eventHandle);
+        if (eventIt != g_handleTable.end())
+        {
+            eventIt->second.signaled = true;
         }
         g_handleSignalCv.notify_all();
     }
