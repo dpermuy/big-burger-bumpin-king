@@ -209,6 +209,7 @@ struct ApcEntry
     uint32_t routine;
     uint32_t context;
     uint32_t sysArg1;
+    uint32_t sysArg2;
 };
 static std::unordered_map<uint32_t, std::deque<ApcEntry>> g_apcQueues; // keyed by target thread handle
 
@@ -297,9 +298,14 @@ static bool TryDeliverOneApc(PPCContext& ctx, uint8_t* base, uint32_t threadHand
         it->second.pop_front();
     }
 
+    // Real delivery convention confirmed against Xenia's DeliverAPCs
+    // (src/xenia/kernel/xthread.cc): normal_routine(normal_context, arg1,
+    // arg2) -- i.e. r3=context, r4=sysArg1, r5=sysArg2. Previously hardcoded
+    // r5=0; NtQueueApcThread's real 5th parameter (arg2) is now captured and
+    // threaded through instead of silently dropped.
     ctx.r3.u64 = apc.context;
     ctx.r4.u64 = apc.sysArg1;
-    ctx.r5.u64 = 0;
+    ctx.r5.u64 = apc.sysArg2;
     PPC_CALL_INDIRECT_FUNC(apc.routine);
     return true;
 }
@@ -360,25 +366,32 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
-// Real APC queueing (Phase 3H). Signature confirmed live: r3=target thread
-// handle, r4=ApcRoutine, r5=ApcContext, r6=SystemArgument1. Delivery happens
-// in NtWaitForSingleObjectEx above when the target thread's alertable wait
-// wakes -- this call only enqueues and wakes any thread currently blocked
-// there.
+// Real APC queueing (Phase 3H). Full 5-parameter signature confirmed against
+// Xenia's real NtQueueApcThread_entry (src/xenia/kernel/xboxkrnl/
+// xboxkrnl_threading.cc): r3=target thread handle, r4=ApcRoutine,
+// r5=ApcContext, r6=SystemArgument1, r7=SystemArgument2 -- previously only
+// read r3-r6 and silently dropped SystemArgument2 (always delivered as 0
+// regardless of what the caller actually passed). Real Xbox 360
+// NtQueueApcThread is void (no real return value; the r3=0 write below is a
+// harmless simplification, not a status real callers rely on). Delivery
+// happens in NtWaitForSingleObjectEx above when the target thread's
+// alertable wait wakes -- this call only enqueues and wakes any thread
+// currently blocked there.
 PPC_FUNC(__imp__NtQueueApcThread)
 {
     uint32_t targetThreadHandle = (uint32_t)ctx.r3.u64;
     uint32_t apcRoutine = (uint32_t)ctx.r4.u64;
     uint32_t apcContext = (uint32_t)ctx.r5.u64;
     uint32_t sysArg1 = (uint32_t)ctx.r6.u64;
+    uint32_t sysArg2 = (uint32_t)ctx.r7.u64;
 
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
-        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1 });
+        g_apcQueues[targetThreadHandle].push_back(ApcEntry{ apcRoutine, apcContext, sysArg1, sysArg2 });
     }
     g_handleSignalCv.notify_all();
 
-    ctx.r3.u64 = 0; // STATUS_SUCCESS
+    ctx.r3.u64 = 0; // real signature is void; harmless placeholder
 }
 
 PPC_FUNC(__imp__NtClose)
@@ -646,7 +659,7 @@ PPC_FUNC(__imp__NtReadFile)
         uint32_t realApcRoutine = apcRoutine & ~1u;
         {
             std::lock_guard<std::mutex> lock(g_stateMutex);
-            g_apcQueues[g_currentThreadHandle].push_back(ApcEntry{ realApcRoutine, apcContext, ioStatusBlockPtr });
+            g_apcQueues[g_currentThreadHandle].push_back(ApcEntry{ realApcRoutine, apcContext, ioStatusBlockPtr, 0 });
         }
         g_handleSignalCv.notify_all();
     }
