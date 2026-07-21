@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big Bumpin' Recomp — Progress</title>
+<style>
+  :root {
+    --bg: #17151c;
+    --bg-raised: #211e28;
+    --bg-inset: #131118;
+    --hairline: #38323f;
+    --hairline-strong: #4a4356;
+    --text: #ede9f2;
+    --text-dim: #a89fb5;
+    --text-faint: #6e6578;
+    --accent: #e2954a;
+    --accent-dim: #a8703b;
+    --accent-wash: rgba(226, 149, 74, 0.12);
+    --gap-blue: #6c7ba0;
+    --gap-wash: rgba(108, 123, 160, 0.12);
+    --crit: #d1543a;
+    --crit-wash: rgba(209, 84, 58, 0.14);
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f1eb;
+    --bg-raised: #ffffff;
+    --bg-inset: #eae5db;
+    --hairline: #d9d2c4;
+    --hairline-strong: #bfb6a3;
+    --text: #241f2b;
+    --text-dim: #5c5468;
+    --text-faint: #8b8296;
+    --accent: #b5661e;
+    --accent-dim: #8a4e17;
+    --accent-wash: rgba(181, 102, 30, 0.10);
+    --gap-blue: #4b5b82;
+    --gap-wash: rgba(75, 91, 130, 0.10);
+    --crit: #a83f28;
+    --crit-wash: rgba(168, 63, 40, 0.10);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f1eb;
+      --bg-raised: #ffffff;
+      --bg-inset: #eae5db;
+      --hairline: #d9d2c4;
+      --hairline-strong: #bfb6a3;
+      --text: #241f2b;
+      --text-dim: #5c5468;
+      --text-faint: #8b8296;
+      --accent: #b5661e;
+      --accent-dim: #8a4e17;
+      --accent-wash: rgba(181, 102, 30, 0.10);
+      --gap-blue: #4b5b82;
+      --gap-wash: rgba(75, 91, 130, 0.10);
+      --crit: #a83f28;
+      --crit-wash: rgba(168, 63, 40, 0.10);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-wash); }
+
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 32px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(24px, 3.4vw, 34px);
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 span { color: var(--accent); }
+  .subhead {
+    color: var(--text-dim);
+    font-size: 14.5px;
+    max-width: 62ch;
+  }
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--hairline);
+    border: 1px solid var(--hairline);
+    margin-bottom: 40px;
+  }
+  .kpi {
+    background: var(--bg-raised);
+    padding: 18px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .kpi-value {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .kpi-value small { font-size: 14px; font-weight: 500; color: var(--text-dim); }
+  .kpi-label {
+    font-size: 12px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  section { margin-bottom: 44px; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .section-note { font-size: 13px; color: var(--text-faint); font-family: var(--mono); }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 28px;
+  }
+  @media (max-width: 860px) {
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+
+  .track {
+    background: var(--bg-raised);
+    border: 1px solid var(--hairline);
+    padding: 22px 22px 18px;
+  }
+  .track-bar {
+    position: relative;
+    height: 8px;
+    background: var(--bg-inset);
+    border-radius: 2px;
+    overflow: visible;
+    margin: 34px 4px 30px;
+  }
+  .track-fill {
+    position: absolute;
+    inset: 0;
+    width: {{MILESTONE_FILL}}%;
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    border-radius: 2px;
+  }
+  .track-stops { position: relative; }
+  .stop {
+    position: absolute;
+    top: -34px;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 108px;
+  }
+  .stop-dot {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    background: var(--bg-inset);
+    border: 2px solid var(--hairline-strong);
+    margin-top: 28px;
+  }
+  .stop.done .stop-dot { background: var(--accent); border-color: var(--accent); }
+  .stop.current .stop-dot {
+    background: var(--crit);
+    border-color: var(--crit);
+    box-shadow: 0 0 0 4px var(--crit-wash);
+  }
+  .stop-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-align: center;
+    color: var(--text-dim);
+    line-height: 1.3;
+    white-space: pre-line;
+  }
+  .stop.current .stop-label { color: var(--crit); font-weight: 600; }
+  .stop.done .stop-label { color: var(--text); }
+
+  .current-callout {
+    margin-top: 8px;
+    padding: 12px 14px;
+    background: var(--crit-wash);
+    border-left: 3px solid var(--crit);
+    font-size: 13.5px;
+  }
+  .current-callout b { color: var(--crit); font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .coverage {
+    background: var(--bg-raised);
+    border: 1px solid var(--hairline);
+  }
+  .cov-row {
+    display: grid;
+    grid-template-columns: 92px 1fr 84px;
+    align-items: center;
+    gap: 14px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .cov-row:last-child { border-bottom: none; }
+  .cov-row.head {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-faint);
+    padding-bottom: 9px;
+  }
+  .cov-name { font-family: var(--mono); font-size: 13px; }
+  .cov-bar-track {
+    height: 14px;
+    background: var(--gap-wash);
+    border-radius: 2px;
+    overflow: hidden;
+    display: flex;
+  }
+  .cov-bar-fill { height: 100%; background: var(--accent); }
+  .cov-count { font-family: var(--mono); font-size: 12.5px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .cov-count b { color: var(--text); }
+
+  .legend {
+    display: flex;
+    gap: 18px;
+    padding: 12px 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--hairline);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  .findings {
+    background: var(--bg-raised);
+    border: 1px solid var(--hairline);
+    max-height: 620px;
+    overflow-y: auto;
+  }
+  .finding {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .finding:last-child { border-bottom: none; }
+  .finding.pivotal { background: var(--accent-wash); }
+  .f-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    padding-top: 1px;
+  }
+  .finding.pivotal .f-num { color: var(--accent); font-weight: 600; }
+  .f-title { font-size: 13.5px; font-weight: 600; margin: 0 0 2px; text-wrap: balance; }
+  .f-desc { font-size: 12.5px; color: var(--text-dim); margin: 0; }
+  .f-tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    border: 1px solid var(--accent-dim);
+    border-radius: 2px;
+    padding: 1px 5px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid var(--hairline);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (max-width: 640px) {
+    .stop { width: 76px; }
+    .stop-label { font-size: 9.5px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead">
+    <div class="eyebrow">Xbox 360 static recompilation — internal snapshot</div>
+    <h1>Big Bumpin'<span> Kart</span> — recomp progress</h1>
+    <div class="subhead">
+      PowerPC → C++ static recompilation via XenonRecomp, targeting native Mac/PC.
+      Auto-generated from repo state on every push.
+    </div>
+  </div>
+
+  <div class="kpis">
+    {{KPIS}}
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Boot progress</h2>
+      <span class="section-note">furthest point reached, most recent findings log</span>
+    </div>
+    <div class="track">
+      <div class="track-bar">
+        <div class="track-fill"></div>
+        <div class="track-stops">
+          {{MILESTONE_STOPS}}
+        </div>
+      </div>
+      <div class="current-callout">
+        {{CURRENT_BLOCKER}}
+      </div>
+    </div>
+  </section>
+
+  <div class="grid-2">
+    <section>
+      <div class="section-head">
+        <h2>Kernel surface coverage</h2>
+        <span class="section-note">by subsystem prefix</span>
+      </div>
+      <div class="coverage">
+        <div class="cov-row head">
+          <div>Prefix</div>
+          <div>Coverage</div>
+          <div>Real / total</div>
+        </div>
+        {{COVERAGE_ROWS}}
+        <div class="legend">
+          <span><span class="swatch" style="background:var(--accent)"></span>real, tested implementation</span>
+          <span><span class="swatch" style="background:var(--gap-wash);border:1px solid var(--gap-blue)"></span>generic stub</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Findings log</h2>
+        <span class="section-note">newest first</span>
+      </div>
+      <div class="findings">
+        {{FINDINGS}}
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <span>host/kernel_imports.txt · host/kernel_impl.cpp · host/kernel_stubs.cpp · docs/superpowers/specs/phase3-past-loading-screen-investigation.txt</span>
+    <span>generated from repo state, {{GENERATED_DATE}}</span>
+  </footer>
+
+</div>
+</body>
+</html>
