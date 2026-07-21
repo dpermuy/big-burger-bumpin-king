@@ -152,13 +152,66 @@ confirmed, real, and should be trusted by a future pass:
     which specific loop is responsible, since sub_8212EC78's own call count is
     now confirmed low.
 
-Given sub_8212EC78's call count is low and NOT the site of repeated execution,
-the real repeating work must be happening in a part of the call tree not yet
-instrumented this way -- most likely inside sub_8212EAF0 (the tick/delta
-accumulator) or one of its OWN callees (sub_8212EA80, sub_82125DF8), called
-directly (not through the now-eliminated sub_8244AE70 retry path) by whatever
-actually drives the per-frame update at a tight cadence. That's the concrete
-next place to add source-level (not breakpoint) instrumentation.
+--- Finding 6: ROOT MECHANISM FOUND -- sub_8212EC78's own inner loop is the
+    real hang, and its exact stuck state is now confirmed with hard numbers ---
 
-Deliberately stopped here rather than continuing to guess -- this deserves a
-focused follow-up pass with fresh context budget, not a rushed conclusion.
+Instrumented sub_8212EAF0's call rate directly (elapsed-time-corrected, not the
+earlier flawed labeling): confirmed ~9.6 MILLION calls per second, sustained for
+the entire multi-minute hang. This is unambiguous: a genuine tight busy-spin,
+not slow legitimate work.
+
+Traced the caller: this rate exactly matches sub_8212EC78's OWN internal loop
+(read fully back in an earlier phase) -- `call sub_82128F58(); if it returns 0,
+loop: call sub_8212EAF0(8); check field12; if field12!=0, call sub_82128F58()
+again; loop again if it returns 0`. Instrumented that inner loop directly:
+confirmed `field4=1` and `field12=1`, STUCK at those exact values, unchanging,
+for the entire run (verified samples at hit=1 through hit=20,000,000+).
+sub_82128F58() keeps returning 0 (not-clear) every single time. This is the
+literal, complete mechanism of the hang: sub_8212EC78 never returns because the
+queue never reports clear, so it spins its own internal poll loop forever,
+burning the CPU via sub_8212EAF0/sub_82128F58 millions of times a second. This
+directly explains every earlier observation in this investigation: sub_8212EC78's
+own OUTER call count stays low (2 total, matching Finding 1) because it is
+STUCK inside one of those two calls, never returning to be called again; the
+9.6M/s sub_8212EAF0 rate; the 100%+ pegged CPU; the complete absence of further
+kernel-visible activity (nothing else runs because this thread never leaves
+the loop).
+
+This is the exact same field4/field12 mechanism investigated and fixed for the
+loading-screen texture in Phase 3H -- but a DIFFERENT, later occurrence of it.
+Instrumented NtQueueApcThread and TryDeliverOneApc (the real APC machinery from
+Phase 3H) directly to log every real call: confirmed exactly ONE
+NtQueueApcThread + ONE TryDeliverOneApc pair happens in the entire run, and it
+is the SAME loading-screen APC already fixed (target=0x1005,
+routine=0x820A98C0, context=0x8212CAC8 -- matches the Phase 3H commit's
+documented values exactly). That APC delivers successfully. Immediately after
+it runs, field4 is stuck at 1 -- meaning the APC's own routine (0x820A98C0),
+when it executes, submits a NEW item into the same queue as part of its own
+logic (plausibly "resource loaded, now do X with it"), and NOTHING ever queues
+a second APC (or any other completion signal) to clear THIS submission. The
+consumer side of Phase 3H's fix works correctly; there is a second, distinct
+producer-side gap this time.
+
+--- Status: root mechanism confirmed, root cause of the second stuck submission
+    not yet found ---
+
+This pass found the complete, hard-evidence mechanism of the hang -- a genuine
+breakthrough after two prior passes of hypothesis-then-refutation. What remains
+open: WHY nothing ever delivers a second APC (or clears field4 through some
+other real path) for whatever routine 0x820A98C0 submits after it first runs.
+Concrete next steps for a future pass:
+  1. Trace what routine 0x820A98C0 actually does when TryDeliverOneApc invokes
+     it -- specifically what it writes into the queue at 0x82670000+5632 and
+     what real completion mechanism (a second APC to a specific thread? a
+     spinlock-protected direct write? something else?) it expects.
+  2. Check whether one of the six worker threads already confirmed blocked in
+     alertable NtWaitForSingleObjectEx (private/ppc/ppc_recomp.2.cpp's
+     sub_820AB238 -> sub_8212B210 chain, Phase 3H/3I era finding) is the
+     intended recipient of a second APC that's simply never queued -- i.e.
+     whether this is the SAME class of "consumer waits correctly, producer
+     never signals" bug as Phase 3H, just for a different work item and a
+     different, not-yet-identified producer call site.
+
+Deliberately stopped here with the full, real mechanism documented rather than
+guessing at the final root cause without fresh context -- this is a strong,
+concrete starting point for the next pass, not a dead end.
