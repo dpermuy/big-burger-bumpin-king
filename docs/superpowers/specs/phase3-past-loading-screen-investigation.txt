@@ -663,3 +663,89 @@ per-frame or per-vblank message-pump table, following the same
 static-grep-then-live-instrument playbook used in Findings 10-14), and
 determine which thread it's meant to run on relative to the thread stuck
 in sub_8212EC78's wait loop.
+
+--- Finding 15: found who schedules sub_8212B210 -- and found the real
+    root cause: a shared, hardcoded r13 collapses all 5 worker threads
+    onto the same wait handle, so the real per-slot wake signal never
+    reaches anyone ---
+
+Set a breakpoint on __imp__sub_8212B210 (indirect-call-only target, so
+non-inlinable and breakpoint-reliable per this session's established
+methodology). Launched fresh under lldb with `process launch -s` (stop
+at entry, breakpoint armed before any guest code runs -- avoids the
+attach-after-launch timing gap that missed this in Finding 14). Backtrace
+confirms the caller: sub_820ABCE8, the generic XApiThreadStartup thread
+bootstrap (TLS init -> bctrl to the thread's real entry function once ->
+ExTerminateThread). sub_8212B210 IS a thread's entire body, called via
+ExCreateThread(entry=sub_820ABCE8, target=sub_8212B210) -- five such
+threads exist (handles 0x1005/1009/100B/100D/100F/1011 from the boot log).
+
+Traced sub_8212B210's own structure: it calls sub_820A9A60() once to get
+its own queue-slot index, then enters a loop (loc_8212B284) whose first
+action is a real, genuine wait -- sub_820A9710 -> sub_820AB238 ->
+NtWaitForSingleObjectEx (confirmed real, calls the actual host
+implementation) -- on an event handle read from a per-index table (base
+-32154*65536+28). Only after that wait returns does it reach the field4
+check/decrement logic from Finding 14.
+
+Traced the submission side up one more level: sub_82128DB0 (increments
+field4, the real Finding 6 submission path) calls sub_82128D08 (finds a
+free slot, claims it) which calls sub_82128CA8 (looks up the slot's
+function pointer) which calls sub_82128B40 (re-resolves the pointer back
+to a slot index, loads that slot's event handle from the same -32154+28
+table) which calls sub_820A96D0 -> a REAL NtSetEvent. Cross-checked both
+NtSetEvent and NtWaitForSingleObjectEx's host implementations
+(host/kernel_impl.cpp) directly: both are real, correct, condition-
+variable-based implementations, not stubs.
+
+Instrumented both live (host-side, reverted after capture):
+- Exactly one NtSetEvent call all run: handle=0x100A, found=true (the
+  event genuinely exists in the handle table).
+- All five worker threads' first (and only) NtWaitForSingleObjectEx call
+  waits on handle=0x1004 -- not 0x100A, not five different handles. All
+  five threads wait on the exact same handle.
+- Six events are created at boot (0x1004, 0x1008, 0x100A, 0x100C, 0x100E,
+  0x1010) -- one per worker thread, confirming five distinct handles were
+  meant to exist for five distinct workers.
+- 0x1004 is created non-signaled (initialState=false) and is never
+  touched by any other kernel call in the entire run -- confirmed via a
+  second live check.
+
+--- Root cause: sub_820A9A60 (the "what is my queue slot" query) reads a
+    byte at [r13+268] -- genuinely a per-thread TEB field on real Xbox
+    360 hardware. Grepped the entire recompiled codebase for any STORE
+    to that offset: none exist (only loads, in a handful of other
+    functions) -- it is read-only from the game's perspective, meaning
+    it must be host-initialized per thread at creation time. Found the
+    actual initialization in host/kernel_impl.cpp's ExCreateThread
+    (~line 995): `threadCtx.r13.u64 = 0x82670000;`, with the comment
+    "small-data-area base, same as main thread" -- hardcoded IDENTICAL
+    for every thread. r13 genuinely has a dual role on real hardware
+    (small-data-area base for compiler-generated global-variable access,
+    AND a per-thread TEB pointer for TLS-style per-thread state); this
+    implementation collapsed both roles onto the same shared, fixed
+    address. Since [r13+268] is the same physical memory for every
+    thread, all five workers compute the same slot index (0), all wait
+    on the same event (0x1004, slot 0's), and any real submission's wake
+    signal (which correctly computes and signals the SUBMITTED slot's
+    real event, e.g. 0x100A for slot 1) reaches no one, because no thread
+    is actually waiting on that handle. This is not a missing feature or
+    an unlucky race -- it is a structural, deterministic mismatch that
+    would reproduce identically on every run. ---
+
+This fully explains Finding 14's observation (sub_8212B210 entered
+exactly 5 times, all during boot, then never again): each thread blocks
+forever on its very first wait call, before ever reaching the field4
+logic a second time. It is consistent with, but supersedes, Finding 14's
+framing -- the field4 clearer isn't "one-shot by design", its owning
+threads are all permanently deadlocked on a startup wait that can never
+be satisfied by this specific bug.
+
+Real fix requires giving each ExCreateThread'd thread its own private TEB
+memory block (distinct from the shared small-data-area base), populated
+with a real per-thread slot/index value at [+268], while still allowing
+compiler-emitted small-data-area accesses through r13 to keep working (a
+real Xbox 360 TEB is a superset structure that contains -- or is adjacent
+to -- the small-data pointer, so both roles need to coexist correctly,
+not just one or the other). This is a real architectural fix, not a
+narrow patch, and is the concrete next step.
