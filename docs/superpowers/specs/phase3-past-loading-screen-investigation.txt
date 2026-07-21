@@ -71,18 +71,55 @@ mis-treated as code, which would itself be a real bug matching the "call an
 address as if it always contains valid trampoline code" pattern already seen once
 this session in a different function.
 
+--- Finding 4: the fixed-address hypothesis was traced and then refuted ---
+
+Traced the exact constant sub_8244AE70 passes to sub_82128EB0: `-32187 base
+(0x82450000) - 20936 (0x51C8) = 0x8244AE38`. Confirmed this address IS a real,
+mapped function (`sub_8244AE38` appears in private/ppc/ppc_func_mapping.cpp) --
+not an unmapped/null indirect-call target as initially suspected. Read it: short,
+straight-line, calls sub_82495908 once, always returns 1. Read sub_82495908: a
+larger function containing a real circular-linked-list traversal (walk via a
+"next" pointer at offset 20 until back to a saved sentinel node) -- structurally
+the same shape as the XDVDFS BST bug fixed earlier this project, a plausible
+timer/callback-list walk.
+
+Instrumented that list-traversal loop's iteration count live: zero hits in a
+15-second run -- the loop is never entered at all.
+
+Went further and used lldb breakpoints directly (attach to an already-running
+process, breakpoint on `__imp__sub_8244AE38`, continue) rather than continuing to
+reason from static code alone. Result across a full 60-second real run: the
+breakpoint never triggers. This is a decisive, empirical negative result --
+sub_8244AE38 is never actually called during real execution, which means the
+flag-==0 branch of sub_82128EB0 (the bctrl-to-caller-address path) is NOT the one
+being taken on the hot retry path, contradicting the single live sample that
+suggested otherwise. My reconstructed call chain from sub_8244AE70 down through
+this specific branch does not reflect what actually happens at runtime.
+
 --- Status: investigation paused here, not resolved ---
 
-This is now real, deep uncertainty -- multiple nested indirect/virtual function
-calls where the actual target resolved at runtime isn't yet traced, unlike every
-prior bug this session (which were single, nameable, well-evidenced root causes).
-Continuing requires either:
-  1. Tracing what sub_8244AE70 actually passes as the "fixed address" argument and
-     what real data/code lives there (would need reading further back in
-     sub_8244AE70/sub_8244AFB0's own setup code to find where that address comes
-     from), or
-  2. Instrumenting the bctrl call itself (in sub_82128EB0) to log the resolved
-     target address and whether/how long it takes to return.
+This now has one confirmed real negative result (sub_8244AE38 is never called)
+that invalidates a carefully-constructed static-analysis chain -- a useful
+finding in its own right (rules out an entire branch of investigation) but not a
+root cause. The remaining live possibilities:
+  1. sub_82128EB0's flag branch is actually being taken the OTHER way (calling
+     sub_82128DB0) far more often than the single captured sample suggested, and
+     something in ITS logic (not yet fully traced past field4's check) is the
+     real gate.
+  2. The retry loop in sub_8244AE70 isn't reached the way repeated lldb sampling
+     suggested -- the call-stack samples were real, but the specific branch taken
+     inside sub_82128EB0 during those samples wasn't confirmed, only inferred.
+  3. A run-to-run divergence noticed during this pass (the loading-screen file's
+     second, lowercase-path open -- which succeeds in every other run this
+     session -- failed consistently when launched under lldb directly) suggests
+     real, load-bearing timing sensitivity somewhere in this system. Worth
+     treating any single run's exact behavior as a sample, not a certainty.
+
+Next productive step: breakpoint directly on `__imp__sub_82128DB0` and
+`__imp__sub_8212EC78` (not sub_8244AE38) on an attached, already-running process,
+with a hit counter, to get the same kind of decisive empirical answer this pass
+got for sub_8244AE38 -- confirm or refute the flag branch directly rather than
+inferring it from a single static read.
 
 Deliberately stopped here rather than continuing to guess -- this deserves a
 focused follow-up pass with fresh context budget, not a rushed conclusion.
