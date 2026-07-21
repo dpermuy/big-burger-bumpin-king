@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <mutex>
@@ -199,6 +200,37 @@ struct HandleObject
 static std::unordered_map<uint32_t, HandleObject> g_handleTable;
 static uint32_t g_nextHandle = 0x1000; // avoid colliding with 0 / 0xFFFFFFFF sentinels
 static std::condition_variable g_handleSignalCv;
+
+// Real per-thread small-data-area/TLS base (Phase 3K). r13 serves a dual
+// role on real Xbox 360: it's the classic PowerPC EABI small-data-area base
+// (signed 16-bit displacements reach the observed -21984..+20124 range
+// around it) AND the base for compiler-emitted declspec(thread) TLS fields
+// (confirmed against Xenia's XThread::Create, src/xenia/kernel/xthread.cc --
+// real hardware gives every thread its own private KPCR/TLS block, seeded
+// from a template, not a single shared address). This project previously
+// hardcoded r13 identically for every thread ("same as main thread"), which
+// silently collapsed every genuinely per-thread field (e.g. the byte at
+// [r13+268] the game reads as its own queue-worker slot index) onto the
+// same shared memory -- confirmed live: this is why every worker thread in
+// the field4/completion-queue subsystem computed the same slot and waited
+// on the same event handle (Finding 15), permanently missing every real
+// completion signal.
+//
+// Fix: give every ExCreateThread'd thread its own private 64 KiB block,
+// seeded by copying the current content of the shared small-data window
+// (so any boot-time-initialized values other code relies on seeing are
+// still visible, matching how real declspec(thread) storage is seeded from
+// a template at thread creation) rather than aliasing the same memory.
+// r13 points to the middle of the block so the same +/-32 KiB signed
+// displacement range used throughout the game's compiled code still
+// resolves correctly. [+268] is then overwritten with a real, unique,
+// monotonically-increasing per-thread value (not a guess at the exact
+// original Xbox 360 numbering scheme, which isn't recoverable from the
+// recompiled code alone, but a principled, collision-free choice that
+// directly fixes the confirmed bug).
+static constexpr uint32_t kTlsBlockSize = 0x10000; // 64 KiB, covers the full observed r13-relative offset range with margin
+static constexpr uint32_t kTlsBlockCenter = kTlsBlockSize / 2;
+static uint32_t g_nextTlsSlotIndex = 1;
 
 // Real user-mode APC queueing (Phase 3H). Xbox 360 worker threads (e.g. the
 // XApiThreadStartup pool thread) block in an alertable NtWaitForSingleObjectEx
@@ -962,20 +994,37 @@ PPC_FUNC(__imp__ExCreateThread)
     uint32_t stackBase;
     uint32_t handle;
     uint32_t threadId;
+    uint32_t tlsBlockBase;
+    uint32_t tlsSlotIndex;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         stackBase = g_bumpAllocatorNext;
         g_bumpAllocatorNext += kStackSize;
 
+        tlsBlockBase = g_bumpAllocatorNext;
+        g_bumpAllocatorNext += kTlsBlockSize;
+
         handle = g_nextHandle++;
         g_handleTable[handle] = HandleObject{ HandleObjectType::Thread, false };
 
         threadId = g_nextThreadId++;
+        tlsSlotIndex = g_nextTlsSlotIndex++;
     }
 
-    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X}",
+    // Seed the new thread's private small-data/TLS block from the current
+    // content of the shared window every thread used to alias (see the
+    // g_nextTlsSlotIndex comment above) -- this preserves visibility of any
+    // boot-time-initialized values other code expects to see via r13, matching
+    // how real declspec(thread) storage is seeded from a template rather than
+    // starting zeroed.
+    std::memcpy(base + tlsBlockBase, base + (0x82670000 - kTlsBlockCenter), kTlsBlockSize);
+    // Overwrite the one confirmed genuinely-per-thread field (Finding 15):
+    // the queue-worker slot index at [r13+268].
+    PPC_STORE_U8(tlsBlockBase + kTlsBlockCenter + 268, (uint8_t)tlsSlotIndex);
+
+    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X} tlsSlot={}",
         entryAddress, xApiThreadStartup != 0 ? "XApiThreadStartup" : "StartAddress directly",
-        stackBase, stackBase + kStackSize, handle);
+        stackBase, stackBase + kStackSize, handle, tlsSlotIndex);
 
     // XApiThreadStartup's calling convention (confirmed by reading its generated
     // code, sub_820ABCE8 in private/ppc/ppc_recomp.2.cpp): r3=StartAddress,
@@ -984,13 +1033,14 @@ PPC_FUNC(__imp__ExCreateThread)
     // r4) in r3. Calling StartAddress directly (no trampoline) uses the plain
     // thread-entry convention instead: r3=StartContext only.
     bool viaTrampoline = xApiThreadStartup != 0;
-    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle]()
+    uint32_t tlsBase = tlsBlockBase + kTlsBlockCenter;
+    std::thread hostThread([entryAddress, stackBase, kStackSize, startContext, startAddress, viaTrampoline, base, handle, tlsBase]()
     {
         g_currentThreadHandle = handle;
 
         PPCContext threadCtx{};
         threadCtx.r1.u64 = stackBase + kStackSize - 0x10;
-        threadCtx.r13.u64 = 0x82670000; // small-data-area base, same as main thread (Phase 2R)
+        threadCtx.r13.u64 = tlsBase; // per-thread small-data/TLS base (Phase 3K, Finding 15 fix)
         if (viaTrampoline)
         {
             threadCtx.r3.u64 = startAddress;
