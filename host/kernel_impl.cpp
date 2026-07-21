@@ -1008,7 +1008,17 @@ PPC_FUNC(__imp__ExCreateThread)
         g_handleTable[handle] = HandleObject{ HandleObjectType::Thread, false };
 
         threadId = g_nextThreadId++;
-        tlsSlotIndex = g_nextTlsSlotIndex++;
+        // Wrapped to [1,5]: the field4/completion-queue subsystem (Finding
+        // 15) sizes its per-slot event-handle table for exactly 5 workers.
+        // An unwrapped monotonic index handed a 6th XApiThreadStartup
+        // thread (a separately-purposed worker, not one of the 5) slot 6 --
+        // out of that table's bounds, reading an unset handle and busy-
+        // spinning at full CPU on STATUS_INVALID_HANDLE (Finding 17) instead
+        // of the pre-fix behavior of just blocking forever. Wrapping is a
+        // pragmatic, collision-tolerant choice, not a recovered original
+        // numbering scheme -- real Xbox 360 semantics for this field aren't
+        // recoverable from the recompiled code alone.
+        tlsSlotIndex = ((g_nextTlsSlotIndex++ - 1) % 5) + 1;
     }
 
     // Seed the new thread's private small-data/TLS block from the current

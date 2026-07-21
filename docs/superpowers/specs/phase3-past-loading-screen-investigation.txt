@@ -794,3 +794,82 @@ before this retry loop can proceed, and nothing currently does.
     same methodology (trace who's supposed to write it, likely another
     NtCreateEvent + population step this project hasn't implemented or
     reached yet). ---
+
+--- Finding 17: traced kernelbase+7240+20 to its real initializer -- a real,
+    correctly-implemented NtCreateMutant chain; the "unknown handle 0"
+    symptom is a different call site entirely ---
+
+Traced who's supposed to populate [kernelbase+7240+20] (the uninitialized-
+handle blocker Finding 16 left off on). Grepped for the base-computation
+pattern (lis -32153 / addi 7240) function-scoped this time, tracking
+register liveness within each function rather than a fixed line window
+(the naive version produced two false positives from register reuse --
+free-list and physics-array code coincidentally reusing r11 after it had
+already been reassigned away from the target base).
+
+Found the real chain: sub_8212BF78 (private/ppc/ppc_recomp.12.cpp:9187,
+the exact retry-loop function from the day's earlier lldb backtrace)
+computes `r3 = address of [kernelbase+7240+20]` and calls sub_821284E0
+(private/ppc/ppc_recomp.11.cpp:38461), which calls sub_8212F4B8 (private/
+ppc/ppc_recomp.12.cpp:17508) and stores its result at that address.
+sub_8212F4B8 calls the real __imp__NtCreateMutant (host/kernel_impl.cpp:
+255) -- confirmed via reading the host implementation to be a genuine,
+correct, non-stubbed handle-table-backed creation, matching the same
+pattern as NtCreateEvent.
+
+Instrumented live (reverted after capture): sub_8212F4B8 returns real,
+valid, sequential handles (0x1000, 0x1002, 0x1003, 0x1006, 0x1007, ...)
+every time it's called, and [kernelbase+7240+20] is confirmed correctly
+populated with 0x1007 immediately after sub_8212BF78's init step. A
+second reader of the same field, sub_821299E0 (private/ppc/ppc_recomp.12.
+cpp:3307, reached via sub_8212D1F0 -> sub_8212D0E0 -> sub_821299E0 --
+Finding 12's "enumerate and conditionally initialize N subsystems" loop),
+also reads this exact address and confirmed live it sees 0x1007 correctly
+on every one of 8 captured calls. This field is NOT the source of the
+"unknown handle 0x0" spam -- that conclusion (reached mid-investigation,
+before this instrumentation) was wrong; the real spam source is unrelated
+to kernelbase+7240+20 entirely.
+
+--- Finding 18: found the real "unknown handle 0" spam source -- a
+    regression introduced by this session's own Finding 16 fix, now fixed
+    ---
+
+Traced the actual spam via ctx.r12 (the callee's own saved return
+address) at the exact NtWaitForSingleObjectEx call site inside
+sub_820AB238: every one of the zero-handle calls returns to
+0x8212B294 -- inside sub_8212B210, the exact field4-subsystem worker
+function central to Findings 14-16. This is the sixth XApiThreadStartup
+thread's (handle 0x1011) own wait call, using the out-of-range TLS-slot-
+index edge case Finding 16 already flagged as "known, low-impact, not
+blocking."
+
+That assessment was incomplete. Before Finding 16's fix, this same thread
+was equally broken but simply blocked forever (silent, low CPU cost).
+After the fix, it now reads a real-but-unset handle value (0) and
+NtWaitForSingleObjectEx returns STATUS_INVALID_HANDLE immediately rather
+than blocking -- and the surrounding code doesn't check for that specific
+failure, looping straight back into the same non-blocking wait. Confirmed
+live: only 10 ExCreateThread calls total in the run, but 5.2 million
+"unknown handle" hits from this single thread inside ~10 seconds -- a
+genuine full-CPU busy-spin, a real regression this session's own fix
+introduced (changed a silent deadlock into a loud, CPU-burning one).
+
+Fixed in host/kernel_impl.cpp's ExCreateThread: the per-thread TLS-slot-
+index counter (g_nextTlsSlotIndex) now wraps to [1,5] instead of growing
+unbounded, keeping every thread's computed table index within the
+field4-subsystem's real 5-entry bounds. This is a pragmatic, collision-
+tolerant choice (the 6th thread's slot value now collides with the 1st),
+not a recovered original numbering scheme -- real Xbox 360 semantics for
+this field aren't recoverable from the recompiled code alone.
+
+Verified live: zero "unknown handle" errors in a full run (previously
+millions), no crash, and the run now reaches a genuinely new point never
+observed in any prior session state -- a `[stub] XNotifyGetNext` call,
+past everything from all sixteen prior findings.
+
+--- Status: both the field4-subsystem worker-thread deadlock (Finding 15)
+    and its own busy-spin regression (Finding 18) are fixed and verified
+    live. The kernelbase+7240+20 mutant chain (Finding 17) was investigated
+    and confirmed already correct -- a real negative result, not a gap.
+    Execution now reaches XNotifyGetNext, a new milestone past all prior
+    findings; that stub is the next concrete lead. ---
