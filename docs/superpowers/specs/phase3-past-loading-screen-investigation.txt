@@ -526,3 +526,67 @@ Stopping here with a clean, fully-committed, non-regressing tree -- three
 real, Xenia-verified kernel fixes shipped tonight (Findings 7, 8, 11) plus
 a fully-traced, verified-correct real completion chain (Findings 8, 12),
 with one precise, narrow, well-evidenced remaining lead for next time.
+
+--- Finding 13: found and verified the ready-flag reader -- and confirmed
+    it is NOT the field4/field12 blocker ---
+
+Grepped for the exact base-address computation pattern from Finding 12
+(lis -32153 / addi -29464) project-wide in private/ppc/ppc_recomp.12.cpp,
+requiring the two constants paired together (same technique as Finding
+10). Found 8 real candidates. Checked each:
+
+- sub_8212A710: a table initializer (zeroes/sizes both the -9344 and
+  -29464 tables), not a reader.
+- sub_8212DE28: reads a DIFFERENT, adjacent field ([+328] bit 0), a
+  related-but-distinct check -- not the exact match.
+- sub_8212EA80 (private/ppc/ppc_recomp.12.cpp:15743): exact match. Loops
+  over indices 0-2 of the -29464 table, reads [entry+324], masks bit 4
+  (0x10) -- the precise bit sub_82127E18 (Finding 12) sets -- and calls
+  sub_8212DC20 when set.
+
+Traced sub_8212EA80's call chain up: called from inside sub_8212EAF0
+(private/ppc/ppc_recomp.12.cpp:15821), the exact tick-accumulator function
+already identified in Finding 6 as the root busy-loop mechanism (called
+~9.6M times/sec by the stuck sub_8212EC78 loop). sub_8212EC78 passes r3=8
+on every call (private/ppc/ppc_recomp.12.cpp:16099-16101), which sets bit
+3 in sub_8212EAF0's flags parameter and unconditionally triggers the
+sub_8212EA80 check every single spin of the busy loop.
+
+Instrumented both ends live (source printf, reverted after capture, no
+regression):
+- sub_82127E18 (the writer): searchKey=0x0, foundIndex=0 -- confirms the
+  I/O completion writes to table index 0.
+- sub_8212EA80 (the reader): idx=0, flags324=0x00000013 (bits 0,1,4 all
+  set) -- confirms the reader checks the SAME index 0, sees bit 4 (0x10)
+  set, and takes the branch to call sub_8212DC20.
+
+This closes the "who reads the ready-flag" question definitively: the
+reader exists, runs every loop iteration, finds the exact index the
+writer touched, and correctly dispatches sub_8212DC20 for it. The full
+NT I/O completion chain (Findings 7, 8, 11, 12, 13) is now proven correct
+and live end to end, with zero gaps.
+
+Read sub_8212DC20 (private/ppc/ppc_recomp.12.cpp:13639) in full: it is a
+per-resource state-machine advancer -- updates a status field at
+[resource+928] (values like 0, 4, 6), calls sub_82129F38 / sub_8212C958 /
+sub_823EE590 / sub_82129178 depending on state, all scoped to the single
+matched resource object. Grepped its entire body for the field4/field12
+base-offset pattern (5632 off the -32153/7240-adjacent kernel-global
+base): zero occurrences.
+
+--- Conclusion: the I/O completion / ready-flag mechanism and the
+    field4/field12 busy-loop gate are two independent subsystems. The
+    completion chain is fully correct and does not drive field4/field12
+    at all -- so fixing it (Findings 7, 8, 11) was real and necessary
+    but was never going to unstick this specific loop on its own. ---
+
+field4/field12's real clearer remains unidentified and is a genuinely
+separate lead from the one this session has spent the most effort on.
+Given the shape of the busy loop (sub_8212EC78 gates on sub_82128F58's
+queue-count AND field12), and that field12's only writer is the one-time
+boot init (Finding 10), the next most direct lead is sub_82128F58 itself
+and whatever real-world event (likely GPU command-buffer/render-thread
+progress, not file I/O) it's meant to observe -- consistent with this
+project's much earlier PM4 command-buffer tracer work pointing at the
+GPU submission path rather than disc I/O as the actual dependency this
+loading screen is waiting on.
