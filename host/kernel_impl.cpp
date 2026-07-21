@@ -570,14 +570,44 @@ PPC_FUNC(__imp__NtOpenFile)
 PPC_FUNC(__imp__NtReadFile)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t apcRoutine = (uint32_t)ctx.r5.u64;
+    uint32_t apcContext = (uint32_t)ctx.r6.u64;
     uint32_t ioStatusBlockPtr = (uint32_t)ctx.r7.u64;
     uint32_t bufferPtr = (uint32_t)ctx.r8.u64;
     uint32_t length = (uint32_t)ctx.r9.u64;
     uint32_t byteOffsetPtr = (uint32_t)ctx.r10.u64;
 
-    std::lock_guard<std::mutex> lock(g_stateMutex);
-    auto it = g_fileState.find(handle);
-    if (it == g_fileState.end())
+    uint64_t offset = 0;
+    uint32_t bytesToRead = 0;
+    bool validHandle = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        auto it = g_fileState.find(handle);
+        if (it == g_fileState.end())
+        {
+            validHandle = false;
+        }
+        else
+        {
+            FileHandleState& state = it->second;
+            offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
+
+            if (offset < state.entry.fileSize)
+            {
+                uint64_t remaining = state.entry.fileSize - offset;
+                bytesToRead = (uint32_t)(remaining < length ? remaining : length);
+            }
+
+            if (bytesToRead > 0)
+            {
+                g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
+            }
+            state.position = offset + bytesToRead;
+        }
+    }
+
+    if (!validHandle)
     {
         fmt::println("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
         if (ioStatusBlockPtr != 0)
@@ -589,22 +619,6 @@ PPC_FUNC(__imp__NtReadFile)
         return;
     }
 
-    FileHandleState& state = it->second;
-    uint64_t offset = (byteOffsetPtr != 0) ? PPC_LOAD_U64(byteOffsetPtr) : state.position;
-
-    uint32_t bytesToRead = 0;
-    if (offset < state.entry.fileSize)
-    {
-        uint64_t remaining = state.entry.fileSize - offset;
-        bytesToRead = (uint32_t)(remaining < length ? remaining : length);
-    }
-
-    if (bytesToRead > 0)
-    {
-        g_xdvdfsImage.ReadBytes(state.entry, offset, bytesToRead, base + bufferPtr);
-    }
-    state.position = offset + bytesToRead;
-
     if (ioStatusBlockPtr != 0)
     {
         PPC_STORE_U32(ioStatusBlockPtr + 0, 0); // STATUS_SUCCESS
@@ -612,6 +626,31 @@ PPC_FUNC(__imp__NtReadFile)
     }
 
     fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
+
+    // Real NT I/O completion APC (distinct from the user-mode APC queueing in
+    // NtQueueApcThread, Phase 3H). Confirmed live: a real, non-null
+    // ApcRoutine/ApcContext pair is passed on a second read of the same
+    // loading-screen file. The raw ApcRoutine value's low bit is a real flag,
+    // not part of the address -- confirmed by reading the real generated code:
+    // masking it off (& ~1) lands on a genuine mapped function (sub_8212F720)
+    // whose own body reads an IO_STATUS_BLOCK from its 2nd argument and calls
+    // its 1st argument as the real user callback with (status, bytesTransferred,
+    // IoStatusBlockPtr) -- i.e. sub_8212F720(realCallback, IoStatusBlock) is
+    // itself a real IO-completion trampoline, and its two arguments map exactly
+    // onto (ApcContext, IoStatusBlockPtr). Without this, the game waits forever
+    // for a completion signal that never comes -- the mechanism behind the
+    // stuck "pending work" counter this investigation traced
+    // (0x82670000+5636 stuck non-zero indefinitely).
+    if (apcRoutine != 0)
+    {
+        uint32_t realApcRoutine = apcRoutine & ~1u;
+        {
+            std::lock_guard<std::mutex> lock(g_stateMutex);
+            g_apcQueues[g_currentThreadHandle].push_back(ApcEntry{ realApcRoutine, apcContext, ioStatusBlockPtr });
+        }
+        g_handleSignalCv.notify_all();
+    }
+
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
