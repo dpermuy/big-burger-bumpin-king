@@ -96,30 +96,69 @@ being taken on the hot retry path, contradicting the single live sample that
 suggested otherwise. My reconstructed call chain from sub_8244AE70 down through
 this specific branch does not reflect what actually happens at runtime.
 
+--- Finding 5: symbol breakpoints are unreliable under this build's -O3, and the
+    "retry loop" hypothesis for sub_8244AE70 is fully refuted ---
+
+Tried the planned next step (breakpoints on `__imp__sub_82128DB0` and
+`__imp__sub_8212EC78` directly) and got zero hits across a full 60-second real
+run on both -- despite independently confirmed evidence (kernel log output,
+earlier source-level instrumentation) that these functions DO execute. Root
+cause: this project builds Release / -O3 (confirmed in build/CMakeCache.txt).
+Small, hot, directly-called (`bl`-style) functions like these are prime inlining
+candidates, and an inlined function has no distinct call boundary left for a
+symbol breakpoint to catch. This does NOT invalidate the earlier sub_8244AE38
+negative result, though -- that address is only ever reached via an indirect
+`bctrl` (PPC_CALL_INDIRECT_FUNC), and indirect/computed call targets cannot be
+inlined by the compiler, so that breakpoint result stands.
+
+Given breakpoints are unreliable here, went back to the technique proven
+reliable all session: instrumenting the function body directly (inlining-proof,
+since the print statement travels with the code wherever it ends up). Added a
+watch at the exact point inside sub_82128EB0 that reads the branch-selecting
+flag and (for the flag==0 case) the bctrl target, printing both on every real
+entry to the function.
+
+Result (full run, real evidence): sub_82128EB0 is entered exactly ONCE, ever,
+with flag=1 (not 0) -- meaning it takes the sub_82128DB0 branch, not the bctrl
+branch, on its one and only real call. This directly means the "loc_8244AF60"
+loop inside sub_8244AE70 (call sub_8212EC78, call sub_82128EB0, loop if the
+result's low 16 bits are zero) is NOT a tight retry loop stuck spinning -- it
+runs through once and, since sub_82128DB0's real submission succeeded (field4=0,
+not full, per earlier evidence), should return a non-zero result and exit
+normally. The entire "sub_8244AE70 is the hang site" hypothesis, built from
+several real, confirmed sub-findings, is refuted by this final, decisive,
+inlining-proof measurement. Whatever the real 4-minute stall is, it is not this
+loop.
+
 --- Status: investigation paused here, not resolved ---
 
-This now has one confirmed real negative result (sub_8244AE38 is never called)
-that invalidates a carefully-constructed static-analysis chain -- a useful
-finding in its own right (rules out an entire branch of investigation) but not a
-root cause. The remaining live possibilities:
-  1. sub_82128EB0's flag branch is actually being taken the OTHER way (calling
-     sub_82128DB0) far more often than the single captured sample suggested, and
-     something in ITS logic (not yet fully traced past field4's check) is the
-     real gate.
-  2. The retry loop in sub_8244AE70 isn't reached the way repeated lldb sampling
-     suggested -- the call-stack samples were real, but the specific branch taken
-     inside sub_82128EB0 during those samples wasn't confirmed, only inferred.
-  3. A run-to-run divergence noticed during this pass (the loading-screen file's
-     second, lowercase-path open -- which succeeds in every other run this
-     session -- failed consistently when launched under lldb directly) suggests
-     real, load-bearing timing sensitivity somewhere in this system. Worth
-     treating any single run's exact behavior as a sample, not a certainty.
+This pass ends with several confirmed real facts and one large invalidated
+hypothesis -- genuine progress in the sense of eliminating a fully-traced,
+plausible-looking dead end with hard evidence, not a rushed guess. What's
+confirmed, real, and should be trusted by a future pass:
+  - sub_8212EC78 (Phase 3H's queue-poll) is not looping; it and sub_82128EB0/
+    sub_82128DB0 execute only a handful of times total, not repeatedly.
+  - The 11-deep call chain traced via lldb sampling is real and does represent
+    genuinely-executing code at the moments it was sampled -- but samples show
+    WHERE code was running at an instant, not HOW OFTEN a given path repeats.
+    Confusing the two is exactly the mistake this pass made and then corrected.
+  - Symbol breakpoints on directly-called (bl-style) functions are unreliable in
+    this -O3 build; only indirect/bctrl call targets are safe breakpoint anchors.
+    Source-level printf-style instrumentation remains the reliable technique.
+  - CPU stays pegged at 100%+ for the full multi-minute duration with no further
+    kernel-visible activity, meaning real, ongoing computation IS happening
+    somewhere -- the lldb samples showing varied leaf functions across
+    sub_8212EA80/sub_82125DF8/mutex-lock territory were real, just not proof of
+    which specific loop is responsible, since sub_8212EC78's own call count is
+    now confirmed low.
 
-Next productive step: breakpoint directly on `__imp__sub_82128DB0` and
-`__imp__sub_8212EC78` (not sub_8244AE38) on an attached, already-running process,
-with a hit counter, to get the same kind of decisive empirical answer this pass
-got for sub_8244AE38 -- confirm or refute the flag branch directly rather than
-inferring it from a single static read.
+Given sub_8212EC78's call count is low and NOT the site of repeated execution,
+the real repeating work must be happening in a part of the call tree not yet
+instrumented this way -- most likely inside sub_8212EAF0 (the tick/delta
+accumulator) or one of its OWN callees (sub_8212EA80, sub_82125DF8), called
+directly (not through the now-eliminated sub_8244AE70 retry path) by whatever
+actually drives the per-frame update at a tight cadence. That's the concrete
+next place to add source-level (not breakpoint) instrumentation.
 
 Deliberately stopped here rather than continuing to guess -- this deserves a
 focused follow-up pass with fresh context budget, not a rushed conclusion.
