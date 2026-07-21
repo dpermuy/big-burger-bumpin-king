@@ -590,3 +590,76 @@ progress, not file I/O) it's meant to observe -- consistent with this
 project's much earlier PM4 command-buffer tracer work pointing at the
 GPU submission path rather than disc I/O as the actual dependency this
 loading screen is waiting on.
+
+--- Finding 14: traced sub_82128F58's queue-count gate to its source; found
+    field4's real clearer -- and found it never runs again after boot ---
+
+Fully decoded sub_82128F58 (private/ppc/ppc_recomp.12.cpp:1700), the
+function sub_8212EC78 calls as its loop-exit test. Two checks under a
+critical section:
+
+- Primary: reads field4 directly. field4 != 0 -> return 0 (still busy,
+  keep looping). field4 == 0 -> tentatively return 1 (done).
+- Secondary: scans a 5-entry, 2088-byte-stride table (base
+  -32154*65536-11664) paired with a u16 count array at [kernelbase+5632+20].
+  Any populated+active entry forces return 0 immediately.
+
+Critically, there is no code path that sets the return value back to 1
+after the primary check -- the secondary loop can only add more reasons to
+stay busy, never fewer. field4 is the single decisive gate.
+
+Grepped for all real occurrences of the kernelbase+5632 base-computation
+pattern project-wide (7 sites; one, ppc_recomp.10.cpp:27909, is a false
+positive on an unrelated base -32239). Of the real six, five were already
+known (field12 init, this function, sub_8212EC78, sub_8212D08's table
+allocator, sub_8212DB0's arg-marshalling). The sixth, inside
+sub_8212B210 (private/ppc/ppc_recomp.12.cpp:7077), is new: it computes a
+count (clamped min(field4,1)) and does `field4 -= count`
+(private/ppc/ppc_recomp.12.cpp:~7266) -- a genuine, real DECREMENT of
+field4. This is field4's clearer.
+
+sub_8212B210 is gated by three conditions before it reaches the decrement:
+field12 != 0 (known true), a new field [kernelbase+5632+16] == 0, and
+field4 != 0. It has zero direct (bl-style) callers anywhere in the
+recompiled codebase -- confirmed via grep, and confirmed present in
+ppc_func_mapping.cpp, meaning it is exclusively invoked indirectly
+(bctrl), the same pattern as sub_82127E18 in Finding 12.
+
+Instrumented its entry directly (unconditional, live, reverted after
+capture): it DOES run -- exactly 5 times during the observed run, all
+during early boot. All five times: field4=0, field12=1, field16=0. Since
+field4 was already 0 at every one of these calls, the decrement branch is
+a no-op each time (nothing to clear). And critically: these are the ONLY
+five times it runs. It is never invoked again for the rest of the run --
+specifically, never after field4 gets raised to 1 by the real I/O
+completion submitter (sub_8212CAC8, Finding 6).
+
+--- Conclusion: this is very likely the actual root cause. field4's only
+    known clearer is a one-shot, early-boot-only callback (called 5 times,
+    then never again), not a recurring per-frame poll. Once the I/O
+    completion path raises field4 to 1, there is nothing left alive in
+    the observed call graph to ever bring it back to 0 -- so
+    sub_8212EC78's wait loop spins forever by design of this specific
+    execution path. ---
+
+Open question for next pass: sub_8212B210 is dispatched indirectly, so
+something schedules it (a per-frame tick, a message-pump callback, a
+vblank handler). Two live hypotheses to test:
+1. It genuinely only fires once during boot in the real game too (by
+   original design), and the REAL field4 clearer is a different function
+   entirely that this session hasn't found yet.
+2. It's supposed to be a recurring per-frame/per-tick callback, and
+   whatever schedules it is itself blocked -- i.e., a real circular
+   deadlock: the waiter (sub_8212EC78, running to exhaustion inside
+   sub_8244AFB0's call chain) never returns control to whatever would
+   re-arm sub_8212B210 for the next frame, so the clearer never gets
+   another chance to run. This would mean the actual bug is a scheduling/
+   threading divergence between this recompilation and real Xbox 360
+   hardware, not a missing kernel feature.
+
+Next concrete step: find what schedules sub_8212B210 (trace who populates
+its indirect dispatch entry and what triggers that dispatch -- likely a
+per-frame or per-vblank message-pump table, following the same
+static-grep-then-live-instrument playbook used in Findings 10-14), and
+determine which thread it's meant to run on relative to the thread stuck
+in sub_8212EC78's wait loop.
