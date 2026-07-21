@@ -192,26 +192,85 @@ a second APC (or any other completion signal) to clear THIS submission. The
 consumer side of Phase 3H's fix works correctly; there is a second, distinct
 producer-side gap this time.
 
---- Status: root mechanism confirmed, root cause of the second stuck submission
-    not yet found ---
+--- Finding 7: traced routine 0x820A98C0 to the real submission call site, and
+    found (then reverted) an unsafe fix built on a wrong hypothesis ---
 
-This pass found the complete, hard-evidence mechanism of the hang -- a genuine
-breakthrough after two prior passes of hypothesis-then-refutation. What remains
-open: WHY nothing ever delivers a second APC (or clears field4 through some
-other real path) for whatever routine 0x820A98C0 submits after it first runs.
-Concrete next steps for a future pass:
-  1. Trace what routine 0x820A98C0 actually does when TryDeliverOneApc invokes
-     it -- specifically what it writes into the queue at 0x82670000+5632 and
-     what real completion mechanism (a second APC to a specific thread? a
-     spinlock-protected direct write? something else?) it expects.
-  2. Check whether one of the six worker threads already confirmed blocked in
-     alertable NtWaitForSingleObjectEx (private/ppc/ppc_recomp.2.cpp's
-     sub_820AB238 -> sub_8212B210 chain, Phase 3H/3I era finding) is the
-     intended recipient of a second APC that's simply never queued -- i.e.
-     whether this is the SAME class of "consumer waits correctly, producer
-     never signals" bug as Phase 3H, just for a different work item and a
-     different, not-yet-identified producer call site.
+0x820A98C0 itself is a thin, generic trampoline (`r11=r3; r3=r4; mtctr r11;
+bctr`) -- it just jumps to whatever address is in its own first argument,
+passing its second argument along. Given NtQueueApcThread's captured params
+(routine=0x820A98C0, context=0x8212CAC8, sysArg1=0x0) and
+TryDeliverOneApc's real calling convention (r3=apc.context, r4=apc.sysArg1),
+the REAL callback this trampoline jumps to is 0x8212CAC8, called with arg=0.
 
-Deliberately stopped here with the full, real mechanism documented rather than
-guessing at the final root cause without fresh context -- this is a strong,
-concrete starting point for the next pass, not a dead end.
+Read sub_8212CAC8 (450 lines, real scene/layer processing logic -- 3-way
+cycling via div-by-3, per-object dispatch). Bracketed its execution with a
+field4/field12 watch: confirmed precisely `field4=0` on entry (clear) and
+`field4=1` on exit (stuck) -- this is unambiguously the function that performs
+the real submission. It does not call the known submission helpers
+(sub_8212B210/sub_82128DB0) directly, so the increment must happen inside a
+callee. Found the real culprit by listing every call it makes and reading the
+plausible candidates: sub_8212F788 directly calls `__imp__NtReadFile` -- a
+SECOND read of the same already-open loading-screen file (handle 0x101C),
+issued with an `ori r5,r5,1` bit-tag pattern suggesting the game is using
+NtReadFile's Event/ApcRoutine/ApcContext parameters (r4/r5/r6 in the real NT
+signature) for real asynchronous completion -- parameters this project's
+current NtReadFile implementation completely ignores (it only reads
+r7-r10: IoStatusBlock/Buffer/Length/ByteOffset).
+
+Instrumented NtReadFile directly to log the previously-ignored r4/r5/r6.
+Confirmed live: `event(r4)=0x0`, `apcRoutine(r5)=0x8212F721`,
+`apcContext(r6)=0x8212A9E8` -- non-null values on exactly this second read,
+matching the theory that this is real async I/O with a real completion
+callback the game expects and our implementation currently drops.
+
+Implemented a fix: when apcRoutine != 0, queue a real APC (reusing the exact
+Phase 3H machinery) to the calling thread with routine=apcRoutine,
+context=apcContext, sysArg1=ioStatusBlockPtr -- matching real IoApcRoutine's
+signature (ApcContext, IoStatusBlock, Reserved), which lines up exactly with
+TryDeliverOneApc's existing (r3=context, r4=sysArg1, r5=0) calling convention.
+
+Testing this fix caused a real crash (EXC_BAD_ACCESS, captured via lldb
+attach at address 0x10259 -- clearly not a valid PPC code address). Checked
+whether 0x8212F721 (the captured "apcRoutine" value) is actually a real,
+mapped function: it is NOT in private/ppc/ppc_func_mapping.cpp, and critically
+it is ODD (ends in 0x21, not 4-byte aligned) -- real PPC instructions and
+therefore all real code addresses are always 4-byte aligned, so this value
+cannot be a genuine function pointer as-is. The "IO completion APC" hypothesis
+for r5/r6 is likely wrong, or Xbox 360's real NtReadFile signature differs
+from desktop NT's in a way not yet understood, or r5's low bit is a real,
+separate flag that needs masking before use rather than being part of a raw
+address. The fix was reverted in full (host/kernel_impl.cpp and the temporary
+watch in private/ppc/ppc_recomp.12.cpp) rather than shipped broken -- verified
+clean via git status/diff and a rebuild.
+
+--- Status: exact submission call site found; completion mechanism still
+    unconfirmed -- do not re-attempt the same fix without new evidence ---
+
+This pass traced the full chain from the delivered APC down to the literal
+NtReadFile call that sets field4=1, real progress beyond Finding 6. What's
+now confirmed and safe to trust: sub_8212CAC8 is the real submitter (field4
+0->1 across its execution, bracketed live); sub_8212F788's second NtReadFile
+call on handle 0x101C is the specific call that (most likely) triggers it;
+real Xbox 360 NtReadFile calls in this game do pass non-null values in r5/r6
+that current code ignores.
+
+What's now confirmed WRONG and should not be re-attempted as-is: treating
+captured r5 (0x8212F721) directly as a callable function pointer -- it isn't
+one (unaligned, unmapped). A future pass should:
+  1. Check several more real NtReadFile call sites (not just this one) to see
+     if r5's low bit is a CONSISTENT pattern (e.g., always odd when async,
+     even/zero when sync) -- if so, mask it off before treating the rest as an
+     address, and verify the masked address IS mapped before trusting it.
+  2. Consider that r4/r5/r6 might not be Event/ApcRoutine/ApcContext at all in
+     Xbox 360's real (cut-down) XKernel NtReadFile signature -- verify against
+     a genuine reference rather than assuming desktop NT's 8-parameter layout
+     applies unchanged.
+  3. Whatever the real completion mechanism turns out to be, reuse the proven
+     Phase 3H APC-queue infrastructure (g_apcQueues/TryDeliverOneApc) to
+     deliver it -- that plumbing is confirmed solid; only the trigger-point
+     parameter interpretation was wrong this pass.
+
+Deliberately stopped here with a fully reverted, clean tree rather than
+shipping a fix built on an unconfirmed and now-disproven hypothesis -- this is
+real progress (the exact call site is found) with a clear, narrow, safe next
+step, not a dead end.
