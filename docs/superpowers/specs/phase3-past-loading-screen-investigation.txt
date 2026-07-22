@@ -1441,3 +1441,44 @@ intended trigger for sub_82568428 is or when it should fire. This
 targets the crash's proximate cause rather than restoring the game's
 original control flow, and is offered as a pragmatic option, not a
 replacement for finding the real root trigger if that's ever identified.
+
+--- Finding 29: shipped the defensive null-check fix -- real, verified
+    forward progress past the crash ---
+
+Implemented Finding 28's proposed fix in private/ppc/ppc_recomp.80.cpp's
+sub_8256A6A0: added `if (ctx.r3.u32 == 0) goto loc_8256A758;` at both
+loc_8256A700 and loc_8256A740 (the two identical unchecked-dereference
+sites, the second discovered while re-reading the function in full to
+place the first guard correctly -- same bug shape, same fix). Both jump
+to the function's existing, real early-exit path (already used by three
+other legitimate skip conditions in the same function), not a
+newly-invented fallback.
+
+Note on persistence: private/ppc/*.cpp is XenonRecomp-generated output,
+gitignored (matches this whole session's established handling of that
+directory). Confirmed via CMakeLists.txt that the normal build only
+globs existing files as source -- it does not invoke the recompiler as
+part of routine `cmake --build`, so this edit is safe from being
+silently overwritten by rebuilding, but it is not tracked by git. This
+finding entry is the durable record of the exact change, matching how
+this session has documented every other private/ppc modification.
+
+Verified live with a 90s watchdog (reverted after capture): zero
+crashes, exit code 2 (clean watchdog timeout, not a crash signal) on
+repeated runs. Execution now sails straight past the exact point Finding
+25 crashed at and reaches genuinely new territory: a second
+NetDll_XNetGetEthernetLinkStatus call, then a request for
+"speech_generic.xen" -- an entirely new asset category (speech/audio
+data) never seen in any prior run this session. That specific file isn't
+found on this disc image (status=0xC0000034), handled gracefully by the
+game's own existing not-found path (matching every other missing-file
+case observed all session), not a new crash.
+
+--- Status: the session's first real crash (Finding 25) is fixed and
+    verified. This is a defensive fix at the crash's proximate cause,
+    not a restoration of the game's original intended control flow
+    (Finding 28 established that finding sub_82568428's true caller is
+    not practical with current techniques) -- but it's a real, working,
+    low-risk unblock that lets genuine further execution happen. Next
+    milestone reached: speech_generic.xen, a new asset category
+    entirely. ---
