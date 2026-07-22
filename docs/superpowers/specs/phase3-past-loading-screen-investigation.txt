@@ -1393,3 +1393,51 @@ ending in sub_8256A6A0) is this session's newest blocker.
     given XamUserReadProfileSettings and NetDll_XNetGetEthernetLinkStatus
     both run immediately before this crash in every observed run) rather
     than more memory forensics on this recompiled binary alone. ---
+
+--- Finding 28: exhausted the practical static/dynamic search for
+    sub_82568428's real caller -- genuine dead end for this technique,
+    proposing a defensive alternative ---
+
+Tried finding the caller by searching for ANY code dispatching through
+vtable slot 472 (sub_82568428's slot on our class's vtable, confirmed in
+Finding 26), regardless of which object -- reasoning that if slot 472
+is unique to this method, any such call site would be a real candidate.
+Filtered 47 raw "+472" load hits down to 3 that genuinely match the full
+vtable-dispatch shape (load [obj+0], then [+472], then mtctr+bctrl).
+
+All 3 are false positives: identical shared pattern (a preceding call to
+sub_820D5E30, then dispatch through +472 with r4 set to a raw stack
+buffer address, not the integer 1 sub_82568428's own code checks for).
+This is a different, unrelated class whose own vtable happens to also be
+at least 472 bytes and have some other method at that exact slot --
+confirms vtable slot numbers are only meaningful within one class's own
+layout, not globally, so this search technique cannot distinguish real
+candidates from coincidental slot collisions across different classes
+without already knowing the object's real type at each call site.
+
+--- Status: this closes off the last practical avenue for finding
+    sub_82568428's real caller through this session's available
+    techniques (static grep, live breakpoints, memory scanning, hardware
+    watchpoints). Combined with Finding 27's whole-run watchpoint (the
+    strongest possible confirmation available without hand-decompiling
+    surrounding game logic), sub_82568428 is a real, legitimate,
+    indirect-only game method that is simply never invoked in any
+    observed run. Identifying its true intended trigger would require
+    either manually reading substantially more of the surrounding game
+    logic than is practical to do blind, or comparing against a related
+    Xbox 360 title's real decompilation (e.g. the dc3-decomp reference
+    from earlier this session) if an analogous class exists there. ---
+
+Practical alternative worth considering for a future pass, distinct from
+finding the "true" original caller: harden the consumer instead of the
+producer. sub_8256A6A0 (Finding 25) already treats an empty list
+(count==0) as a legitimate no-op via its r3=0 fallback path -- it simply
+never checks whether r3 itself is null before dereferencing it. A
+defensive null-check there (skip the vtable dispatch entirely when the
+list pointer is null, matching the same "nothing registered yet, nothing
+to notify" semantics the count==0 path already expresses) would directly
+prevent this specific crash without needing to know what the real,
+intended trigger for sub_82568428 is or when it should fire. This
+targets the crash's proximate cause rather than restoring the game's
+original control flow, and is offered as a pragmatic option, not a
+replacement for finding the real root trigger if that's ever identified.
