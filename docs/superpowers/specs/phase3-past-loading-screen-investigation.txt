@@ -909,3 +909,54 @@ where prior runs only ever got as far as the first, smaller one.
     loop is bounded-but-slow (legitimate per-frame work) or itself hung on
     an unmet condition, using the same call-stack-sampling technique that
     found it. ---
+
+--- Finding 20: traced sub_820CCA68's loop bound -- a real, dynamically-
+    allocated counter that nothing ever increments ---
+
+Traced the live-sampled hot loop (Finding 19) to its exact location.
+sub_820CCA68 itself doesn't loop -- it calls real __imp__VdPersistDisplay
+(host/kernel_impl.cpp:1396, a correct no-op/success stub matching real
+Vd semantics: keep the previous frame while the display resets) exactly
+once, then calls sub_820B5BC8 exactly once. The actual loop is inside
+sub_820B5BC8 (private/ppc/ppc_recomp.4.cpp:12980): a classic fixed-step
+"catch up to target" pattern -- while (target > *currentPtr) { step();
+currentPtr = ...; }, calling sub_820B9A58 once per iteration.
+
+Instrumented live (reverted after capture): target stays fixed at 5,
+*currentPtr stays fixed at 1, for 88+ million iterations in ~10 seconds.
+This rules out a "spiral of death" (target growing faster than real time,
+a common fixed-timestep bug) -- the target is static, so this is a
+straightforward stuck counter, matching every prior finding's shape.
+
+Read sub_820B9A58 (private/ppc/ppc_recomp.5.cpp:6272) in full: a short,
+real `db16cyc`-delimited delay loop (4 iterations, genuine cycle-accurate
+timing padding, not the bug), then reads the real host-provided tick
+value via [r13+256] -> +88 (the exact struct main.cpp's tickThread
+maintains), does some local bookkeeping on the CALLER's stack-local
+struct (r31+8/+12, not the shared counter), and returns based on a >=5000
+threshold comparison. Crucially, it never writes back to *currentPtr --
+the specific cell sub_820B5BC8's loop condition dereferences.
+
+Instrumented currentPtr's actual value: 0xA0400000 -- real, dynamically-
+allocated guest heap memory (bump-allocator range, not a fixed host
+structure like the r13+256 tick slot), holding the value 1.
+
+--- Conclusion: this is a real, well-evidenced negative-progress finding.
+    Whatever subsystem is meant to increment *0xA0400000-range memory
+    (most likely a vblank- or audio-callback-driven counter, given this
+    code runs immediately after VdPersistDisplay and the whole call chain
+    is display/timing-adjacent) isn't implemented in this project yet --
+    analogous to, but a different subsystem than, the existing host
+    tickThread pattern (main.cpp) that drives the r13+256 tick slot.
+    Real Xbox 360 hardware would drive this via a genuine timing
+    interrupt/callback; this host has no equivalent for whatever this
+    specific counter represents. ---
+
+Next concrete step for a future pass: find who allocates and is meant to
+own the counter at currentPtr (trace backward from the store that sets
+[self+10768] = that pointer, likely in this object's real constructor/
+init function), and determine the real semantics of the counter (VBlank
+count? audio sample count? frame count?) via the same base-computation-
+and-caller-tracing technique used throughout this document, then decide
+whether a host-driven background incrementer (matching main.cpp's
+tickThread precedent) is the right fix.
