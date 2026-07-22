@@ -1079,3 +1079,55 @@ small bitfield touched by many nearby functions this session has already
 partially read -- e.g. sub_820CCFAC/sub_820CD010's own andi/stb sequences
 on the same byte) to find who's supposed to set bit 1, and whether that
 setter is itself gated on something further upstream.
+
+--- Finding 23: found who's supposed to set the bit -- a genuine
+    unwritten global flag, but naively seeding it regresses badly ---
+
+Grepped for every store to [self+10809] (the byte sub_820B5A28 checks
+bit 2 of, Finding 22) project-wide: 15 real sites, each setting or
+clearing a different bit. Exactly one, sub_820B6220 (private/ppc/
+ppc_recomp.4.cpp:14120-14125), sets bit 0x2 specifically -- and it's
+gated by three conditions. Live-instrumented all three (reverted after
+capture): gate 1 ([self+10808]&0xFFFFFF80==0) and gate 3 (bit 2 not
+already set) both pass every call; gate 2 -- a global flag at a fixed
+absolute address, computed as lis(-32154)+(-14688) = 0x8265C6A0 -- reads
+0 on every single call, the real blocker.
+
+Grepped exhaustively for any writer of 0x8265C6A0 (both via the same
+base+offset instruction pair and via a broader search for the literal
+"-14688" addi immediate against any base register): found only three
+occurrences project-wide, all using different lis bases (-32254, -32248),
+confirmed false positives targeting unrelated addresses that coincidentally
+also subtract 14688. Zero real writers exist anywhere in the recompiled
+game code. Checked host/*.cpp too: nothing references this address either.
+
+This matches the exact shape of the existing kKernelTickPointerSlot
+precedent in host/main.cpp (Phase 2T): a slot real Xbox 360 kernel/HAL
+boot code would populate before the title's entry point runs, that this
+project's boot sequence never emulates.
+
+Implemented the obvious fix by that precedent: host/main.cpp writes 1 to
+0x8265C6A0 during SetupMemoryImage, matching kKernelTickPointerSlot's
+own pattern exactly. Tested live -- this is a real regression, not a
+fix. The run got dramatically WORSE: only 90 log lines total (previously
+100+), stuck in a tight, unbounded MmAllocatePhysicalMemoryEx loop very
+early in boot, never even reaching the file-I/O stage that every prior
+run (with the flag left at 0) reliably got past. Reverted immediately.
+
+--- Conclusion: the flag is real and genuinely never written anywhere,
+    but its true semantics are more sequenced/nuanced than "a simple
+    boot-time constant, safe to set unconditionally" -- setting it too
+    early (before whatever real prerequisite state it's meant to gate)
+    unblocks a DIFFERENT code path prematurely, which then hits its own
+    unmet dependency in a worse way (an unbounded allocation loop instead
+    of a bounded busy-wait). This is a genuine, valuable negative result:
+    confirms this specific flag is not a drop-in "second
+    kKernelTickPointerSlot", and any real fix needs to understand what
+    upstream event is supposed to set it (and when) rather than seeding
+    it as a static boot-time constant. ---
+
+Next step for a future pass: rather than a static write, trace what
+subsystem's *completion* this flag is meant to signal (search for other
+code that reads it, not just this one site, to build a fuller picture of
+its role) before attempting to set it at the right moment rather than
+unconditionally at boot.
