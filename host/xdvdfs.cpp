@@ -90,7 +90,7 @@ bool XdvdfsImage::SearchDirectory(uint32_t tableSector, uint32_t tableSize, cons
         // attributes:u8, name_length:u8); bail out if that alone doesn't fit.
         if ((uint64_t)entryOffset + 14 > tableSize)
         {
-            return false;
+            break;
         }
 
         uint16_t leftOffset, rightOffset;
@@ -109,18 +109,27 @@ bool XdvdfsImage::SearchDirectory(uint32_t tableSector, uint32_t tableSize, cons
         // as an all-0xFF "entry" -- nameLength 0xFF is not a real name length.
         if (nameLength == 0xFF)
         {
-            return false;
+            break;
         }
 
         if ((uint64_t)entryOffset + 14 + nameLength > tableSize)
         {
-            return false;
+            break;
         }
 
         std::string entryName(reinterpret_cast<char*>(&table[entryOffset + 14]), nameLength);
-        std::string entryNameLower = ToLower(entryName);
 
-        if (targetLower == entryNameLower)
+        // Confirmed via a real, reproducible lookup failure (Finding 30, phase3 spec):
+        // "speech_generic.xen" -- all-lowercase -- sits in a real XDVDFS directory
+        // alongside many mixed-case "s_Xxx" siblings (e.g. "s_Generic.xen"). Navigating
+        // by a lowercase-folded comparison sends the search down the wrong subtree,
+        // because the on-disk tree is genuinely built by comparing the ORIGINAL,
+        // case-preserved bytes (uppercase ASCII sorts before lowercase), not a
+        // case-folded order. Case-insensitive equality is still the right behavior for
+        // the final name match (confirmed correct for every prior successful lookup
+        // this project has made); only the tree-navigation comparison needed to switch
+        // to raw bytes to match how the directory was actually built.
+        if (targetLower == ToLower(entryName))
         {
             outEntry.startSector = startSector;
             outEntry.fileSize = fileSize;
@@ -128,21 +137,54 @@ bool XdvdfsImage::SearchDirectory(uint32_t tableSector, uint32_t tableSize, cons
             return true;
         }
 
-        if (targetLower < entryNameLower)
+        if (name < entryName)
         {
             // Confirmed via real captured data (a genuine right_offset=0 on a non-root
             // entry): 0 is also a "no child" sentinel alongside 0xFFFF, not a pointer
             // back to the root entry at offset 0 -- treating 0 as a real offset here
             // caused an infinite loop cycling back to the root.
-            if (leftOffset == 0xFFFF || leftOffset == 0) return false;
+            if (leftOffset == 0xFFFF || leftOffset == 0) break;
             entryOffset = (uint32_t)leftOffset * 4;
         }
         else
         {
-            if (rightOffset == 0xFFFF || rightOffset == 0) return false;
+            if (rightOffset == 0xFFFF || rightOffset == 0) break;
             entryOffset = (uint32_t)rightOffset * 4;
         }
     }
+
+    // Fallback: the BST navigation above assumes the target's case-sensitive
+    // ordering relative to the tree's real on-disk sort matches what led us here.
+    // If it didn't find a match (including hitting a bad offset or truncated
+    // entry), fall back to a linear scan of the whole table -- slower, but
+    // guaranteed correct regardless of any remaining comparison-order edge case,
+    // and this function is not called often enough for that cost to matter.
+    uint32_t linearOffset = 0;
+    while ((uint64_t)linearOffset + 14 <= tableSize)
+    {
+        uint32_t startSector, fileSize;
+        uint8_t attributes, nameLength;
+        std::memcpy(&startSector, &table[linearOffset + 4], 4);
+        std::memcpy(&fileSize, &table[linearOffset + 8], 4);
+        attributes = table[linearOffset + 12];
+        nameLength = table[linearOffset + 13];
+        if (nameLength == 0xFF) break;
+        if ((uint64_t)linearOffset + 14 + nameLength > tableSize) break;
+
+        std::string entryName(reinterpret_cast<char*>(&table[linearOffset + 14]), nameLength);
+        if (targetLower == ToLower(entryName))
+        {
+            outEntry.startSector = startSector;
+            outEntry.fileSize = fileSize;
+            outEntry.isDirectory = (attributes & 0x10) != 0;
+            return true;
+        }
+
+        linearOffset += 14 + nameLength;
+        linearOffset = (linearOffset + 3) & ~3u; // 4-byte alignment between entries
+    }
+
+    return false;
 }
 
 bool XdvdfsImage::ResolvePath(const std::string& path, XdvdfsEntry& outEntry)

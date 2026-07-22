@@ -1482,3 +1482,60 @@ case observed all session), not a new crash.
     low-risk unblock that lets genuine further execution happen. Next
     milestone reached: speech_generic.xen, a new asset category
     entirely. ---
+
+--- Finding 30: found and fixed a real bug in host/xdvdfs.cpp -- BST
+    directory navigation compared case-folded names, but the on-disc
+    tree is sorted by raw bytes ---
+
+speech_generic.xen genuinely exists on the disc (confirmed via `strings`
+on the raw ISO and a temporary linear-scan directory dump added to
+host/xdvdfs.cpp -- both found it plainly, sitting directly under
+Packages\ alongside ~60 other real files). Yet
+XdvdfsImage::ResolvePath consistently failed to find it, while
+succeeding for many sibling files (e.g. w_apploadingscreen_fetm.xen,
+looked up successfully dozens of times earlier this session).
+
+Root cause: SearchDirectory's binary-search-tree traversal (host/
+xdvdfs.cpp) decided which child to descend into by comparing
+lowercase-folded strings (`targetLower < entryNameLower`), but the
+Packages directory holds a real mix of casings -- many "s_Xxx" entries
+(capital S: s_Generic.xen, s_DeathMatch.xen, s_CharacterTool.xen, etc.)
+alongside all-lowercase "speech_xxx" entries (speech_generic.xen,
+speech_hockey.xen, etc.). The genuine on-disc BST was built by
+comparing the ORIGINAL, case-preserved bytes (uppercase ASCII sorts
+before lowercase), not a case-folded order -- so our case-insensitive
+navigation decision sent the search down the wrong subtree for entries
+whose case-sensitive and case-folded orderings disagree, even though
+the final name-equality check (correctly case-insensitive, matching
+every prior successful lookup) would have accepted the match if the
+traversal had ever reached it.
+
+Confirmed directly: a temporary linear (non-BST) scan of the same table
+found speech_generic.xen instantly; the BST-based search did not.
+Diagnostic instrumentation eliminated other candidate explanations first
+(stream error state: ruled out, `good()`/`fail()` clean on every call;
+a bad drive-prefix in my own test path: real bug found and fixed in the
+test itself, host/kernel_impl.cpp's OpenGuestFile already correctly
+strips "d:\\"/"d:/" via `path.substr(3)` before calling ResolvePath).
+
+Fix (host/xdvdfs.cpp, SearchDirectory): switched the tree-navigation
+comparison to the raw, case-preserved name (`name < entryName`),
+keeping the final match check case-insensitive as before. Also added a
+linear-scan fallback over the same table if the BST walk doesn't find a
+match (covers any other real ordering edge case this specific
+hypothesis doesn't explain, at the cost of a full table scan only on
+the failure path -- this function isn't called often enough for that to
+matter).
+
+Verified live with an extended watchdog (180s, reverted after capture):
+speech_generic.xen now resolves (status=0x0) and reads completely (36
+real NtReadFile calls, ~9.46 MB total, consistent with a real generic
+speech/audio pack). Execution reaches a new kernel call never seen in
+any prior run this session: KeResetEvent.
+
+--- Status: a real, generically-applicable bug fixed at the host's disc-
+    reader layer (not a per-file gap like every other finding this
+    session) -- likely also fixes other, not-yet-reached files whose
+    names happen to collide the same way under case-folded comparison,
+    not just this one. Next milestone: KeResetEvent, a currently-stubbed
+    kernel import, is the new frontier. ---
