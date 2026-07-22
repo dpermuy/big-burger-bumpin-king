@@ -960,3 +960,70 @@ count? audio sample count? frame count?) via the same base-computation-
 and-caller-tracing technique used throughout this document, then decide
 whether a host-driven background incrementer (matching main.cpp's
 tickThread precedent) is the right fix.
+
+--- Finding 21: found who allocates and owns the stuck counter -- and why
+    nothing ever advances it (no real GPU executing commands) ---
+
+Grepped for the single store to [self+10768] itself (the pointer field,
+not the counter it points to): sub_820B6560 (private/ppc/ppc_recomp.4.
+cpp:14587), a real display/ring-buffer object constructor. It allocates a
+96-byte block via sub_820AB8B0 (a real pool allocator wrapping the
+project's already-correct MmAllocatePhysicalMemoryEx-family allocation
+path), stores the result at [self+10768], then in the same function calls
+the real, already-implemented __imp__VdInitializeRingBuffer (host/
+kernel_impl.cpp:1276, wired to GpuCommandTracer::RegisterRingBuffer) and
+__imp__VdEnableRingBufferRPtrWriteBack (host/kernel_impl.cpp:1288/1291,
+already special-cased to always report "caught up" specifically to avoid
+this exact class of stall -- confirmed via the code's own comment).
+
+This confirms sub_820B6560 is the real owner: a genuine GPU/display
+ring-buffer setup object, and the 96-byte block at [self+10768] is a
+small counter/fence structure tied to it, not a mystery allocation.
+
+Grepped for the two-step load-then-dereference-write pattern (load
+[X+10768] into a register, then store to that register+0) to find every
+real writer of the counter cell itself: exactly two matches besides the
+one already read (sub_820B5BC8's own read). Both are inside sub_820B6560
+itself (the constructor, at private/ppc/ppc_recomp.4.cpp:14953-14962) and
+a second device-reset-style function (private/ppc/ppc_recomp.5.cpp:
+7846-7857) -- both compute the exact same formula, `*counter =
+[self+10780] - 2`, matching the observed initial value (current=1,
+[+10780]=3) exactly. These are one-time initialization/reset writes, not
+an ongoing incrementer.
+
+Traced the ONE real incrementing mechanism: sub_820B5A28 (private/ppc/
+ppc_recomp.4.cpp:12733), called from within sub_820B5BC8's own catch-up
+loop path (loc_820B5C1C, private/ppc/ppc_recomp.4.cpp:13027-13029),
+builds a real 40-byte PM4 TYPE-3 command packet (header constant 0xC000-
+family, matching this session's earlier confirmed PM4 packet-construction
+shape from the 0x3F/0x48 decode work) and submits it into the GPU ring
+buffer. This is the real Xbox 360 mechanism: the CPU asks the GPU
+hardware itself to write the incremented counter value once the GPU's
+command processor actually reaches this point in the command stream --
+an EVENT_WRITE-family PM4 command (header opcode field decodes to 0x3B,
+not yet identified against a confirmed opcode table; a new, undecoded
+opcode for a future PM4 tracer pass).
+
+--- Conclusion: the counter is real, correctly owned, correctly
+    allocated, and correctly initialized. The only thing that can ever
+    advance it is the GPU hardware executing a submitted command -- and
+    this project's GpuCommandTracer only logs/parses submitted PM4
+    packets (confirmed via host/gpu_trace.cpp), it never executes their
+    real side effects. This is the same class of gap
+    VdEnableRingBufferRPtrWriteBack's existing "always report caught up"
+    special-case was built to route around, but that precedent doesn't
+    apply here (this counter isn't the RPtr write-back address; it's a
+    different, sub_820B5A28-driven fence). Implementing a real GPU
+    command executor (even a minimal one that just fulfills EVENT_WRITE-
+    style fence/counter commands without real rendering) is substantial,
+    scoped future work -- the same territory as this session's earlier
+    XenosRecomp evaluation, not a quick fix. ---
+
+Next concrete step for a future pass: decode PM4 opcode 0x3B (or confirm
+the real opcode field extraction is off) against Xenia's real Xenos
+command-processor implementation (the established high-value Xenia
+cross-reference technique), then decide the minimal real semantics
+GpuCommandTracer needs to fulfill this specific command type -- likely a
+small, targeted addition (write the expected value to the packet's target
+address when scanned), following the exact precedent already set by
+VdEnableRingBufferRPtrWriteBack, rather than a full command executor.
