@@ -873,3 +873,39 @@ past everything from all sixteen prior findings.
     and confirmed already correct -- a real negative result, not a gap.
     Execution now reaches XNotifyGetNext, a new milestone past all prior
     findings; that stub is the next concrete lead. ---
+
+--- Finding 19: XNotifyGetNext is not a bug -- execution has moved past
+    every prior finding into genuinely new territory ---
+
+Checked what's supposed to implement XNotifyGetNext (currently a generic
+stub returning FALSE/no-notification unconditionally, host/kernel_stubs.
+cpp:737). Real Xbox 360 XNotifyGetNext legitimately returns FALSE most of
+the time (no pending system notification) -- confirmed via the call site
+(r3=handle, r4=0 filter, r5/r6=out pointers) that returning FALSE without
+touching the out pointers is the correct, safe behavior for the common
+case, not a gap.
+
+Raised the watchdog and sampled the live process with lldb (attach,
+`thread list`/`bt all` across all 10 threads, repeated samples a second
+apart). Found the main thread (thread #3 in this run) is NOT stuck at a
+fixed instruction -- it's actively executing, deep inside a large,
+previously-uninvestigated call chain: sub_8244AFB0 -> sub_824AAFF0 ->
+sub_824A76D0 -> sub_820CCA68 -> sub_820B5BC8 -> sub_820B9A58. The outer
+frames stay fixed across samples while the innermost program counter
+keeps changing -- a genuine, bounded compute loop (sub_820CCA68 iterating
+and calling helpers per-item), not a spin on an unmet condition like every
+prior finding this session.
+
+A second, longer run (60s watchdog) shows real additional forward
+progress before reaching this point: a second, larger loading-screen
+asset now loads correctly (two NtReadFile calls, 262144 + 94208 bytes),
+where prior runs only ever got as far as the first, smaller one.
+
+--- Status: this is a genuine new milestone. Every blocker from Findings
+    1-18 is confirmed resolved -- current execution point is inside
+    unexplored, likely physics/collision-style simulation code
+    (sub_820CCA68 and friends), not any previously-diagnosed hang. Next
+    session's concrete starting point: determine whether sub_820CCA68's
+    loop is bounded-but-slow (legitimate per-frame work) or itself hung on
+    an unmet condition, using the same call-stack-sampling technique that
+    found it. ---
