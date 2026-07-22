@@ -1589,3 +1589,109 @@ understanding).
     sub_820B5BC8's loop will spin before giving up, matching how real
     game engines commonly bound a catch-up loop to avoid exactly this
     kind of stall) as a pragmatic unblock. ---
+
+--- Finding 32: Traced the Finding 20-24/31 fence object to its real owner
+    -- root cause is a missing GPU/vblank interrupt callback, not the
+    HSIO gate ---
+
+Re-analyzed the WATCH-16A dump (watch16_run.log, 8363 samples, iter 1
+through ~4.18 billion) with fresh eyes instead of assuming target was
+fixed at 5 like the original Finding 20 capture:
+
+    iter=1           target=5  current=1
+    iter=259000001   target=11 current=1
+    iter=517500001   target=17 current=1
+    iter=776000001   target=23 current=1
+    ...              (climbs by +6 roughly every 258-259M iterations)
+    iter=3851000001  target=91 current=1
+    iter=4100000001  target=95 current=1141840128  <- garbage, see below
+
+target climbs steadily; current never moves off 1 until the very last
+sample, where it reads 1141840128 (0x44100000 -- an IEEE-754 float
+bit-pattern, not a real count; almost certainly the object's backing
+memory got reused/overwritten by something else very late in this
+abnormally long stress run, not a real signal).
+
+This means sub_820B5BC8 is NOT stuck in one single call for 5 minutes --
+it is being invoked repeatedly (once per real frame/tick), each time
+with a HIGHER target (read fresh from a caller-side object's +8 field,
+confirmed at the traced call site private/ppc/ppc_recomp.4.cpp:9556-9572,
+one of several similar call sites at lines 9556, 9600, 9627 etc feeding
+sub_820B5BC8 via r5=13/9/11-tagged branches of the same outer dispatcher).
+Every call still blocks forever internally (current never reaches even
+the first target of 5), but something lets the caller loop move on to
+issue the next, higher-target call anyway -- matching the "the loop just
+needed more time" illusion from Finding 25, and consistent with Finding
+31's correction: forward motion here is the outer loop re-issuing calls,
+not this fence object actually advancing.
+
+Traced "current" precisely: it is NOT a field of self directly. Reading
+sub_820B5BC8 (private/ppc/ppc_recomp.4.cpp:12980-13101) closely:
+
+    current = *(uint32_t*)( *(uint32_t*)(self + 10768) + 0 )
+
+self+10768 holds a POINTER to a separate, smaller kernel object, not an
+inline field. Found the real writer of that pointer -- private/ppc/
+ppc_recomp.4.cpp:14798-14832, inside sub_820B6560:
+
+    li r3,96 ; bl sub_820AB8B0        // allocate 96 bytes (pool alloc w/ tag)
+    stw r3,10768(r31)                 // self+10768 = pointer to that block
+    li r3,32 ; bl sub_820AB8B0        // allocate 32 bytes
+    stw r3,10772(r31)                 // self+10772 = pointer to that block
+    ... sub_823F0DF0(ptr, 0, size) x2 // zero-init both blocks
+    bl __imp__MmGetPhysicalAddress    // physAddr of r27 (the REAL ring buffer,
+                                       // a separate, earlier-allocated buffer)
+    bl __imp__VdInitializeRingBuffer  // real GPU ring buffer registration
+
+sub_820B6560 sets up the GPU ring buffer AND, right next to it, allocates
+these two small (96-byte, 32-byte) kernel objects -- sized and
+zero-initialized like classic dispatcher/event objects, not raw scalars.
+current is literally the first DWORD of the 96-byte object: its signal
+count. It reads 1 for the entire run -- consistent with an event/fence
+object that gets signaled exactly once at creation and never again.
+
+Who's supposed to signal it again: on real Xbox 360 hardware, this class
+of object is advanced by the GPU's vblank/completion interrupt, delivered
+to a callback the title registers via VdSetGraphicsInterruptCallback.
+Checked this project's implementation -- host/kernel_impl.cpp:1249-1255:
+
+    PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
+    {
+        // Real semantics: registers a callback a GPU interrupt handler (e.g.
+        // vblank) would invoke. No-op for now -- nothing yet requires us to
+        // actually invoke it. ...
+    }
+
+Confirmed no-op, confirmed via grep across all of host/*.cpp that nothing
+anywhere ever calls back into that registered address. VdSwap (kernel_impl.
+cpp:1360-1370) is the real per-frame present call and DOES run every
+frame, driving GpuCommandTracer::ScanAndTraceFrame (host/gpu_trace.cpp:
+185-199) -- but that function only does PM4 command-stream trace logging
+and ring-buffer read-pointer writeback (rptrWriteBackAddr_, a distinct
+mechanism, itself already real/working per Phase 3H). It never touches
+self+10768's object, and identifierAddr_ (the "GPU identifier address"
+slot from VdSetSystemCommandBufferGpuIdentifierAddress, also already
+wired up) is stored but never read back either -- both already-implemented
+mechanisms are for different purposes than this fence.
+
+--- Root cause, now precisely localized: this project never simulates a
+    GPU/vblank interrupt firing. Any game code that waits on a kernel
+    dispatcher object meant to be signaled by that interrupt (this fence
+    object being one concrete instance, likely not the only one) will
+    spin forever, because nothing on the host side ever invokes the
+    callback registered via VdSetGraphicsInterruptCallback. This
+    supersedes Finding 24's HSIO-gate dead end as the real explanation
+    for this class of stall -- Finding 24's analysis was correct but was
+    examining a different, unrelated gate on the same general subsystem.
+
+    Real, well-scoped fix for next session: call the registered graphics
+    interrupt callback once per real presented frame -- the natural place
+    is host/gpu_trace.cpp's GpuCommandTracer::ScanAndTraceFrame (or right
+    after it, from __imp__VdSwap in kernel_impl.cpp), synchronously, on
+    the calling PPC thread, simulating a vblank interrupt firing once per
+    VdSwap. That requires: (a) storing the callback address + context
+    registered by VdSetGraphicsInterruptCallback (currently discarded),
+    and (b) invoking it as a real guest function call (PPC_CALL_INDIRECT_
+    FUNC or equivalent) from VdSwap. The game's own compiled ISR logic
+    should then handle signaling this and any similar fence objects
+    itself -- no need to hand-simulate individual dispatcher objects. ---
