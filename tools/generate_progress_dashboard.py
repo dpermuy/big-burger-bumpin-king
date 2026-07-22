@@ -78,15 +78,22 @@ def kernel_coverage():
 
 
 def function_stats():
+    # private/ppc is XenonRecomp-generated output and is gitignored (see .gitignore) --
+    # it never exists in a fresh CI checkout, only in a developer's local worktree after
+    # running the generator manually. Returning (None, None) here (rather than 0, 0) lets
+    # the dashboard say "not available" instead of falsely implying zero functions have
+    # been recompiled.
     ppc_dir = ROOT / "private/ppc"
     total_lines = 0
     total_funcs = 0
+    found_any = False
     if ppc_dir.exists():
         for f in ppc_dir.glob("*.cpp"):
+            found_any = True
             text = f.read_text(errors="ignore")
             total_lines += text.count("\n")
             total_funcs += len(re.findall(r"PPC_FUNC_IMPL\(__imp__sub_", text))
-    return total_funcs, total_lines
+    return (total_funcs, total_lines) if found_any else (None, None)
 
 
 def git_stats():
@@ -182,10 +189,10 @@ def main():
     fill_pct, stops_html, current_idx = render_milestones(findings)
 
     kpis = "\n".join([
-        render_kpi(f"{func_count:,}", "Game functions recompiled"),
+        render_kpi(f"{func_count:,}" if func_count is not None else "N/A", "Game functions recompiled"),
         render_kpi(f'{real_total}<small>&nbsp;/&nbsp;{all_total}</small>', "Kernel imports, real vs. stub"),
         render_kpi(str(len(findings)), "Findings this investigation"),
-        render_kpi(f"{line_count / 1_000_000:.1f}M", "Lines of generated C++"),
+        render_kpi(f"{line_count / 1_000_000:.1f}M" if line_count is not None else "N/A", "Lines of generated C++"),
         render_kpi(f"{commit_count}", f"Commits / {first_date} → {last_date}"),
     ])
 
