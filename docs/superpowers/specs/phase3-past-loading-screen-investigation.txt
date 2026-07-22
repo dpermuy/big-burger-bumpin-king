@@ -1841,3 +1841,76 @@ clean rebuild).
     pursued further this session -- this is real, separate follow-on
     work, not a quick fix, and deserves its own focused investigation
     rather than being rushed. ---
+
+--- Finding 35: found and fixed the real address-translation bug --
+    INDIRECT_BUFFER targets are physical addresses, missing the
+    0xA0000000 segment offset -- real Xenos GPU command stream now
+    visible for the first time in this project's history ---
+
+Chased Finding 34's remaining live hypothesis directly: does the
+INDIRECT_BUFFER opcode's target address (0x18Dxxxxx family) need a
+translation before being read via base+addr?
+
+Reasoning that led here: this project's own host-side allocators
+(NtAllocateVirtualMemory, MmAllocatePhysicalMemoryEx, both backed by
+host/kernel_impl.cpp's g_bumpAllocatorNext) hand out addresses starting
+at exactly 0xA0000000 -- confirmed live (first-ever allocation in every
+run's log: "NtAllocateVirtualMemory: 1048576 bytes -> 0xA0000000"). That
+matches the real Xbox 360 PowerPC memory model: 0xA0000000-0xBFFFFFFF is
+the "uncached, direct-mapped" segment where virtual address = physical
+address + 0xA0000000. Meanwhile __imp__MmGetPhysicalAddress (host/
+kernel_impl.cpp:1138-1143) is a hard identity no-op ("no real
+physical/virtual distinction in this harness"), and the game's own code
+already does its own inline virtual-to-physical conversion via bit
+masking in at least one confirmed real spot (private/ppc/ppc_recomp.4.
+cpp:14873-14889, the VdEnableRingBufferRPtrWriteBack address-mangling
+call site: "r10 = r11 & 0x1FFFFFFF", i.e. clear the top 3 bits, the
+textbook segment-strip). If the game embeds its own computed "physical"
+addresses directly into GPU command data (a real, correct thing to do --
+real Xenos hardware GPU commands reference true physical RAM, not CPU
+virtual addresses), then this project reading them raw via base+addr
+would be looking at the wrong location entirely: physical address
+0x18D4D000 corresponds to guest virtual 0xB8D4D000, not 0x18D4D000.
+
+Tested empirically before touching the real fix (temporary WATCH-20
+instrumentation, host/gpu_trace.cpp): for every INDIRECT_BUFFER target
+observed live, dumped the first dword read three ways -- raw, |0x80000000,
+|0xA0000000. Raw and +0x80000000 both always read 0x00000000 (matching
+every prior run's all-zero result). +0xA0000000 read real, non-zero,
+well-formed data at every single target: 0xC0006000 (decodes as a valid
+TYPE3 header, opcode=0x60 count=1), 0x00000A31/0x00000D02 (valid TYPE0
+register writes to plausible real register indices), 0x0001057C (valid
+TYPE0, count=2). Decisive, not ambiguous.
+
+Applied the real fix: host/gpu_trace.cpp's ScanBuffer now ORs
+0xA0000000 onto the INDIRECT_BUFFER target address before following it.
+Rebuilt, ran live (30s watchdog, reverted to 10s after) -- no crash, same
+clean completion as every prior run, and the trace log now shows a real,
+rich, structurally sane Xenos GPU command stream for the first time ever
+in this project's history: dozens of TYPE0 register writes across the
+real vertex/rasterizer register block (0x2000-0x2312), repeated TYPE3
+opcode=0x36 (25 occurrences, clearly a common/frequent state-set command),
+and a spread of other TYPE3 opcodes (0x21, 0x2B, 0x3B, 0x3C, 0x48, 0x54,
+0x58, 0x60-0x63) -- a plausible, non-random command mix, not noise.
+Frame count and overall shape otherwise match Phase 3K/Finding 33's
+already-established pattern (content only grows across the first two
+frames, then goes quiet -- unrelated, already-understood gate, not
+affected by this fix).
+
+--- Real fix, verified live, shipped. This resolves Finding 34's open
+    question in favor of hypothesis (2) -- address translation, not
+    timing -- and closes a foundational gap that likely affects any
+    other GPU-command-embedded address this project encounters going
+    forward (not just INDIRECT_BUFFER), since the same "game computes
+    a true physical address inline" pattern is now confirmed real and
+    reproducible. This does not by itself resolve Finding 32's
+    still-unwritten fence object (that fence lives in a CPU-visible
+    kernel object, not GPU command data, and Finding 33 already
+    exhaustively ruled out every callback path for it) -- but it does
+    mean any FUTURE investigation into PM4 opcode semantics (decoding
+    what 0x36, 0x60, etc. actually do) now has real data to work from
+    instead of an empty buffer. Next natural step: decode the newly
+    visible opcodes' real semantics (cross-reference Xenia's opcode
+    table, as already done successfully for 0x3B/0x3F/0x48) to find
+    whether any of them are the fence-signaling command Finding 32 was
+    looking for. ---

@@ -141,7 +141,19 @@ uint32_t GpuCommandTracer::ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32
 
             if (opcode == kOpcodeIndirectBuffer && count == 2 && depth < kMaxIndirectDepth)
             {
-                uint32_t targetAddr = LoadU32(base, bufferAddr + offsetBytes + 4);
+                // The game computes this target address as a true physical address (its own
+                // inline "& 0x1FFFFFFF"-style conversion, confirmed present in the sibling
+                // VdEnableRingBufferRPtrWriteBack address-mangling call site at
+                // private/ppc/ppc_recomp.4.cpp:14873-14889), not a guest virtual address --
+                // real Xenos hardware GPU commands reference physical RAM directly. This
+                // project's guest memory model needs the same 0xA0000000 uncached
+                // direct-map segment offset its own allocators already use (confirmed:
+                // physical offset 0 == guest virtual 0xA0000000, NtAllocateVirtualMemory's
+                // very first allocation) to resolve it to the right location in `base`.
+                // Empirically confirmed live (Finding 35): reading raw or with +0x80000000
+                // always reads zero; +0xA0000000 reads real, well-formed PM4 packet headers
+                // at every single observed target.
+                uint32_t targetAddr = LoadU32(base, bufferAddr + offsetBytes + 4) | 0xA0000000u;
                 uint32_t targetDwordCount = LoadU32(base, bufferAddr + offsetBytes + 8);
                 if (logFile_)
                 {
