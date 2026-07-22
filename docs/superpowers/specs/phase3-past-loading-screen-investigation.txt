@@ -1278,3 +1278,60 @@ PPC_CALL_INDIRECT_FUNC itself to fail gracefully on a wildly out-of-range
 guest address instead of crashing the whole process -- though this last
 one is a shared XenonRecomp-runtime change, not specific to this bug,
 and needs separate consideration before touching it.
+
+--- Finding 26: located the real vtable, confirmed the class relationship
+    -- exact constructor/caller not yet pinned down ---
+
+sub_82568428 is (like sub_8256A6A0) only ever reached indirectly; zero
+direct "bl" references exist anywhere in the recompiled instruction
+stream (confirmed via grep -- only the function-mapping table entry
+exists). Its address lives purely as DATA (a vtable slot in the game's
+static .data/.rdata), invisible to source-level grep.
+
+Found it via a live memory scan instead (lldb attach, `memory find -e`
+with a byte-swapped 32-bit pattern to account for PPC big-endian guest
+data read on a little-endian ARM64 host -- `-s "<string>"` does not
+reliably match raw hex bytes, `-e "(unsigned int)<byteswapped-value>"`
+does): the 4-byte pattern for sub_82568428 (0x82568428) is stored at
+guest address 0x8207A844, sitting in a dense, contiguous run of real
+0x82xxxxxx function pointers (a genuine vtable, confirmed by dumping
+~200 bytes around it -- no zero/sentinel breaks, every slot a plausible
+code address). A second scan for sub_8256A6A0 (the crash function from
+Finding 25) found it at guest address 0x8207A740, in the exact same
+contiguous table.
+
+Computed the true vtable base from the already-known slot relationship
+(sub_8256A6A0 is dispatched via `[self+0]+212` in its own code, per
+Finding 25's read): base = 0x8207A740 - 0xD4 = 0x8207A66C. Checked: the
+offset from that base to sub_82568428's slot is 0x8207A844 - 0x8207A66C
+= 0x1D8 (472, a clean multiple of 4) -- confirms both functions are
+real slots (212 and 472) on the exact same vtable, i.e. the exact same
+class. This is solid, direct confirmation that Finding 25's hypothesis
+(SetMode and the crashing notify method belong together) is correct,
+not a guess.
+
+Attempted to find the real constructor by computing the lis+addi split
+needed to materialize 0x8207A66C as an immediate constant and grepping
+for it: the required lis anchor (-32248, i.e. -2113404928 recompiled)
+is shared by 103 different files across the game -- far too generic a
+constant to isolate by exact match (this code segment's base is reused
+for countless unrelated nearby addresses throughout the whole title).
+This specific approach is a dead end without a more targeted technique.
+
+--- Status: the class relationship is now solidly confirmed (not
+    speculative), but the exact constructor and the exact call site that
+    should invoke sub_82568428(mode=1) remain unidentified. Finding 25's
+    core conclusion stands and is now on firmer ground: this is a real,
+    specific class whose "populate the notification list" method never
+    gets called before its "notify" method does. ---
+
+Next step for a future pass: a live, deterministic-address-based
+technique rather than more static grepping -- e.g. a hardware watchpoint
+on the live crashing object's own +6772 field (self=0xB506E6E0, observed
+stable across repeated runs so far) to catch ANY write to it, direct or
+indirect, during the run leading up to the crash; or use lldb's
+`memory find` to also enumerate every place in guest memory that stores
+the vtable pointer 0x8207A66C itself (not just search code for the
+constant), which would surface every live object of this class directly
+rather than requiring the constructor's instruction stream to be found
+first.
