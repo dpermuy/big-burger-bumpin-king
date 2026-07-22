@@ -1793,3 +1793,51 @@ project can't see it yet.
     assuming any GPU command execution semantics need implementing at
     all -- can't know what commands are really being submitted until the
     tracer can actually read them. ---
+
+--- Finding 34: re-confirmed Phase 3K's "nothing ever writes into the
+    0x18Dxxxxx indirect-buffer range" result, now with much deeper
+    execution -- timing is ruled out, address translation is the
+    remaining live hypothesis ---
+
+Phase 3K (docs/superpowers/specs/phase3k-gpu-trace-findings.txt) already
+ran the decisive experiment once: instrument every PPC_STORE_U32/U64 (the
+only two guest-memory store paths that exist anywhere in this project's
+recompiled code, confirmed by grep) to watch the full 0x10000000-
+0x20000000 range, and found zero writes over a 10s run. That run left two
+live hypotheses open: (1) the real fill just hasn't happened yet at that
+point in boot, or (2) the address needs a translation this project
+doesn't apply.
+
+Since that run, this session's Findings 29/30/32/33 unblocked a lot more
+of the game (XDVDFS BST fix, crash null-check, real GPU interrupt
+delivery) -- execution now reaches much deeper (past the loading screen
+entirely, ~9.4MB into real audio asset streaming, past KeResetEvent).
+Re-ran the exact same experiment (temporary instrumentation added to
+private/ppc/ppc_context.h's PPC_STORE_U32/U64 macros directly, so every
+one of the ~28,000 recompiled functions' stores were covered, not just
+one file) over a 120s watchdog run, deliberately covering far more real
+execution than Phase 3K's original 10s/60s snapshots.
+
+Result: zero hits. Not one store anywhere in a 120-second run, deep into
+new territory well past every previous checkpoint, ever lands in that
+256 MiB range. Instrumentation reverted immediately after (private/ppc/
+ppc_context.h back to its pristine macros, confirmed via grep and a
+clean rebuild).
+
+--- This rules out hypothesis (1) with much stronger evidence than Phase
+    3K had -- it isn't that the fill happens later in a boot sequence
+    this project hadn't reached yet; the game now runs dramatically
+    further than that original snapshot and the indirect buffers this
+    session's own gpu_trace.log still shows (0x18D4D000, 0x18D2CF80,
+    0x18D6D120, etc, Finding 33) are still all-zero. Hypothesis (2) --
+    the INDIRECT_BUFFER address field needs a translation this project
+    doesn't apply -- is now the more likely explanation, or possibly a
+    close cousin of it: these particular indirect buffers may be
+    populated by something other than a normal PPC store entirely (GPU-
+    side microcode-driven writes, or a bulk-copy idiom this project's
+    recompiler doesn't lower through PPC_STORE_U32/U64 at all -- worth
+    re-checking XenonRecomp's current codegen for that possibility
+    before assuming translation is the only remaining explanation). Not
+    pursued further this session -- this is real, separate follow-on
+    work, not a quick fix, and deserves its own focused investigation
+    rather than being rushed. ---
