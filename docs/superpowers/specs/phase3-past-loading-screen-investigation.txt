@@ -1695,3 +1695,101 @@ mechanisms are for different purposes than this fence.
     FUNC or equivalent) from VdSwap. The game's own compiled ISR logic
     should then handle signaling this and any similar fence objects
     itself -- no need to hand-simulate individual dispatcher objects. ---
+
+--- Finding 33: wired up the real GPU interrupt callback (genuine gap
+    closed) -- confirmed empirically it does NOT reach Finding 32's fence;
+    found the actual reason why (indirect GPU buffers read back all-zero) ---
+
+Implemented Finding 32's proposed fix: host/kernel_impl.cpp's
+__imp__VdSetGraphicsInterruptCallback now stores the registered callback
+address + context (via new GpuCommandTracer::SetGraphicsInterruptCallback/
+GraphicsInterruptCallback()/GraphicsInterruptContext(), host/gpu_trace.h/
+cpp) instead of discarding them. __imp__VdSwap now invokes that callback
+for real once per frame, using the same direct PPC_CALL_INDIRECT_FUNC
+pattern already established for APC delivery (host/kernel_impl.cpp's
+TryDeliverOneApc, real precedent, not a new pattern):
+
+    ctx.r3.u64 = 1; // source
+    ctx.r4.u64 = g_gpuTracer.GraphicsInterruptContext();
+    PPC_CALL_INDIRECT_FUNC(callback);
+
+Confirmed the real ABI before writing this by tracing the game's own
+registration call site (private/ppc/ppc_recomp.5.cpp:13631-13637, inside
+sub_820BC968) through to the callback's own real code (sub_820B5160,
+private/ppc/ppc_recomp.4.cpp:11402) rather than guessing -- the callback
+genuinely takes (r3=source, r4=context), and source==1 is a real,
+confirmed non-crashing branch in the game's own compiled logic (checks a
+0x0BADF00D uninitialized-memory guard, then would call a nested function
+pointer). Also statically confirmed the SAME object instance is both the
+callback's registered context AND the object sub_820B6560 configures
+fields +10768/+10772/+10776/ring-buffer on (sub_820BC968 and sub_820B6560
+are both called with r3=r31 from the same enclosing init routine,
+private/ppc/ppc_recomp.5.cpp ~13780-13825) -- not a coincidence of
+similar addresses.
+
+Built and ran live (90s watchdog) to verify empirically rather than trust
+the static trace alone. Real result: the callback DOES fire every frame
+(18 times over the run, confirmed via temporary WATCH-17 instrumentation,
+since reverted) with no crash, and execution progressed further than any
+prior run (deep into audio asset streaming, s_generic.xen, handle 0x1028
+reads up to ~9.4MB). But Finding 32's specific fence
+(self=0xA0009900, current=*(*(self+10768))) did NOT move -- stayed at 1
+before and after every single callback invocation.
+
+Traced why, precisely, instead of guessing: sub_820B5160's source==1
+branch touches *(context+10772)'s object (a different, sibling 32-byte
+block), not *(context+10768)'s -- confirmed by reading the actual
+instructions, not assumed. Also instrumented (temporary WATCH-18, since
+reverted) the branch's own nested indirect call (structPtr+16, guarded
+by a null check) -- it never fired across the whole run, meaning that
+function-pointer slot is never populated for this object. Also confirmed
+via grep that VdSetGraphicsInterruptCallback is registered exactly once
+in the whole game (the second call site, private/ppc/ppc_recomp.5.cpp:
+14289, passes r3=0,r4=0 -- a teardown/reset call, not a second real
+registration). So no code path anywhere in the compiled game ever writes
+self+10768's first dword, even with real interrupt delivery now wired up
+correctly.
+
+Found where self+10768's OTHER offset actually IS used for something
+real: private/ppc/ppc_recomp.4.cpp:14873-14889, sub_820B6560 itself
+derives an address as (*(self+10768) + 60), tiled/address-mangles it, and
+passes it to VdEnableRingBufferRPtrWriteBack -- a real, already-working
+mechanism (host/gpu_trace.cpp's rptrWriteBackAddr_, in place since
+Phase 3H). So the 96-byte block has at least two live fields: offset 0
+(our still-unwritten fence) and offset 60 (the ring-buffer read-pointer
+writeback, already real). Offset 0's real writer is something else
+entirely -- most likely a GPU command (e.g. a PM4 EVENT_WRITE-style
+fence packet embedded in the ring buffer's own command stream) that this
+project's tracer would need to execute, not just log.
+
+That led to the most concrete new lead this session: checked the actual
+captured gpu_trace.log from this run. Every INDIRECT_BUFFER target the
+tracer follows (0x18D4D000, 0x18D2CF80, 0x18D6D120, etc, all in the real
+Xenos physical/EDRAM 0x18Dxxxxx address family) reads back as all zero
+bytes -- "(zero padding at offset 0, stopping)" on every single one, every
+frame. Only two opcodes were ever observed all run: ME_INIT (once) and
+INDIRECT_BUFFER (referencing these always-empty targets). No fence/event
+write packet has ever been observed, which is now explained: if the real
+command content lives in those indirect buffers and this project's
+identity-mapped MmGetPhysicalAddress doesn't correctly resolve the
+0x18Dxxxxx physical/EDRAM address family to wherever the game actually
+wrote that data, every packet inside them is invisible to the tracer --
+not because the game isn't submitting real GPU work, but because this
+project can't see it yet.
+
+--- Status: real infrastructure gap closed (graphics interrupt delivery,
+    verified live, zero regressions, deeper progress than any prior run)
+    -- keeping this fix. Finding 32's specific fence remains unresolved;
+    exhaustively confirmed (both static and live) that no code path in
+    the compiled game ever writes it via the interrupt callback mechanism,
+    ruling that avenue out completely rather than leaving it open. New,
+    more promising lead identified for next session: the 0x18Dxxxxx
+    physical/EDRAM address family used by the game's indirect GPU command
+    buffers reads back as all-zero through this project's identity
+    address mapping -- likely address-translation gap, not a timing
+    issue. Worth checking whether real Xenos EDRAM/tiled addresses need a
+    real translation (not identity passthrough) in MmGetPhysicalAddress
+    or wherever these 0x18Dxxxxx addresses actually get resolved, before
+    assuming any GPU command execution semantics need implementing at
+    all -- can't know what commands are really being submitted until the
+    tracer can actually read them. ---

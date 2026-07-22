@@ -54,6 +54,12 @@ void GpuCommandTracer::SetIdentifierAddr(uint32_t addr)
     identifierAddr_ = addr;
 }
 
+void GpuCommandTracer::SetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
+{
+    graphicsInterruptCallback_ = callback;
+    graphicsInterruptContext_ = context;
+}
+
 namespace
 {
     // Real IT_OPCODE values for the ATI/AMD R500-family PM4 command format Xenos

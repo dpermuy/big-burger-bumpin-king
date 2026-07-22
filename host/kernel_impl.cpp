@@ -1249,9 +1249,10 @@ PPC_FUNC(__imp__VdShutdownEngines)
 PPC_FUNC(__imp__VdSetGraphicsInterruptCallback)
 {
     // Real semantics: registers a callback a GPU interrupt handler (e.g.
-    // vblank) would invoke. No-op for now -- nothing yet requires us to
-    // actually invoke it. Callback address is r3, context is r4, if future
-    // frame-pacing/vsync work needs them.
+    // vblank) would invoke. Stored and now actually invoked from VdSwap --
+    // see the call site there and phase3 Finding 32/33 for why this was
+    // the missing piece behind several dispatcher-object stalls.
+    g_gpuTracer.SetGraphicsInterruptCallback((uint32_t)ctx.r3.u64, (uint32_t)ctx.r4.u64);
 }
 
 // Real signature confirmed live (private/ppc/ppc_recomp.4.cpp:14684-14686,14977-14981):
@@ -1366,6 +1367,22 @@ PPC_FUNC(__imp__VdSwap)
     if (g_gpuTracer.HasRingBuffer())
     {
         g_gpuTracer.ScanAndTraceFrame(base);
+    }
+
+    // Real hardware fires a GPU/vblank interrupt once per presented frame, delivered
+    // to whatever callback the title registered via VdSetGraphicsInterruptCallback.
+    // Nothing here previously invoked it (Finding 32, phase3 spec) -- several traced
+    // dispatcher/fence objects only ever advance from inside that callback's real,
+    // compiled ISR logic. source=1 matches the callback's own confirmed real branch
+    // (private/ppc/ppc_recomp.4.cpp:11402, sub_820B5160 checks r3==1 for the
+    // vblank-style path; other values either no-op or hit an unverified frame-counter
+    // branch, so source=1 is deliberately the only one wired up here).
+    uint32_t callback = g_gpuTracer.GraphicsInterruptCallback();
+    if (callback != 0)
+    {
+        ctx.r3.u64 = 1; // source
+        ctx.r4.u64 = g_gpuTracer.GraphicsInterruptContext();
+        PPC_CALL_INDIRECT_FUNC(callback);
     }
 }
 

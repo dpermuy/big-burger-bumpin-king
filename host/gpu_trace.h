@@ -8,8 +8,11 @@ public:
     void RegisterRingBuffer(uint32_t physAddr, uint32_t sizeLog2Raw);
     void SetRptrWriteBackAddr(uint32_t addr);
     void SetIdentifierAddr(uint32_t addr);
+    void SetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
     void ScanAndTraceFrame(uint8_t* base);
     bool HasRingBuffer() const { return ringBufferBase_ != 0; }
+    uint32_t GraphicsInterruptCallback() const { return graphicsInterruptCallback_; }
+    uint32_t GraphicsInterruptContext() const { return graphicsInterruptContext_; }
 
 private:
     void EnsureLogOpen();
@@ -26,6 +29,8 @@ private:
     uint32_t ringBufferSize_ = 0;
     uint32_t rptrWriteBackAddr_ = 0;
     uint32_t identifierAddr_ = 0;
+    uint32_t graphicsInterruptCallback_ = 0;
+    uint32_t graphicsInterruptContext_ = 0;
     uint32_t lastParsedOffset_ = 0;
     uint32_t frameCounter_ = 0;
     FILE* logFile_ = nullptr;
