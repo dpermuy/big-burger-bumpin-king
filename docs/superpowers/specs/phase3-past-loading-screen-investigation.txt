@@ -1027,3 +1027,55 @@ GpuCommandTracer needs to fulfill this specific command type -- likely a
 small, targeted addition (write the expected value to the packet's target
 address when scanned), following the exact precedent already set by
 VdEnableRingBufferRPtrWriteBack, rather than a full command executor.
+
+--- Finding 22: decoded PM4 opcode 0x3B against Xenia -- corrects Finding
+    21's mechanism attribution ---
+
+Cross-referenced Xenia's real PM4 opcode table (src/xenia/gpu/xenos.h,
+the established high-value technique from Findings 11/17). The header
+constant sub_820B5A28 builds (0xC0003B00) decodes, using Xenia's own
+MakePacketType3 formula (type=bits31-30, count-1=bits29-16&0x3FFF,
+opcode=bits15-8&0x7F), to opcode 0x3B = PM4_INVALIDATE_STATE ("selective
+invalidation of state pointers"), NOT an EVENT_WRITE-family counter/fence
+command as Finding 21 assumed. That assumption was wrong -- corrected
+here.
+
+Re-examined sub_820B5A28 more carefully, including the two conditions
+gating the direct CPU-side write to *[self+10768] (the stuck counter,
+`stw r7,0(r10)` at private/ppc/ppc_recomp.4.cpp:12837-12838): this is a
+REAL, DIRECT, CPU-side memory write -- not something waiting on GPU
+command execution at all. It's gated by two conditions, both of which
+must hold: `[self+19956] == 0` and `[self+10809] & 0x2` (bit 1) set.
+Live-instrumented (reverted after capture): confirmed sub_820B5A28 is
+called repeatedly (self=0xA0009900, matching sub_820B5BC8/sub_820CCA68's
+own object from Findings 19-20 exactly) but the write path never fires
+in any of the captured calls -- one or both gate conditions are
+consistently unmet.
+
+Traced [self+19956]'s writers: one setter (private/ppc/ppc_recomp.6.cpp:
+2571-2572, stores a pointer returned by sub_820CB078 -- starts a pending
+async-style request) and two real clearers, both inside sub_820C3E18
+(private/ppc/ppc_recomp.6.cpp:2620), a poller that checks [+19956]!=0,
+calls an indirect vtable-style method through it plus sub_820CA4F0, then
+unconditionally clears it back to 0 -- a real, synchronous-looking
+"complete the pending request" pattern, not gated on any observable
+completion check in the immediately-visible code. Confirmed live via
+lldb breakpoint that sub_820C3E18 DOES execute during the stall, called
+from within the same sub_820CCA68 pass as sub_820B5A28
+(sub_820CCA68 -> sub_820C47E8 -> sub_820C3E18).
+
+--- Status: opcode 0x3B is now correctly identified (PM4_INVALIDATE_STATE,
+    Xenia-confirmed) and Finding 21's "needs real GPU command execution"
+    conclusion is retracted as the primary explanation -- the actual
+    write path is gated by two ordinary memory-flag checks
+    ([self+19956], [self+10809]&0x2), not GPU completion. Given
+    [self+19956]'s clearer runs every pass and its setter has not yet
+    been confirmed live to ever fire, [self+19956]==0 is the more likely
+    passing condition of the two; [self+10809]&0x2 is the more likely
+    remaining blocker and the next concrete thing to check. ---
+
+Next step for a future pass: instrument [self+10809] directly (it's a
+small bitfield touched by many nearby functions this session has already
+partially read -- e.g. sub_820CCFAC/sub_820CD010's own andi/stb sequences
+on the same byte) to find who's supposed to set bit 1, and whether that
+setter is itself gated on something further upstream.
