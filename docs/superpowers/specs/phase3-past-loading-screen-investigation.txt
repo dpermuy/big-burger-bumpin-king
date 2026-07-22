@@ -1539,3 +1539,53 @@ any prior run this session: KeResetEvent.
     names happen to collide the same way under case-folded comparison,
     not just this one. Next milestone: KeResetEvent, a currently-stubbed
     kernel import, is the new frontier. ---
+
+--- Finding 31: KeResetEvent is not a new blocker -- execution loops back
+    into the exact same unresolved GPU counter from Findings 20-24 ---
+
+After Finding 30's fix let speech_generic.xen load fully, execution
+reaches a genuinely new kernel call (KeResetEvent, currently stubbed as
+a no-op) and then stalls. Live-sampled the stuck thread: executing
+sub_820B9A58, the same tick-catchup helper from Findings 20-22.
+
+Instrumented sub_820B5BC8's loop the same way as Finding 20's WATCH-11A
+to check whether this is a new object/counter or the same one. It's the
+same one: self=0xA0009900, target=5, current=1, delta=4 -- identical
+values to the very first capture in Finding 20. This is not a new
+subsystem's counter; it's the exact same, never-advancing GPU/display
+ready-counter recurring, just reached via a different call path now that
+Findings 29 and 30 unblocked more of the boot sequence. Ran a full 300s
+watchdog window (reverted after capture) with zero progress -- confirmed
+genuinely stuck this time, not merely slow.
+
+This corrects part of Finding 25's framing: that finding's conclusion
+("the loop was never actually infinite, just slow") was based on a
+single observation where more real time happened to let execution
+continue past this exact point. In hindsight this was very likely a
+different code path reaching a *different* exit condition (or a
+different, smaller-target call to the same shared helper elsewhere)
+resolving in that instance -- not this specific counter genuinely
+advancing. The counter itself, as thoroughly traced in Findings 20-24,
+still has no real writer: its one direct CPU-side write path
+(sub_820B5A28) is permanently gated behind a real dead end (Finding 24:
+the HSIO-flag boolean-normalize logic correctly produces 0 on a
+successful check, by design, matching Xenia's own real implementation --
+not a bug to fix), and no GPU command-execution path exists to advance
+it via the hardware-fence mechanism either (Finding 22's corrected
+understanding).
+
+--- Status: Findings 20-24's root cause is confirmed to still be the
+    active, current blocker -- not resolved, not superseded. The
+    session's other fixes (Findings 29, 30) were real and valuable
+    (a genuine crash and a genuine disc-reader bug, both fixed and
+    verified), but they cleared different, independent obstacles on the
+    way back to this same still-open one. This is the real next target:
+    either find the counter's true intended writer (a lead not
+    exhausted -- Finding 26 only searched for code, not for other
+    objects sharing this vtable elsewhere in memory; Finding 22's
+    "different PM4 opcode" angle was never followed up with a real
+    Xenia cross-reference), or apply the same kind of defensive,
+    proximate-cause fix used in Finding 29 (e.g. capping how long
+    sub_820B5BC8's loop will spin before giving up, matching how real
+    game engines commonly bound a catch-up loop to avoid exactly this
+    kind of stall) as a pragmatic unblock. ---
