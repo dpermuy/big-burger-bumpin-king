@@ -1131,3 +1131,74 @@ subsystem's *completion* this flag is meant to signal (search for other
 code that reads it, not just this one site, to build a fuller picture of
 its role) before attempting to set it at the right moment rather than
 unconditionally at boot.
+
+--- Finding 24: found the real reader/writer of the HSIO flag -- and
+    uncovered a logical dead-end that corrects two earlier readings ---
+
+Grepped for every reader/writer of 0x8265C6A0 (the flag from Finding 23)
+using the same base+immediate-offset pattern, function-scoped: found
+exactly one function besides sub_820B6220 that touches it -- sub_820BCA68
+(private/ppc/ppc_recomp.5.cpp:13732), the real top-level display-subsystem
+initializer (calls sub_820B6560, the counter's own constructor from
+Finding 20, as one of several setup steps; RtlInitializeCriticalSection
+x2; ExGetXConfigSetting).
+
+Confirmed live via lldb breakpoint that sub_820BCA68 does execute during
+the observed stall (called via sub_820B9D60 <- sub_824A78E0, the same
+overall render chain). Traced its HSIO-flag logic
+(private/ppc/ppc_recomp.5.cpp:13972-13989): if the flag is already
+nonzero, skip re-checking; otherwise call the real
+__imp__VdIsHSIOTrainingSucceeded and store a boolean-normalized result
+back into the flag.
+
+Live-instrumented (reverted after capture): confirmed VdIsHSIOTrainingSucceeded
+returns 1 (this project's existing implementation), but the flag gets
+written as 0 afterward. Initially read this as an inversion bug in our
+host implementation -- cross-referenced Xenia's real
+VdIsHSIOTrainingSucceeded_entry (src/xenia/kernel/xboxkrnl/
+xboxkrnl_video.cc:321-325): it also returns 1 with the comment "// BOOL
+return value", confirming this project's existing implementation is
+already correct, not a bug.
+
+Worked through the actual rlwinm bit semantics by hand computation
+(verified with a standalone Python check of the exact 64-bit-rotate
+translation XenonRecomp emits): cntlzw(1)=31, and rlwinm SH=27 MB=31
+ME=31 applied to 31 extracts original bit 5, which is 0 for any clz
+result below 32 -- meaning this idiom computes "r3==0" (IsZero), not
+"r3!=0" (IsNonZero) as first assumed. Since VdIsHSIOTrainingSucceeded
+returns 1 (real, Xenia-confirmed correct), the flag correctly becomes 0
+after a successful check -- this is the intended, correct real-hardware
+result, not a bug in this project's kernel implementation.
+
+This also surfaced a real transcription error in Finding 22: re-read
+sub_820B5A28's third gate (private/ppc/ppc_recomp.4.cpp:12828-12834)
+directly and confirmed it requires [self+10809] bit 1 (0x2) to already
+be SET to proceed with the counter write (`beq skip` when the masked bit
+reads zero) -- the opposite of what Finding 22 recorded ("bit 2 not
+already set"). Corrected here.
+
+--- Status: this closes a real logical loop. sub_820B6220 only sets bit
+    0x2 when the HSIO flag is nonzero; the HSIO flag correctly becomes 0
+    after ANY successful training check (Xenia-confirmed real behavior);
+    therefore bit 0x2 can never be set via this path under normal,
+    successful conditions -- a genuine dead end for this specific
+    mechanism, not a fixable gap. This means sub_820B5A28's gated counter
+    write is very likely NOT how the counter is meant to advance under
+    normal circumstances at all. Finding 20's original register-tracking
+    search for [self+10768]'s writers was necessarily limited to exact
+    same-function-scope base+offset patterns and may have missed a real
+    writer reached through different addressing (a computed/indexed
+    address, a host-implemented kernel function not yet checked, or --
+    circling back toward Finding 21's original, later-retracted
+    hypothesis -- genuine GPU-side command execution via a different PM4
+    opcode than 0x3B). ---
+
+This sub-thread (chasing bit 0x2 specifically) is a dead end. The
+concrete next step for a future pass is to step back to Finding 20's
+original question with fresh eyes: search for indirect/computed writers
+to the counter (not just literal same-function base+offset matches), and
+re-examine whether any real kernel GPU export this project already
+implements (VdInitializeRingBuffer, VdEnableRingBufferRPtrWriteBack, or
+an as-yet-unchecked Vd/Xam function) is the actual intended trigger,
+rather than continuing to trace sub_820B5A28/sub_820B6220's specific gate
+chain further.
