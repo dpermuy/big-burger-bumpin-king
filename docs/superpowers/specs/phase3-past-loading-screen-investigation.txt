@@ -1335,3 +1335,61 @@ the vtable pointer 0x8207A66C itself (not just search code for the
 constant), which would surface every live object of this class directly
 rather than requiring the constructor's instruction stream to be found
 first.
+
+--- Finding 27: hardware watchpoint confirms the field is never written at
+    all -- and reveals the crash sits on this session's original
+    per-frame dispatcher chain ---
+
+Set a real hardware watchpoint on the live crashing object's own field
+(self=0xB506E6E0, stable and reproducible across repeated runs; watched
+host address base+0xB506E6E0+6772 = 0x3B5070154) via `process launch -s`
+(armed before any guest code runs) plus `watchpoint set expression`. The
+watchpoint fires once immediately at arm time (a spurious hit tied to
+the anonymous mmap page's first touch, not real guest execution --
+confirmed by its timestamp landing before "Guest memory image ready" is
+even printed); silenced with `watchpoint ignore 1 -i 1` and let the run
+continue.
+
+The watchpoint overhead measurably slows guest execution (a 60s-watchdog
+run under it didn't even reach the first loading-screen file, versus
+reaching a whole second, larger asset package without it) -- raised the
+watchdog to 600s (reverted after capture) to give real wall-clock time
+to compensate. With that, the run reaches the exact same crash as
+Findings 25-26, and the watchpoint never fires a second time across the
+entire ~10 minutes of real guest execution leading up to it.
+
+This is stronger, more direct evidence than Finding 26 (which only
+confirmed one specific function, sub_82568428, is never called): a real
+hardware watchpoint watching the exact memory cell for a write from ANY
+source, direct or indirect, the whole run, confirms nothing ever writes
+it. Finding 25's root cause is now confirmed as solidly as this kind of
+investigation allows without decompiling the game's real intended
+control flow by hand.
+
+The crash's full backtrace was also captured cleanly this time (`bt`
+survives after a `continue`-then-crash when commands are sourced via
+`-s <scriptfile>`, unlike raw `-o` queues which reliably drop everything
+after an unexpected stop -- reconfirms Finding 25's own methodology
+note): sub_8256A6A0 <- sub_8244DD08 <- sub_82461D28 <- sub_8244AE70 <-
+sub_8244AFB0 <- sub_8244B040 <- sub_8212B130 <- sub_825DEC18 <- __xstart.
+
+Three of these frames -- sub_8244AFB0, sub_8244AE70, sub_82461D28 -- are
+the exact same functions Findings 1-6 identified at the very start of
+this investigation as the real per-frame update dispatcher (the chain
+the original "physical memory allocation stall" symptom traced back to).
+This confirms the crash sits on that same real dispatcher, just one
+level deeper and through a different sibling call (sub_8244DD08, not the
+sub_82446D50/sub_8212EC78 path Findings 1-6 originally got stuck in) --
+concrete, structural evidence that fixing the Finding 15/18 deadlocks
+let real per-frame execution reach further into the SAME dispatcher's
+other subsystem updates, one of which (sub_8244DD08's own callee chain,
+ending in sub_8256A6A0) is this session's newest blocker.
+
+--- Status: root cause confirmed via the strongest evidence practical
+    (a whole-run hardware watchpoint, not just one function's call
+    count). The remaining open question -- who should call
+    sub_82568428(mode=1), and when -- needs the game's real, intended
+    control flow (likely a menu/profile/network-readiness callback,
+    given XamUserReadProfileSettings and NetDll_XNetGetEthernetLinkStatus
+    both run immediately before this crash in every observed run) rather
+    than more memory forensics on this recompiled binary alone. ---
