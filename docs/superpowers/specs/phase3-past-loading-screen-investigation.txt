@@ -1202,3 +1202,79 @@ implements (VdInitializeRingBuffer, VdEnableRingBufferRPtrWriteBack, or
 an as-yet-unchecked Vd/Xam function) is the actual intended trigger,
 rather than continuing to trace sub_820B5A28/sub_820B6220's specific gate
 chain further.
+
+--- Finding 25: the field4/counter loop was never actually infinite -- and
+    real forward progress reveals the session's first genuine crash ---
+
+Raised the watchdog to 180s (reverted after capture) to test a real
+question: was sub_820B5BC8's catch-up loop (Findings 20-24) genuinely
+stuck forever, or just slow? It was NOT stuck. With real wall-clock time,
+execution progresses dramatically further than any prior observation
+this session: past the loading-screen asset loads, into
+XamUserReadProfileSettings, XamLoaderGetLaunchDataSize,
+NetDll_XNetGetEthernetLinkStatus (a real network check), and loads an
+entirely new, larger asset package ("s_generic.xen", 1.4MB+, multiple
+real NtReadFile calls). The GPU command tracer confirms real, successful
+rendering during this window too: 2 full VdSwap-triggered frame scans,
+real PM4 packets parsed, matching the loading screen's own spinner
+rendering -- genuinely working GPU/display infrastructure, unrelated to
+the Finding 20-24 investigation.
+
+This reframes Findings 20-24: the specific mechanism investigated
+(sub_820B5A28's gated counter write) may still be a real dead end as
+concluded, but the overall symptom (loop taking a very long time) is not
+"stuck forever" -- it converges given enough real time. Whatever
+determines the real duration (likely tied to the host tick field
+sub_820B9A58 reads) simply takes far longer in this recompilation than
+on real hardware, rather than never resolving at all.
+
+With that much further real progress, hit a genuine memory-safety crash
+-- the first of this kind found this entire session (all 24 prior
+findings were busy-loop stalls, never a real segfault). Captured via
+lldb (register read; naive `bt` reliably drops the rest of an -o command
+queue after an unexpected stop -- worked around with `-s <scriptfile>`
+sourcing instead of `-o` flags, which does not have this problem):
+EXC_BAD_ACCESS on a worker thread, pc = a garbage, clearly-corrupted
+address, lr pointing into sub_8256A6A0 (private/ppc/ppc_recomp.80.cpp:
+17510) right after its indirect call at line 17573-17575.
+
+Instrumented live (reverted after capture): sub_8256A6A0 is a vtable-
+dispatch "notify all registered listeners" method. Its list pointer,
+[self+6772], reads exactly 0 (self=0xB506E6E0). With the list null, the
+function's own logic computes item=0 (no null-check), then unconditionally
+dereferences it twice ([0+0], then [garbage+212]) and jumps through
+whatever comes out (observed: the literal integer 3, treated as a guest
+code address) -- a real, reproducible wild-pointer-through-null crash.
+
+Traced [self+6772]'s real writers (35 raw hits project-wide; narrowed to
+real integer-pointer stores by excluding sites using the float-reuse
+`temp.u32` pattern, which are a different field on an unrelated class).
+Found the real initializer: sub_825690F0 (private/ppc/ppc_recomp.80.cpp:
+14061), a genuine constructor that deliberately zero-initializes
+[+6768]/[+6772]/[+6784] together -- confirms null is the correct,
+intentional starting state, not a translation bug. Found the real
+populator: sub_82568428 (private/ppc/ppc_recomp.80.cpp:12178), a
+conditional `SetMode(1)`-style method that only links [+6772] to a real
+subsystem object when called with its second parameter equal to 1.
+Confirmed live via lldb breakpoint across the full 180s run: this
+function is never called at all -- zero hits.
+
+--- Conclusion: a genuine, well-evidenced root cause. The real
+    "populate the notification list" call (sub_82568428, mode=1) never
+    happens by the time sub_8256A6A0 runs, so it dispatches through a
+    guaranteed-null, unchecked list pointer. Matches this session's
+    dominant pattern (something real hardware would have triggered by
+    now hasn't been reached yet in this recompilation's execution order)
+    but is a new class of consequence -- a real crash, not a stall. ---
+
+Next step for a future pass: find what's meant to call sub_82568428 with
+mode=1 and when (a UI/menu state transition, a network-status callback
+given the timing right after NetDll_XNetGetEthernetLinkStatus, or a
+later boot stage not yet reached) using the same live-breakpoint-based
+methodology that confirmed it's never called. A narrower, more
+conservative interim mitigation worth considering: null-check list
+pointers before vtable dispatch in this class's notify path, or harden
+PPC_CALL_INDIRECT_FUNC itself to fail gracefully on a wildly out-of-range
+guest address instead of crashing the whole process -- though this last
+one is a shared XenonRecomp-runtime change, not specific to this bug,
+and needs separate consideration before touching it.
