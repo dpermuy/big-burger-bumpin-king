@@ -2199,3 +2199,67 @@ would make r4==6 true.
     would make r4==6 (e.g. audio finishing loading, entering a specific
     menu/game state, or a specific render context becoming active) --
     that's the actual trigger this whole subsystem is waiting on. ---
+
+--- Finding 40: located the real dispatch table containing sub_820C43C0
+    via live memory scan; could not pin its runtime caller with this
+    session's tools -- honest partial result ---
+
+Traced sub_820C43C0's callers per direct request. Confirmed via grep
+(no direct `bl` call site anywhere in the compiled game, only the
+standard PPC_WEAK_FUNC trampoline) that it's reached exclusively
+through indirect/vtable-style dispatch, the same category of problem
+Finding 26 solved and Finding 28 hit a wall on.
+
+Found the real table this time via live memory scan (same technique as
+Finding 26): searched guest memory for sub_820C43C0's own address
+(0x820C43C0) as raw bytes and found a genuine hit at guest address
+0x82087D48:
+
+    82 0C 43 C0 40 00 6F 03  82 0C 45 80 40 00 3E 05
+    82 0C 46 78 40 00 23 05  82 0C 47 08 40 00 37 05
+
+This is a real, concrete artifact: an array of {function pointer,
+auxiliary dword} pairs (8 bytes each). sub_820C43C0 is entry 0.
+sub_820C4678 -- Finding 39's confirmed real EVENT_WRITE_SHD packet
+constructor -- is entry 2 (offset 16), in the SAME table. This
+strongly confirms these functions are siblings in one dispatch/property
+system, not coincidentally related.
+
+Tried to find the real caller two ways, both came up empty within this
+session's available time and reliable techniques:
+
+  1. Hardware read-watchpoint on the table's own address (0x382087d48
+     host-side). Armed successfully (confirmed via lldb's own
+     "Watchpoint created ... type = r" output), but never fired across
+     a full 120s run that reached genuinely new territory (a 27MB+
+     file read, further than any previous run this session). This
+     project's established, PROVEN-reliable watchpoint technique this
+     whole investigation has been WRITE watchpoints (Findings 27, 34);
+     this is the first attempt at a READ watchpoint, and its silence is
+     not treated as a confirmed negative -- read watchpoints are known
+     to be less reliably supported across platforms/hardware than write
+     watchpoints, and this result doesn't rule out real reads happening.
+
+  2. Searched the tracked runtime object (self=0xA0009900, base region
+     and nearby) for a stored pointer to 0x82087D48, on the hypothesis
+     that this object holds a pointer to its own dispatch table the
+     same way many of its other fields (+10768, +10772, +10776) hold
+     pointers to other real substructures. No match found in the ranges
+     checked (0x3A0000000-0x3A0100000 host-relative, at two different
+     points in boot -- right at _xstart entry, and right at
+     VdInitializeRingBuffer). Doesn't rule out the pointer living
+     elsewhere (a different object, a different field range, or written
+     later than either checkpoint).
+
+--- Status: real, concrete artifact found and documented (the table
+    itself, verified live, not guessed) -- but the caller search is an
+    honest, incomplete negative, not a confirmed dead end like Finding
+    28's vtable-slot search was. The right next technique, not yet
+    tried: a WRITE watchpoint on 0x382087d48 (this session's actually-
+    proven-reliable kind) to catch when the table itself gets
+    constructed/copied into memory (if it's not part of the static
+    image but built at runtime), or, if it IS static XEX data (most
+    likely, given the address sits in the same low, code-adjacent range
+    as other const data this session identified), a read-watchpoint
+    retry with a longer real-time budget and no other watchpoint
+    overhead competing for cycles. ---
