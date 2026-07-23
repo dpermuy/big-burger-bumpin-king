@@ -2299,3 +2299,56 @@ to this table at any point during actual PPC execution.
     specifically hunting for the "load table-relative pointer, compute
     index, bctrl" instruction shape near other code that references
     sibling table entries (sub_820C4580, sub_820C4708). ---
+
+--- Finding 42: retried the read watchpoint with much longer runtime --
+    ran a control test to rule out tooling failure -- confirmed the
+    dispatch table genuinely goes unread this whole boot phase (real
+    game-state gating, not a tooling gap) ---
+
+Retried Finding 40's read watchpoint on sub_820C43C0's dispatch table
+(0x382087d48 host-side) with a much longer real-time budget (240s vs
+the original 120s), armed at the same _xstart entry point. Result:
+zero hits again, despite the run reaching the exact same deep,
+familiar plateau every other long run this session reaches (9.46MB of
+audio streaming, KeResetEvent) -- genuinely substantial real execution,
+not a short/truncated run.
+
+Two long attempts with zero hits raised a real question: is this a
+tooling limitation (read watchpoints unreliable on this platform,
+matching Finding 40's caution) or a genuine result? Settled it with a
+control test instead of guessing further: armed the identical kind of
+read watchpoint (same size class, same arm point) on 0xA0400000 --
+Finding 20-24/31's GPU fence, known with certainty to be read
+continuously (billions of iterations per run) by sub_820B5BC8's wait
+loop. Result: fired almost immediately, with a full, sensible
+backtrace:
+
+    sub_820B5BC8 (the wait loop itself)
+    <- sub_820CCA68 (Finding 38's worker thread routine)
+    <- sub_824A76D0 <- sub_824AAFF0
+    <- sub_8244AFB0 <- sub_8244B040 (the original per-frame update
+       dispatcher chain, first identified in Findings 1-6 of this
+       investigation, before this session's window)
+    <- sub_8212B130 <- sub_825DEC18 <- __xstart
+
+This proves read watchpoints work correctly and reliably on this
+platform/toolchain -- the technique itself is sound. It also, as a real
+bonus, is the first LIVE confirmation this session that sub_820CCA68
+(Finding 38) sits in the same real call chain as the game's original
+per-frame dispatcher (Findings 1-6), not a disconnected side-thread
+doing unrelated work.
+
+--- Given the control test proves the tooling works, the dispatch
+    table's silence across two independent long runs (120s and 240s,
+    both reaching deep, familiar territory) is now a genuine, confirmed
+    result, not an artifact: nothing reads sub_820C43C0's table at any
+    point during this entire boot-through-KeResetEvent phase. This
+    lines up exactly with Finding 39's finding that the table's own
+    gating flag ([self+20056], set only via sub_820C43C0 itself being
+    called with case 17 and r4==6) never fires during this run -- the
+    whole subsystem this table belongs to is real, correctly gated
+    behind game state this project hasn't reached yet, not a bug or
+    missing piece in this project's own implementation. Nothing further
+    to chase here productively until execution reaches further into the
+    game (past whatever gates r4==6) -- properly closed, not abandoned
+    mid-investigation. ---
