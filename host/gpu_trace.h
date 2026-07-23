@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <cstdio>
 
+struct PPCContext;
+
 class GpuCommandTracer
 {
 public:
@@ -9,7 +11,7 @@ public:
     void SetRptrWriteBackAddr(uint32_t addr);
     void SetIdentifierAddr(uint32_t addr);
     void SetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
-    void ScanAndTraceFrame(uint8_t* base);
+    void ScanAndTraceFrame(PPCContext& ctx, uint8_t* base);
     bool HasRingBuffer() const { return ringBufferBase_ != 0; }
     uint32_t GraphicsInterruptCallback() const { return graphicsInterruptCallback_; }
     uint32_t GraphicsInterruptContext() const { return graphicsInterruptContext_; }
@@ -22,8 +24,11 @@ private:
     // PM4_INDIRECT_BUFFER (opcode 0x3F) targets, which are short-lived "call into this
     // other buffer" jumps -- always scanned fresh from 0 rather than incrementally
     // tracked like the main ring. depth is capped to guard against a malformed or
-    // cyclic indirect-buffer chain.
-    uint32_t ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth);
+    // cyclic indirect-buffer chain. ctx is threaded through so PM4_INTERRUPT (0x54) can
+    // invoke the registered graphics interrupt callback for real, matching real hardware
+    // (Xenia's ExecutePacketType3_INTERRUPT), instead of only the synthetic per-VdSwap
+    // vblank firing.
+    uint32_t ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth);
 
     uint32_t ringBufferBase_ = 0;
     uint32_t ringBufferSize_ = 0;
@@ -33,6 +38,7 @@ private:
     uint32_t graphicsInterruptContext_ = 0;
     uint32_t lastParsedOffset_ = 0;
     uint32_t frameCounter_ = 0;
+    uint32_t vblankCounter_ = 0;
     FILE* logFile_ = nullptr;
 };
 

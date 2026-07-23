@@ -1366,7 +1366,7 @@ PPC_FUNC(__imp__VdSwap)
     // trace output) exists.
     if (g_gpuTracer.HasRingBuffer())
     {
-        g_gpuTracer.ScanAndTraceFrame(base);
+        g_gpuTracer.ScanAndTraceFrame(ctx, base);
     }
 
     // Real hardware fires a GPU/vblank interrupt once per presented frame, delivered

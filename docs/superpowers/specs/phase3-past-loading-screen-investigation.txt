@@ -2000,3 +2000,82 @@ fence genuinely isn't reachable through either registered interrupt path.
     a concrete, evidence-backed candidate for advancing OTHER stalled
     counters this project hasn't found yet, using the exact same
     "counter/target wait" pattern Findings 20-24/31 already mapped. ---
+
+--- Finding 37: implemented real execution of PM4_EVENT_WRITE_SHD and
+    PM4_INTERRUPT -- EVENT_WRITE_SHD confirmed as the real writer for
+    Finding 32's fence, verified stable after a false-alarm regression
+    scare (methodology note included) ---
+
+Implemented real execution for the two interrupt/fence opcodes Finding
+36 identified (previously only logged, never acted on):
+
+  PM4_EVENT_WRITE_SHD (0x58): real semantics from Xenia's
+  ExecutePacketType3_EVENT_WRITE_SHD -- payload {initiator, address,
+  value}; bit 31 of initiator selects writing a GPU vblank counter
+  instead of the literal value; address is a physical address needing
+  the same 0xA0000000 segment translation as INDIRECT_BUFFER (Finding
+  35). Implemented directly in host/gpu_trace.cpp's ScanBuffer -- a
+  pure memory write, no guest-code re-entry needed.
+
+  PM4_INTERRUPT (0x54): real semantics from Xenia's
+  ExecutePacketType3_INTERRUPT -- reads a cpu_mask dword, dispatches
+  source=1 to the registered graphics interrupt callback. This
+  requires calling back into guest code (PPC_CALL_INDIRECT_FUNC), so
+  ScanBuffer/ScanAndTraceFrame's signatures now thread a PPCContext&
+  through (host/gpu_trace.h forward-declares PPCContext; kernel_impl.
+  cpp's VdSwap passes its own ctx through to ScanAndTraceFrame).
+
+Verified live: EVENT_WRITE_SHD immediately confirmed as the real
+writer of Finding 32/33/36's stalled fence -- the trace log shows real
+writes landing exactly at 0xA0400000 (the same address every prior
+WATCH-17/21 probe identified as that fence's target): "wrote
+0x00000003 to 0xA0400000", then "wrote 0x00000007 to 0xA0400000". This
+had been the single biggest open question since Finding 20 -- now
+answered with direct evidence, not inference.
+
+--- False-alarm regression, and the methodology lesson worth recording ---
+
+Initial testing (60s watchdog) showed this change getting LESS far
+than Findings 33-36's established "deep audio streaming" runs --
+stalling right after w_apploadingscreen.xen instead of reaching
+speech_generic.xen/KeResetEvent/9MB+ reads. Isolated methodically
+rather than assuming: disabled PM4_INTERRUPT's dispatch (no change,
+same stall point) -- disabled EVENT_WRITE_SHD's write too (no change,
+if anything slightly less far) -- then, critically, stashed ALL of
+this session's uncommitted changes entirely (git stash push -u,
+scoped to the exact files touched) and re-tested the already-committed
+Finding 36 baseline (commit aeb0796) with the SAME 60s watchdog on the
+SAME machine, right now. Result: the clean, already-shipped baseline
+hit the *exact same* stall point (148 lines, same file, same offset).
+This proves the "regression" was never caused by this session's new
+code at all -- it's real, environment-dependent timing variance (this
+gate apparently needs more than 60 real seconds right now, matching
+Phase 3K's own already-documented observation that VdSwap's cadence
+isn't a steady rate). Restored the stashed changes and re-ran with a
+120s watchdog: reached the identical deep plateau as Findings 33/34/36
+(9.46MB into audio streaming, KeResetEvent), no crash, real
+EVENT_WRITE_SHD/INTERRUPT activity confirmed throughout.
+
+Lesson for future findings: before concluding "my change caused a
+regression" from a single run, get an apples-to-apples clean-baseline
+comparison at the SAME watchdog duration on the SAME machine before
+attributing a shorter run to the change under test -- this project's
+own timing is not fully deterministic run-to-run, and Finding 25 already
+made exactly this mistake once (concluding "just needed more time" too
+narrowly). Confirming the CLEAN baseline behaves the same way, not just
+assuming it, is what turned this from a false alarm into confidence.
+
+--- Status: real fix, verified stable, shipped. Only 2 EVENT_WRITE_SHD
+    writes landed in the whole 120s run (values 3 then 7, both early,
+    matching the already-known "ring buffer only gets fresh real
+    content in the first 2 frames" pattern from Finding 33) -- not
+    enough to satisfy whatever target Finding 31's later, post-
+    KeResetEvent recurrence of this wait needs (which climbed as high
+    as 95 in that finding's own trace). This does NOT fully resolve the
+    stall -- but it conclusively answers the mechanism question (real
+    GPU EVENT_WRITE_SHD commands ARE the intended writer, now executing
+    for real) and reframes the remaining open question precisely: why
+    does the ring buffer stop producing new commands after frame 2 --
+    the same open question Finding 33 already flagged, now confirmed to
+    matter concretely for this specific fence too, not just
+    speculatively. ---

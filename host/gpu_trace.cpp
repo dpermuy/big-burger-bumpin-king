@@ -1,4 +1,6 @@
 #include "gpu_trace.h"
+#include "ppc_config.h"
+#include <ppc_context.h>
 
 GpuCommandTracer g_gpuTracer;
 
@@ -77,9 +79,15 @@ namespace
     constexpr uint32_t kOpcodeMeInit = 0x48;
     constexpr uint32_t kOpcodeIndirectBuffer = 0x3F;
     constexpr int kMaxIndirectDepth = 3;
+
+    // Real Type3Opcode values (src/xenia/gpu/xenos.h), cross-referenced live against
+    // this project's actual trace output (Finding 36, phase3 spec) -- every opcode ever
+    // observed in a real run now has a confirmed real identity, not a guess.
+    constexpr uint32_t kOpcodeInterrupt = 0x54;      // PM4_INTERRUPT
+    constexpr uint32_t kOpcodeEventWriteShd = 0x58;  // PM4_EVENT_WRITE_SHD
 }
 
-uint32_t GpuCommandTracer::ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth)
+uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth)
 {
     const char* indent = depth == 0 ? "" : (depth == 1 ? "  " : (depth == 2 ? "    " : "      "));
     uint32_t offsetBytes = startOffsetBytes;
@@ -160,7 +168,56 @@ uint32_t GpuCommandTracer::ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32
                     fprintf(logFile_, "%s-> following indirect buffer at 0x%08X (%u dwords)\n",
                         indent, targetAddr, targetDwordCount);
                 }
-                ScanBuffer(base, targetAddr, 0, targetDwordCount * 4, depth + 1);
+                ScanBuffer(ctx, base, targetAddr, 0, targetDwordCount * 4, depth + 1);
+            }
+
+            if (opcode == kOpcodeEventWriteShd && count == 3)
+            {
+                // Real semantics (Xenia's ExecutePacketType3_EVENT_WRITE_SHD,
+                // command_processor.cc): payload is {initiator, address, value}.
+                // Bit 31 of initiator selects "write the GPU's own vblank counter"
+                // instead of the literal value dword. address's low 2 bits select an
+                // endianness/swap mode on real hardware -- not yet distinguished here
+                // (every address observed live so far has them clear); masked off
+                // before use either way. address is a physical address, same
+                // 0xA0000000 segment-offset translation as INDIRECT_BUFFER (Finding 35).
+                uint32_t initiator = LoadU32(base, bufferAddr + offsetBytes + 4);
+                uint32_t address = (LoadU32(base, bufferAddr + offsetBytes + 8) & ~0x3u) | 0xA0000000u;
+                uint32_t value = LoadU32(base, bufferAddr + offsetBytes + 12);
+                uint32_t dataValue = (initiator & 0x80000000u) ? vblankCounter_ : value;
+                StoreU32(base, address, dataValue);
+                if (logFile_)
+                {
+                    fprintf(logFile_, "%s-> EVENT_WRITE_SHD: wrote 0x%08X to 0x%08X (initiator=0x%08X)\n",
+                        indent, dataValue, address, initiator);
+                    fflush(logFile_);
+                }
+            }
+
+            if (opcode == kOpcodeInterrupt && count == 1)
+            {
+                // Real semantics (Xenia's ExecutePacketType3_INTERRUPT): payload is a
+                // single cpu_mask dword; real hardware dispatches one interrupt per set
+                // bit (0-5), each targeting a specific hardware thread
+                // (DispatchInterruptCallback(1, n)). This project has no per-core
+                // routing (PPC_CALL_INDIRECT_FUNC always runs on the calling thread's
+                // own ctx, same as the existing APC-delivery precedent) -- fire once,
+                // on whatever thread is running VdSwap right now, if the mask is
+                // non-empty and a callback is registered. source=1, matching Finding 36's
+                // confirmed real convention (source=0 is the separate vblank path,
+                // already dispatched once per VdSwap in kernel_impl.cpp).
+                uint32_t cpuMask = LoadU32(base, bufferAddr + offsetBytes + 4);
+                if (cpuMask != 0 && graphicsInterruptCallback_ != 0)
+                {
+                    if (logFile_)
+                    {
+                        fprintf(logFile_, "%s-> INTERRUPT: dispatching source=1 cpuMask=0x%X\n", indent, cpuMask);
+                        fflush(logFile_);
+                    }
+                    ctx.r3.u64 = 1; // source
+                    ctx.r4.u64 = graphicsInterruptContext_;
+                    PPC_CALL_INDIRECT_FUNC(graphicsInterruptCallback_);
+                }
             }
 
             offsetBytes += 4 + payloadBytes;
@@ -200,17 +257,18 @@ uint32_t GpuCommandTracer::ScanBuffer(uint8_t* base, uint32_t bufferAddr, uint32
     return offsetBytes;
 }
 
-void GpuCommandTracer::ScanAndTraceFrame(uint8_t* base)
+void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
 {
     EnsureLogOpen();
     frameCounter_++;
+    vblankCounter_++;
 
     if (logFile_)
     {
         fprintf(logFile_, "--- frame %u (starting offset %u) ---\n", frameCounter_, lastParsedOffset_);
     }
 
-    uint32_t newOffset = ScanBuffer(base, ringBufferBase_, lastParsedOffset_, ringBufferSize_, 0);
+    uint32_t newOffset = ScanBuffer(ctx, base, ringBufferBase_, lastParsedOffset_, ringBufferSize_, 0);
 
     if (logFile_)
     {
