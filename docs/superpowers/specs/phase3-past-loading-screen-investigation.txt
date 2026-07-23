@@ -2263,3 +2263,39 @@ session's available time and reliable techniques:
     as other const data this session identified), a read-watchpoint
     retry with a longer real-time budget and no other watchpoint
     overhead competing for cycles. ---
+
+--- Finding 41: write watchpoint confirms sub_820C43C0's dispatch table
+    is genuinely static XEX data, never rewritten at runtime ---
+
+Followed up on Finding 40's flagged next step directly: armed a real
+write watchpoint (this session's proven-reliable kind, unlike the
+inconclusive read attempt) on the table's address (host 0x382087d48,
+guest 0x82087D48), right at the same _xstart entry point used
+throughout this investigation.
+
+Result: fired exactly once, immediately at arm time -- the established,
+already-documented spurious first-touch artifact (Finding 27: hardware
+watchpoints on a freshly-touched anonymous mmap page report one hit
+tied to the page's first touch, not real execution). The reported
+"new value" (0x036f0040c0430c82, byte-order-shuffled) matches the
+table's own already-correct content exactly (the same 82 0C 43 C0 40
+00 6F 03 bytes Finding 40 found via memory scan) -- confirming the
+table's real content was already fully in place by the time _xstart
+even starts. The watchpoint then ran clean through a full run to
+natural watchdog completion with zero further hits -- no code writes
+to this table at any point during actual PPC execution.
+
+--- This closes off one half of Finding 40's open question cleanly:
+    the table is genuinely static, compile-time XEX data (loaded once
+    via the image's own initial section copy, before any guest code
+    runs), not something constructed or mutated at runtime. The
+    remaining question -- who reads/dispatches through it -- is still
+    open; this result doesn't resolve that, but it does rule out an
+    entire class of hypothesis (a runtime-built table) and confirms the
+    earlier read-watchpoint's silence (Finding 40) was very likely a
+    real tooling limitation, not evidence the table goes unused. No
+    further avenue attempted this session -- next step remains either a
+    longer/repeated read-watchpoint attempt, or static disassembly
+    specifically hunting for the "load table-relative pointer, compute
+    index, bctrl" instruction shape near other code that references
+    sibling table entries (sub_820C4580, sub_820C4708). ---
