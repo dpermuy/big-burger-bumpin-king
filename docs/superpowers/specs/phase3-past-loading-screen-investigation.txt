@@ -2079,3 +2079,69 @@ assuming it, is what turned this from a false alarm into confidence.
     the same open question Finding 33 already flagged, now confirmed to
     matter concretely for this specific fence too, not just
     speculatively. ---
+
+--- Finding 38: found why the main ring buffer goes quiet after frame 2
+    -- a dedicated worker thread drives VdSwap itself through a
+    completely separate "system command buffer" queue, not the main
+    ring buffer at all ---
+
+Chased Finding 37's open question directly: why does the main GPU ring
+buffer's top-level offset freeze at 172 bytes forever (confirmed via
+gpu_trace.log: every frame from 3 onward starts and ends at offset 172,
+"zero padding" immediately) despite VdSwap continuing to be called many
+more times?
+
+This project already stubs a second, separate buffer -- host/
+kernel_impl.cpp's VdGetSystemCommandBuffer, "a second, smaller,
+kernel-owned buffer distinct from the game's main ring buffer" per its
+own existing comment (Phase 3K design spec). Traced its one real call
+site: private/ppc/ppc_recomp.6.cpp:24429, inside sub_820CCA68, itself
+called from sub_820C8D28 -- which is a dedicated WORKER THREAD entry
+point (confirmed: every live run's log shows "ExCreateThread: entry=
+0x820C8D28 ... via StartAddress directly", a separate thread from the
+main game/render thread).
+
+Instrumented sub_820CCA68's entry and its calling gate (a bit-0x2 check
+on self+10810, a distinct, unrelated flags byte from Finding 24's
+self+10809 -- verified the two are different offsets, not the same gate,
+before drawing any conclusion). Live result (90s run, self=0xA0009900,
+the same object tracked all session): the gate is essentially always
+open (only the very first poll ever showed the bit clear) and
+sub_820CCA68 runs 19 times over 90 real seconds -- real, ongoing,
+periodic activity, not a dead path.
+
+Read sub_820CCA68's body in full: it maintains its OWN internal 8-slot
+circular queue, embedded in the SAME self+10768 96-byte buffer this
+whole investigation has tracked (Findings 26-37), but at a different
+offset range (byte offsets 64-92, i.e. dword slots 16-23 -- a
+completely separate structure from the fence at offset 0 or the
+ring-buffer-writeback field at offset 60 already found). Producer/
+consumer indices live at self+20048/20052. Critically, at private/ppc/
+ppc_recomp.6.cpp:24646, this routine calls __imp__VdSwap directly,
+itself -- on its own loop's timing, not tied to any real frame clock.
+
+--- This resolves Phase 3K's original open question ("VdSwap's cadence
+    is not tied to a steady per-frame wall-clock rate during this
+    loading-screen phase -- gated behind something else not yet
+    identified"): the "something else" is this dedicated worker thread,
+    calling VdSwap on its own internal loop/queue-processing cadence
+    (roughly once per ~4.7 real seconds observed this run), completely
+    independent of the main ring buffer's content. This also explains
+    why the main ring buffer never grows past frame 2: it was never the
+    active channel for whatever this thread keeps doing -- the real,
+    ongoing GPU-adjacent work during this phase flows through this
+    separate "system command buffer" / 8-slot queue mechanism instead,
+    which this project's tracer has never looked at.
+
+    This is a genuinely separate subsystem from the one Findings 35-37
+    already instrumented, with its own real PM4-adjacent structure
+    (sub_820C4678, sub_820C82A8, sub_820B6428 all participate, not yet
+    individually decoded). Properly tracing and executing it is real,
+    valuable follow-on work matching the exact same methodology already
+    proven for the main ring buffer (Findings 35-37) -- but it's a
+    substantial, separate undertaking (different queue structure,
+    different producer/consumer bookkeeping, several more functions to
+    decode) and deliberately not rushed into half-implemented here.
+    Next session's clear starting point: instrument sub_820C4678 (what
+    actually gets queued into the 8-slot ring) and VdGetSystemCommandBuffer's
+    real buffer content the same way ScanBuffer traces the main ring. ---
