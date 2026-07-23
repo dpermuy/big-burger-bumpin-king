@@ -1343,6 +1343,7 @@ PPC_FUNC(__imp__VdGetSystemCommandBuffer)
         {
             g_systemCommandBufferAddr = g_bumpAllocatorNext;
             g_bumpAllocatorNext += kSystemCommandBufferSize;
+            g_gpuTracer.RegisterSystemCommandBuffer(g_systemCommandBufferAddr, kSystemCommandBufferSize);
         }
     }
 

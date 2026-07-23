@@ -2145,3 +2145,57 @@ itself -- on its own loop's timing, not tied to any real frame clock.
     Next session's clear starting point: instrument sub_820C4678 (what
     actually gets queued into the 8-slot ring) and VdGetSystemCommandBuffer's
     real buffer content the same way ScanBuffer traces the main ring. ---
+
+--- Finding 39: wired up real tracing for the system command buffer
+    (Finding 38's second subsystem) -- confirmed empty all run; traced
+    exactly why sub_820C4678 never fires ---
+
+Implemented real infrastructure for Finding 38's discovery: host/
+gpu_trace.h/cpp gained GpuCommandTracer::RegisterSystemCommandBuffer
+(addr, size) and ScanAndTraceFrame now scans this second buffer right
+after the main ring buffer, once per VdSwap, using the exact same
+ScanBuffer machinery (so EVENT_WRITE_SHD/INTERRUPT execution, Finding
+37, applies here automatically too). host/kernel_impl.cpp's
+VdGetSystemCommandBuffer registers it with the tracer on its one real
+allocation (g_systemCommandBufferAddr, 65536 bytes). ScanBuffer/
+ScanAndTraceFrame signature changes were already in place from Finding
+37; this only required adding the second buffer's own state and a call
+site.
+
+Verified live (90s watchdog): the system command buffer (base
+0xA0980000) reads all-zero on every single scan across the whole run --
+real infrastructure, confirmed inert. The EVENT_WRITE_SHD/INTERRUPT
+activity seen in this same trace all comes from the MAIN ring buffer's
+already-known indirect buffers (Finding 37's source), not this one.
+
+Traced precisely why, instead of leaving it as an open question: added
+a temporary probe (since reverted) to sub_820C4678 itself -- Finding
+38's identified "packet constructor" (confirmed via static reading to
+hand-build a real EVENT_WRITE_SHD header, 0xC0025800/0x80000003/
+mangled-address/0xDEADBEEF, matching Finding 37's real opcode format
+exactly). Result: sub_820C4678 is called ZERO times across the full 90s
+run, despite its caller sub_820CCA68 running 19 times in the same
+window (Finding 38). Read sub_820CCA68's gating logic precisely: the
+whole packet-construction block is skipped unless [self+20056] != 0
+(private/ppc/ppc_recomp.6.cpp:24457-24466's cmpwi/beq) -- a separate,
+distinct gate from the self+10810 bit that lets sub_820CCA68 itself run
+at all. [self+20056] stays 0 for the whole run.
+
+Found the real setter for [self+20056]: private/ppc/ppc_recomp.6.cpp:
+3452 (sub_820C43C0), a small property-dispatcher taking r3=case-id, r4=
+sub-parameter -- case 17 sets [self+20056]=1 but ONLY when r4==6; case
+16 clears it to 0, also only when r4==6. This looks like a per-context/
+per-slot enable flag (r4==6 selecting one specific slot/index out of
+several), not yet traced back to its own caller or what real condition
+would make r4==6 true.
+
+--- Status: real, working infrastructure added (system command buffer
+    now genuinely traced, not just assumed empty) and a clean, precise
+    negative result -- the "why" is now a single, well-localized flag
+    ([self+20056], set only via sub_820C43C0's case 17 with r4==6)
+    rather than a vague "worker thread does something." Next session's
+    concrete starting point: find sub_820C43C0's callers and what
+    determines r4's value, to learn what real game-state condition
+    would make r4==6 (e.g. audio finishing loading, entering a specific
+    menu/game state, or a specific render context becoming active) --
+    that's the actual trigger this whole subsystem is waiting on. ---

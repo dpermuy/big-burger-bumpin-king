@@ -11,6 +11,13 @@ public:
     void SetRptrWriteBackAddr(uint32_t addr);
     void SetIdentifierAddr(uint32_t addr);
     void SetGraphicsInterruptCallback(uint32_t callback, uint32_t context);
+    // Real second buffer (Finding 38): a dedicated worker thread (entry 0x820C8D28)
+    // builds real PM4 packets (confirmed: sub_820C4678 hand-constructs a real
+    // EVENT_WRITE_SHD header) into this buffer, independent of the main ring buffer,
+    // which is why the main ring goes quiet after frame 2 while real GPU-adjacent work
+    // keeps happening. addr/size are already known host-side (VdGetSystemCommandBuffer
+    // owns this allocation) -- just needs to be scanned the same way as the main ring.
+    void RegisterSystemCommandBuffer(uint32_t addr, uint32_t size);
     void ScanAndTraceFrame(PPCContext& ctx, uint8_t* base);
     bool HasRingBuffer() const { return ringBufferBase_ != 0; }
     uint32_t GraphicsInterruptCallback() const { return graphicsInterruptCallback_; }
@@ -39,6 +46,9 @@ private:
     uint32_t lastParsedOffset_ = 0;
     uint32_t frameCounter_ = 0;
     uint32_t vblankCounter_ = 0;
+    uint32_t systemCmdBufAddr_ = 0;
+    uint32_t systemCmdBufSize_ = 0;
+    uint32_t systemCmdBufLastOffset_ = 0;
     FILE* logFile_ = nullptr;
 };
 

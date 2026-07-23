@@ -257,6 +257,24 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
     return offsetBytes;
 }
 
+void GpuCommandTracer::RegisterSystemCommandBuffer(uint32_t addr, uint32_t size)
+{
+    if (systemCmdBufAddr_ != 0)
+    {
+        return; // one real allocation for the whole run, same as VdGetSystemCommandBuffer's own once-only bump alloc
+    }
+    systemCmdBufAddr_ = addr;
+    systemCmdBufSize_ = size;
+    systemCmdBufLastOffset_ = 0;
+
+    EnsureLogOpen();
+    if (logFile_)
+    {
+        fprintf(logFile_, "[init] system command buffer base=0x%08X size=%u bytes\n", addr, size);
+        fflush(logFile_);
+    }
+}
+
 void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
 {
     EnsureLogOpen();
@@ -277,6 +295,24 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
     }
 
     lastParsedOffset_ = newOffset;
+
+    // Real second buffer (Finding 38) -- scanned the same way as the main ring, right
+    // after it, once per VdSwap. Resumes from where the last scan left off, same
+    // incremental pattern as the main ring's lastParsedOffset_.
+    if (systemCmdBufAddr_ != 0)
+    {
+        if (logFile_)
+        {
+            fprintf(logFile_, "--- system command buffer (starting offset %u) ---\n", systemCmdBufLastOffset_);
+        }
+        uint32_t systemNewOffset = ScanBuffer(ctx, base, systemCmdBufAddr_, systemCmdBufLastOffset_, systemCmdBufSize_, 0);
+        if (logFile_)
+        {
+            fprintf(logFile_, "--- system command buffer done ---\n");
+            fflush(logFile_);
+        }
+        systemCmdBufLastOffset_ = systemNewOffset;
+    }
 
     // Real semantics: the GPU writes its "consumed up to here" read pointer so the CPU
     // knows how much ring space is free. There's no real GPU, so report "caught up to
