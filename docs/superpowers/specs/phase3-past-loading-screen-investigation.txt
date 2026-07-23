@@ -1914,3 +1914,89 @@ affected by this fix).
     table, as already done successfully for 0x3B/0x3F/0x48) to find
     whether any of them are the fence-signaling command Finding 32 was
     looking for. ---
+
+--- Finding 36: full Xenia opcode cross-reference for the newly-visible
+    command stream (Finding 35); found and fixed a real interrupt-source
+    bug (source=0 is vblank, not 1); Finding 32's fence still
+    unaffected by either source ---
+
+With Finding 35's address-translation fix unlocking real command data,
+cross-referenced every opcode observed in the live trace against Xenia's
+real source (src/xenia/gpu/xenos.h's Type3Opcode enum, fetched live via
+`gh api repos/xenia-project/xenia/contents/...`, not assumed from memory
+or generic docs). Every opcode this project has ever observed now has a
+confirmed real identity:
+
+  0x21 PM4_REG_RMW              register read/modify/write
+  0x2B PM4_IM_LOAD_IMMEDIATE    load sequencer instruction memory (embedded)
+  0x36 PM4_DRAW_INDX_2          draw using supplied indices (25 occurrences --
+                                 by far the most common opcode in the trace,
+                                 exactly as expected for real draw calls)
+  0x3B PM4_INVALIDATE_STATE     (already known, Finding 22/25)
+  0x3C PM4_WAIT_REG_MEM         wait until a register/memory location hits a
+                                 specific value (6 occurrences -- a real GPU-
+                                 side synchronization primitive)
+  0x3F PM4_INDIRECT_BUFFER      (already known)
+  0x48 PM4_ME_INIT              (already known)
+  0x54 PM4_INTERRUPT            generate interrupt from the command stream
+                                 (1 occurrence)
+  0x58 PM4_EVENT_WRITE_SHD      generate a VS|PS_done event, writes memory on
+                                 completion (5 occurrences)
+  0x60/0x61/0x62/0x63           PM4_SET_BIN_MASK/SELECT_LO/HI
+
+No unparsed/unknown opcodes remain in any trace captured so far.
+
+Two of these (0x54 INTERRUPT, 0x58 EVENT_WRITE_SHD) are real hardware
+synchronization/signaling primitives -- exactly the class of mechanism
+Finding 32 went looking for. Pulled Xenia's real execution semantics for
+both (src/xenia/gpu/command_processor.cc):
+
+  ExecutePacketType3_INTERRUPT: reads a cpu_mask dword, and for each set
+  bit n (0-5) calls DispatchInterruptCallback(1, n) -- source=1.
+
+  GraphicsSystem::DispatchInterruptCallback(source, cpu) (src/xenia/gpu/
+  graphics_system.cc:241): builds args={source, interrupt_callback_data_}
+  and executes the registered guest callback with exactly those two
+  values -- confirms this project's (r3=source, r4=context) ABI
+  (Finding 33) was correct.
+
+  GraphicsSystem::MarkVblank (real periodic vblank handler, NOT tied to
+  VdSwap/command-stream content at all) calls
+  DispatchInterruptCallback(0, 2) -- source=0, not 1.
+
+This is a real bug in Finding 33's implementation: source=1 was fired
+from VdSwap under the assumption it was "the vblank-style path" (based
+on the game's own callback checking r3==1), but Xenia's real vblank
+dispatch uses source=0. source=1 is reserved for command-stream-driven
+PM4_INTERRUPT specifically, a different, rarer event. Fixed: host/
+kernel_impl.cpp's VdSwap now dispatches source=0 (real vblank
+convention, verified against Xenia's own MarkVblank), not source=1.
+
+Verified live (temporary WATCH-21 instrumentation, reverted): confirmed
+the corrected source=0 dispatch works exactly as source=1 previously did
+(no crash, same clean completion) -- but Finding 32's fence
+(self=0xA0009900, current=*(*(self+10768))) is STILL unaffected, before
+and after every firing, across a 60s run. Consistent with the earlier
+static trace (Finding 33): the callback's source==0 branch touches
+context+15120..15136 (a frame counter, calling a DIFFERENT nested
+callback), not self+10768 at all. Confirms once more, now with the
+CORRECT interrupt source instead of the wrong one, that this specific
+fence genuinely isn't reachable through either registered interrupt path.
+
+--- Status: real correctness fix shipped (source=0, verified against
+    Xenia ground truth) regardless of Finding 32's fence, which remains
+    unresolved -- both real interrupt sources have now been tried and
+    exhaustively ruled out for that specific object. New, better-
+    informed leads for next session: (1) PM4_INTERRUPT (opcode 0x54) is
+    currently only logged by the tracer, never executed -- implementing
+    real execution (dispatch source=1 exactly when the GPU command
+    stream requests it, per its cpu_mask payload, rather than only ever
+    firing source=0 synthetically once per VdSwap) would make interrupt
+    delivery fully hardware-accurate and might matter for other,
+    not-yet-discovered stalls. (2) PM4_EVENT_WRITE_SHD (opcode 0x58) is
+    a real memory-writing fence mechanism (Xenia's real implementation
+    writes a counter or explicit value to a given address when
+    executed) -- executing it for real (rather than only logging it) is
+    a concrete, evidence-backed candidate for advancing OTHER stalled
+    counters this project hasn't found yet, using the exact same
+    "counter/target wait" pattern Findings 20-24/31 already mapped. ---

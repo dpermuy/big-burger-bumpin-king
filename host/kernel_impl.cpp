@@ -1371,16 +1371,16 @@ PPC_FUNC(__imp__VdSwap)
 
     // Real hardware fires a GPU/vblank interrupt once per presented frame, delivered
     // to whatever callback the title registered via VdSetGraphicsInterruptCallback.
-    // Nothing here previously invoked it (Finding 32, phase3 spec) -- several traced
-    // dispatcher/fence objects only ever advance from inside that callback's real,
-    // compiled ISR logic. source=1 matches the callback's own confirmed real branch
-    // (private/ppc/ppc_recomp.4.cpp:11402, sub_820B5160 checks r3==1 for the
-    // vblank-style path; other values either no-op or hit an unverified frame-counter
-    // branch, so source=1 is deliberately the only one wired up here).
+    // Nothing here previously invoked it (Finding 32, phase3 spec). source=0 is the
+    // real vblank convention -- confirmed against Xenia's GraphicsSystem::MarkVblank,
+    // which dispatches DispatchInterruptCallback(0, 2) (source=0) for the real
+    // periodic vblank event; source=1 is reserved for the separate, command-stream-
+    // triggered PM4_INTERRUPT opcode (0x54), not vblank (Finding 33 fired source=1
+    // here, which was wrong -- corrected in Finding 36).
     uint32_t callback = g_gpuTracer.GraphicsInterruptCallback();
     if (callback != 0)
     {
-        ctx.r3.u64 = 1; // source
+        ctx.r3.u64 = 0; // source: vblank
         ctx.r4.u64 = g_gpuTracer.GraphicsInterruptContext();
         PPC_CALL_INDIRECT_FUNC(callback);
     }
