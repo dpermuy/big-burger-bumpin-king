@@ -165,6 +165,25 @@ PPC_FUNC(__imp__XexCheckExecutablePrivilege)
 
 static uint32_t g_bumpAllocatorNext = 0xA0000000;
 
+// Confirmed live (phase3 spec, Finding 45) that a host-side buffered-stream read
+// (XdvdfsImage::ReadBytes, via std::istream::read -> memmove) can write a handful of
+// bytes past its destination buffer's nominal end -- real file-streaming code reading in
+// fixed chunks against a buffer boundary that doesn't land on a chunk boundary, not a
+// sizing bug in any single allocation (every real MmAllocatePhysicalMemoryEx request
+// observed is a small, legitimate size well under the 64 KiB granularity already given).
+// That overrun previously corrupted whatever allocation happened to be packed immediately
+// next in the shared, gapless g_bumpAllocatorNext sequence (a 96-byte GPU-tracking object
+// landing right at the prior allocation's exact boundary) with raw file bytes, via a
+// memmove that never goes through a PPC store instruction -- invisible to any PPC-level
+// store watching. Moving physical-pool allocations to an entirely separate, distant base
+// was tried first and reintroduced Finding 34's original symptom (indirect GPU command
+// buffers reading all-zero again) -- the game's own internal address bookkeeping depends
+// on allocations landing in a consistent relative position, not just having a valid
+// individual address. Fixed instead with a small fixed gap after every allocation from
+// the shared allocator, large enough to absorb this class of small stream-buffer overrun
+// while preserving the original relative address layout.
+constexpr uint32_t kBumpAllocatorGap = 0x1000; // 4 KiB safety margin between allocations
+
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
     uint32_t baseAddressPtr = (uint32_t)ctx.r3.u64;
@@ -178,7 +197,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         allocatedAddress = g_bumpAllocatorNext;
-        g_bumpAllocatorNext += alignedSize;
+        g_bumpAllocatorNext += alignedSize + kBumpAllocatorGap;
     }
 
     PPC_STORE_U32(baseAddressPtr, allocatedAddress);
@@ -856,15 +875,18 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
     // r4 (observed 0x19000000, ~400 MB) is implausibly large for a single
     // physical allocation on 512 MB hardware -- treated as stale register
     // content, not a real size argument. Always allocates a fixed 64 KiB
-    // block from the same bump allocator NtAllocateVirtualMemory (Phase 2B)
-    // uses, rather than guessing which register (if any) is trustworthy.
+    // block from the same bump allocator NtAllocateVirtualMemory uses
+    // (kBumpAllocatorGap, Finding 45, guards against the adjacent-overrun
+    // corruption that was here) -- confirmed live that every real caller
+    // passes a small, legitimate size well under 64 KiB, so this was never
+    // an undersizing bug in this function itself.
     constexpr uint32_t kAllocGranularity = 0x10000;
 
     uint32_t allocatedAddress;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         allocatedAddress = g_bumpAllocatorNext;
-        g_bumpAllocatorNext += kAllocGranularity;
+        g_bumpAllocatorNext += kAllocGranularity + kBumpAllocatorGap;
     }
 
     fmt::println("[kernel] MmAllocatePhysicalMemoryEx: {} bytes -> 0x{:X}", kAllocGranularity, allocatedAddress);
@@ -999,10 +1021,10 @@ PPC_FUNC(__imp__ExCreateThread)
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         stackBase = g_bumpAllocatorNext;
-        g_bumpAllocatorNext += kStackSize;
+        g_bumpAllocatorNext += kStackSize + kBumpAllocatorGap;
 
         tlsBlockBase = g_bumpAllocatorNext;
-        g_bumpAllocatorNext += kTlsBlockSize;
+        g_bumpAllocatorNext += kTlsBlockSize + kBumpAllocatorGap;
 
         handle = g_nextHandle++;
         g_handleTable[handle] = HandleObject{ HandleObjectType::Thread, false };
@@ -1342,7 +1364,7 @@ PPC_FUNC(__imp__VdGetSystemCommandBuffer)
         if (g_systemCommandBufferAddr == 0)
         {
             g_systemCommandBufferAddr = g_bumpAllocatorNext;
-            g_bumpAllocatorNext += kSystemCommandBufferSize;
+            g_bumpAllocatorNext += kSystemCommandBufferSize + kBumpAllocatorGap;
             g_gpuTracer.RegisterSystemCommandBuffer(g_systemCommandBufferAddr, kSystemCommandBufferSize);
         }
     }

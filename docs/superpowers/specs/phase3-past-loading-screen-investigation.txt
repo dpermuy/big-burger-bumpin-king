@@ -2463,3 +2463,80 @@ never actually been watched for CPU-side writes at all.
     starts) to find its real writer -- the same technique already
     proven reliable in Findings 27/34/41, just not yet pointed at this
     specific address. ---
+
+--- Finding 45: found the real, root-cause explanation for Finding 44's
+    mystery value -- a host-side buffer overrun corrupting adjacent
+    guest allocations, completely invisible to any PPC-level
+    instrumentation -- and fixed it (with a false start along the way) ---
+
+Pointed a write watchpoint at the exact address Finding 44 flagged
+(0xA0400004, host 0x3a0400004), armed at _xstart, with enough scripted
+continues to capture several hits in sequence. Every early hit traced
+back to real, already-understood code: the legitimate zero-init memset
+(sub_823F0DF0, called from sub_820B6560), sub_820B6560's own direct
+seed write (0x7ccfd2b8, byte-swapped = 0xB8D2CF7C -- matches Finding
+44's own earlier entry-probe capture exactly), then the two real
+EVENT_WRITE_SHD writes already known from Findings 37/39 (byte-swapped
+values matched their logged form exactly: 0xC0D4D2B8<->0xB8D2D4C0,
+0x48D4D4B8<->0xB8D4D448).
+
+The 6th and final captured hit broke the pattern completely: a
+different thread (#4, not the worker thread), stopped inside
+libsystem_platform.dylib`_platform_memmove -- a raw host memmove, not
+any PPC store instruction. Its low 32 bits, byte-swapped, are exactly
+0x027F2E70 -- Finding 44's mystery "current" value, matched precisely.
+Its full backtrace: _platform_memmove <- std::basic_streambuf::xsgetn
+<- std::basic_istream::read <- XdvdfsImage::ReadBytes <- __imp__
+NtReadFile <- ... a real disc-file read, for the exact same audio
+stream handle (0x1028) this whole session has watched progress. The
+write's destination (host x0 = 0x3a03fffc5, guest 0xA03FFFC5) lands
+just 59 bytes before self+10768's buffer at 0xA0400000 -- an 8-byte
+memmove chunk straddling that boundary, overwriting both the fence
+(offset 0) and this field (offset 4) with raw, meaningless audio file
+bytes. Finding 44's "current" was never a counter, GPU value, or
+anything semantically meaningful at all -- it was leftover audio data
+from a buffer overrun.
+
+Root cause, confirmed via a live-instrumented WATCH-45 dump of every
+MmAllocatePhysicalMemoryEx call's real arguments: every real caller
+requests a small, legitimate size (96 bytes for self+10768's own
+allocation, matching everything already known; a handful of other
+calls in the low hundreds of bytes) -- not an undersized-allocation bug
+in that function itself. The real problem is architectural: host/
+kernel_impl.cpp's g_bumpAllocatorNext is one single, gapless, linear
+counter shared by NtAllocateVirtualMemory, MmAllocatePhysicalMemoryEx,
+thread stacks/TLS, and the system command buffer -- with zero margin
+between consecutive allocations. A real, legitimate file-streaming
+read (buffered I/O reading in fixed chunks that don't align to the
+destination buffer's exact end) writes a handful of bytes past its
+own nominal end, and whatever the bump allocator happened to hand out
+immediately next silently absorbs the overrun. Because it's a raw
+host-level memmove (from the C++ standard library's own streambuf
+implementation), it never goes through PPC_STORE_U32/U64 -- completely
+invisible to Finding 34's broad store-watching sweep, which only ever
+covered PPC store instructions.
+
+--- First fix attempt (documented honestly, not hidden): gave
+    MmAllocatePhysicalMemoryEx-family allocations (physical pool +
+    system command buffer) an entirely separate, distant base
+    (0xA8000000, ~128 MB away from the general 0xA0000000 region).
+    Verified live: eliminated the corruption, but reintroduced Finding
+    34's ORIGINAL symptom -- the main ring buffer's indirect GPU
+    command buffers went back to reading all-zero, and the ring
+    buffer's own base address landed in a different, unexpected
+    PowerPC segment (0xC0FCD000 instead of the usual 0xB9xxxxxx
+    family). The game's own internal address bookkeeping depends on
+    allocations landing in a consistent RELATIVE position to each
+    other, not just each individually having a valid address --
+    relocating one allocator's entire region broke that.
+
+    Real fix: reverted the separate-base approach, kept every
+    allocation on the single shared g_bumpAllocatorNext (preserving
+    the original relative ordering/layout), and instead added a fixed
+    4 KiB safety gap after every individual allocation from it
+    (kBumpAllocatorGap). Verified live (120s watchdog): ring buffer
+    back to the normal 0xB9xxxxxx family, indirect buffers decode real
+    PM4 packets again exactly as Finding 35-39 established, EVENT_WRITE_SHD
+    fires correctly at the new (slightly shifted, still consistently-
+    ordered) address, same clean completion, same ~9.4 MB plateau, no
+    crash, no regression. ---
