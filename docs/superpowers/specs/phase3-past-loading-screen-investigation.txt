@@ -2420,3 +2420,46 @@ isn't fully proven yet.
     sub_824A5AD0 (all new, undocumented functions) to understand what
     higher-level system this wait loop belongs to -- not yet done this
     session. ---
+
+--- Finding 44: captured the real live values for Finding 43's second
+    wait loop -- it's genuinely a small, sane target (1) stuck against
+    a stale value nothing this session's writers ever produced ---
+
+Captured live values for sub_820B4EE8 (Finding 43) to answer its open
+question. sub_820B4EE8 has two real call sites (private/ppc/
+ppc_recomp.4.cpp): one passes a small literal-context target that
+resolves to 0 every sampled call and exits immediately (not the stuck
+one); the other (loc_820B559C) passes target = *(self+13500) -- a real,
+separate small counter field, confirmed live to be 1.
+
+Instrumented the actual retry loop (not just function entry) to catch
+the genuinely stuck invocation directly: confirmed self=0xA0009900 (the
+same tracked object all session), target(r30)=1, current(*(self+10768)+4,
+i.e. 0xA0400004)=0x27F2E70, r29 (a bound compared against current)=
+0xB8D4CFB8 -- and NONE of these values moved even once across 83.5
+million logged loop passes (throttled sampling, every 500,000th
+iteration) in a full 90s run. Genuinely, provably stuck -- not a
+sampling artifact.
+
+Checked this exact run's own gpu_trace.log for what's ever been written
+to 0xA0400004: two real EVENT_WRITE_SHD writes early on (0xB8D2D4C0,
+then 0xB8D4D448, matching Findings 37/39's already-documented pattern).
+Neither matches 0x27F2E70 -- meaning the value the stuck loop reads
+came from somewhere else, written before GPU tracing began, or from a
+mechanism this project hasn't found yet. Finding 34's earlier broad
+write-watch (0x10000000-0x20000000) never covered this address
+(0xA0400004 is well outside that range) -- this specific address has
+never actually been watched for CPU-side writes at all.
+
+--- Status: real, precise data captured, root cause not yet found. The
+    small, sane target (1) rules out the "unit mismatch" hypothesis
+    Finding 43 raised as the primary explanation -- this loop's target
+    is completely ordinary, the problem is squarely that "current"
+    holds a value (0x27F2E70) with no known origin and never advances.
+    Next concrete step: a write watchpoint scoped specifically to
+    0x3A0400004 (host-relative) across a full run, from process launch
+    (not just from _xstart, in case something writes it during the
+    game's early boot before the guest code we've been tracing even
+    starts) to find its real writer -- the same technique already
+    proven reliable in Findings 27/34/41, just not yet pointed at this
+    specific address. ---
