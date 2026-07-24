@@ -2352,3 +2352,71 @@ doing unrelated work.
     to chase here productively until execution reaches further into the
     game (past whatever gates r4==6) -- properly closed, not abandoned
     mid-investigation. ---
+
+--- Finding 43: live-sampled the MAIN thread at the plateau (not just
+    the worker thread) -- found it's stuck in a SEPARATE, previously
+    unexplored wait loop on a different field of the same fence buffer,
+    and confirmed our existing RPTR-writeback fix doesn't reach it ---
+
+All this session's live sampling had focused on the worker thread
+(sub_820CCA68, Findings 38-42). Sampled ALL threads at the familiar
+plateau (150s watchdog, reached KeResetEvent) this time: 10 of 11
+threads genuinely blocked on real OS synchronization primitives
+(condvar/semaphore/mutex waits, not spinning); exactly one thread
+(the MAIN thread, traced back through frame #16-19 to __xstart's own
+async execution, not the worker thread) is actively spinning in PPC
+code.
+
+Its call stack is entirely new territory, no function in this specific
+chain seen anywhere else this session: __xstart -> sub_825DEC18 ->
+sub_8212B130 -> sub_8244B040 -> sub_8244AFB0 -> sub_8244AE70 ->
+sub_82461D28 -> sub_824A5AD0 -> sub_824A57F8 -> sub_820CD2E0 ->
+sub_820C8E58 -> sub_820B6220 (Finding 24's HSIO-gated function,
+confirmed reached from yet another real caller) -> sub_820B5890 ->
+sub_820B55C8 -> sub_820B53C0 -> sub_820B4EE8 -> sub_820B9A58 (the
+familiar tick-delay helper).
+
+Read sub_820B4EE8 (private/ppc/ppc_recomp.4.cpp:10961) in full: a real
+wait loop, structurally similar to sub_820B5BC8 (Findings 20-24) but
+checking a DIFFERENT field -- *(self+10768)+4 (current position) against
+a caller-supplied target (r30), with wraparound-aware distance logic
+(subtract, mask low 2 bits, compare against 0/1) -- a real ring-buffer-
+position-style comparison, not the simple current<target check
+sub_820B5BC8 uses.
+
+Checked immediately whether Finding 33's already-shipped RPTR-writeback
+fix (host/gpu_trace.cpp's rptrWriteBackAddr_, written every VdSwap)
+already satisfies this by coincidence. Computed the real tiled address
+precisely (same formula decoded in Finding 35/37, sub_820B6560's
+address-mangling at private/ppc/ppc_recomp.4.cpp:14873-14889, input
+*(self+10768)+60): resolves to guest address 0x40003C -- completely
+different from 0xA0400004 (=*(self+10768)+4). Confirmed: not a
+coincidental fix, this is a genuinely separate, currently-unaddressed
+field.
+
+Checked whether ANYTHING writes 0xA0400004 at all, using data this
+session already captured rather than re-running: yes -- Finding 37/39's
+own trace logs show real EVENT_WRITE_SHD packets writing there
+("wrote 0xB8D2D4C0 to 0xA0400004", "wrote 0xB8D4D448 to 0xA0400004").
+But the VALUES written are guest addresses (the 0xB8Dxxxxx family,
+matching Finding 35's translated indirect-buffer addresses) -- because
+those particular EVENT_WRITE_SHD packets had initiator bit 31 clear, so
+Finding 37's real implementation correctly writes the literal packet
+value, not the vblank counter. sub_820B4EE8's comparison logic expects
+a small, monotonically-advancing position value to subtract against its
+target -- a ~3 billion-range address value there is very likely not
+what satisfies it (an address-vs-position type mismatch), though the
+exact caller-supplied target (r30) wasn't captured this pass so this
+isn't fully proven yet.
+
+--- Status: real, newly-identified blocker for the MAIN thread
+    (distinct from the worker-thread fence already tracked since
+    Finding 20) -- found via live multi-thread sampling, not guessed.
+    Ruled out the obvious "maybe our existing fix already covers this"
+    hypothesis with a precise computation rather than assuming. Next
+    concrete step: capture the actual r30 (target) value at a live
+    sub_820B4EE8 call site to see exactly what it's comparing against,
+    and trace who calls sub_820C8E58/sub_820CD2E0/sub_824A57F8/
+    sub_824A5AD0 (all new, undocumented functions) to understand what
+    higher-level system this wait loop belongs to -- not yet done this
+    session. ---
