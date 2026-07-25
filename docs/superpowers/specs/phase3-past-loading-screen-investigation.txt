@@ -2964,3 +2964,66 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     a real register file so ISR-side reads (e.g. current frontbuffer)
     see them. All infrastructure for testing any of these already
     exists and is verified live. ---
+
+--- Finding 55: ring-quiet mystery (Finding 38/54) actually unblocked --
+    host-level reset of the in-flight swap counter, not a PPC-level
+    callback simulation, is what works.
+
+    Re-confirmed live (fresh write watchpoint spanning full boot through
+    the plateau) that nothing in the game's own compiled image ever
+    registers *([10772]+16) -- third independent confirmation (Finding
+    33's static trace, Finding 54's watchpoint, this one).
+
+    First attempt: PPC-level hand-edit of sub_820B5160's null-callback
+    branch (loc_820B51A0) to decrement [self+10868] by 1, simulating
+    where the real swap-completion callback would fire. Tested live with
+    a call-counter watchpoint on sub_820B5B08 (WATCH-55B): only fired
+    ONCE per run (at inFlight=2), because after the first swap every
+    later submission gets diverted into the self+13000 pending list
+    (sub_820B52B8) instead of the real ring, and sub_820B5B08 has NO
+    drain/replay logic anywhere for that list -- it only checks
+    [10868] at its own entry on each NEW submission attempt. Since only
+    the first swap's packet ever reaches the ring, only that swap's own
+    PM4_INTERRUPT ever gets scanned/executed, so the decrement fires
+    once while the real counter climbs unbounded (confirmed: 176 calls
+    to sub_820B5B08 over a run, inFlight 0 -> 0x20). Reverted cleanly
+    (private/ppc hand-edit, gitignored, not persisted anyway).
+
+    Root problem: this harness has no real asynchronous GPU with its own
+    per-submission completion timing to signal from, so a literal 1:1
+    simulation of the missing callback can't work -- it only ever gets
+    one chance to fire. Fix: in host/kernel_impl.cpp's __imp__VdSwap,
+    unconditionally reset [self+10868] (self=0xA0009900, empirically
+    stable since Finding 20) to 0 once per real VdSwap call. Honest
+    approximation: "by the next vblank, whatever was in flight is done."
+
+    Verified live (300s run, watchdog temporarily raised then reverted):
+    ring buffer offset growth previously frozen dead at byte 172 forever
+    (Finding 38/54) now grows continuously, byte 172 -> 131080, across
+    1822 real frames (opcode variety: WAIT_REG_MEM 0x3C, INDIRECT_BUFFER
+    0x3F, 0x58/0x3B/0x60/0x2B, INTERRUPT 0x54, 0x36/0x63/0x62/0x61,
+    0x45, plus rare 0x21/0x48) before hitting a NEW, later plateau.
+    Ring buffer's real decoded size (VdInitializeRingBuffer,
+    sizeLog2Raw=14) is 1048576 bytes -- 131080 is nowhere near that, so
+    this new plateau is NOT wraparound, it's a genuinely new stall.
+
+    New plateau's signature: the last growing frame (1821) ends with
+    `TYPE3 opcode=0x3F count=2 (INDIRECT_BUFFER) -> following indirect
+    buffer at 0xA0000000 (0 dwords)` -- an indirect-buffer packet
+    pointing at a suspicious near-null-looking guest address with a
+    zero dword count -- immediately followed by 19+ more ScanBuffer
+    calls (frames 1822-1841) that all report zero new bytes; wptr stops
+    advancing entirely. Not yet investigated: whether 0xA0000000 is a
+    real (if degenerate) target the game intentionally emits, or a sign
+    that some upstream producer state went bad around frame ~1821.
+
+    Status: this is genuine, major progress -- the ring-quiet mystery
+    that blocked every thread of investigation since Finding 38 is
+    resolved as designed-for-real-hardware behavior this harness now
+    correctly approximates, unblocking over 1800 frames of real content
+    flow that never happened before. Next concrete step: investigate the
+    new frame-1821/0xA0000000 plateau -- dump the full packet stream for
+    frames 1815-1822 to see what's feeding that INDIRECT_BUFFER pointer,
+    and check whether it correlates with a specific game-side state
+    (fence value, tick count, memory address family) rather than being
+    a hard ceiling. ---

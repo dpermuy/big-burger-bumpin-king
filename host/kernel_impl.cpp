@@ -1474,6 +1474,30 @@ PPC_FUNC(__imp__VdSwap)
         ctx.r4.u64 = g_gpuTracer.GraphicsInterruptContext();
         PPC_CALL_INDIRECT_FUNC(callback);
     }
+
+    // Real hardware's kernel-level D3D swap-completion handler (outside this title's
+    // own XEX, never emulated by this project -- confirmed via a write-watchpoint
+    // spanning full boot through the Finding 48 plateau that nothing in the game's own
+    // compiled image ever registers the callback slot at *([self+10772]+16)) is what
+    // decrements self+10868 (the in-flight-swap counter, Finding 54) as the GPU
+    // finishes each submitted swap. Without it, sub_820B5B08 permanently switches to
+    // queueing every submission into the self+13000 pending list after the first swap
+    // and the main ring buffer never receives new content again (Finding 38's original
+    // "quiet ring buffer" mystery). Tried decrementing by 1 at the point the real
+    // callback would fire (private/ppc hand-edit, since reverted) -- insufficient,
+    // because only the FIRST swap ever reaches the real ring (everything after queues
+    // before it can generate its own completion signal), so the counter still grows
+    // unbounded (confirmed live: reached 0x20+ over a run while the one real decrement
+    // barely dented it). This project has no real asynchronous GPU with its own
+    // completion timing to signal from -- the closest honest equivalent is "by the
+    // next vblank, whatever was in flight is done", so reset the counter here, once
+    // per real VdSwap call, unconditionally.
+    constexpr uint32_t kGpuManagerSelf = 0xA0009900; // empirically stable this whole
+                                                      // investigation (Findings 20-55) --
+                                                      // allocated very early, before the
+                                                      // large game-heap request (Finding
+                                                      // 51) that shifts later addresses.
+    PPC_STORE_U32(kGpuManagerSelf + 10868, 0);
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
