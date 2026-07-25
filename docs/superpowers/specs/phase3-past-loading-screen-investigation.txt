@@ -2626,3 +2626,48 @@ controller/profile slots) with no crash.
     non-looping further activity (no new busy-loop symptom observed) --
     natural next step for a future session is simply running longer
     from here to see what comes after the sign-in state sweep. ---
+
+--- Finding 48: pushed past the sign-in checks -- confirmed the game now
+    reliably reaches (and stalls on) the SAME long-documented GPU fence,
+    not a new blocker -- via live thread sampling ---
+
+Followed Finding 47's sign-in-state sweep with a reproducibility check
+(two separate 300s runs) and a live thread sample. Both 300s runs ended
+at the exact same point, byte-for-byte identical log length (526
+lines) -- a genuine, reproducible stopping point now, not run-to-run
+timing variance like every earlier plateau this session.
+
+Live-sampled all 11 threads right after reaching that point (launched
+the process and polled its own log for the 526-line marker in the same
+shell invocation as the lldb attach, to avoid a cross-turn timing race
+that cost one earlier attempt its target process). Result: 9 threads
+genuinely blocked on real OS sync primitives; one transient mutex
+unlock (ExCreateThread's worker startup path, not a stall); and thread
+#3 back inside sub_820B9A58, reached via the *exact* same call chain
+already mapped in Finding 38/43: sub_820B5BC8 <- sub_820CCA68 (the
+worker thread) <- sub_824A76D0 <- sub_824AAFF0 <- sub_8244AFB0 <-
+sub_8244B040 <- sub_8212B130 <- sub_825DEC18 <- __xstart -- the same
+fence wait loop this entire investigation has tracked since Findings
+20-24, still gated on the same GPU EVENT_WRITE_SHD mechanism Findings
+32/33/37/39 already established only fires twice early in the ring
+buffer's life before it goes quiet.
+
+--- Status: this is not a new, unexplored blocker -- it's confirmation
+    that Findings 45 (memory corruption) and 47 (network busy-loop)
+    were real, independent obstacles standing IN FRONT OF this
+    already-understood fence, not replacements for it. With both
+    cleared, execution now runs the full, correct sequence -- audio
+    streaming, frontend asset loading, network/profile initialization,
+    a real 4-slot sign-in sweep -- and arrives, reliably and
+    reproducibly, at the same root-cause stall this investigation
+    already has a precise, evidence-backed explanation for (Finding
+    38's identified gap: the ring buffer's real GPU command content
+    stops after its first two frames, and nothing yet drives further
+    EVENT_WRITE_SHD-style signals into it). No new investigation
+    thread opened here -- this closes the loop on "what's next after
+    the sign-in checks" with a confirmed, well-understood answer rather
+    than a mystery. The real next unlock for this project is squarely
+    Finding 38's flagged follow-on work: tracing/executing the second,
+    separate "system command buffer" subsystem (Finding 39) or finding
+    what real game-state condition drives the ring buffer to keep
+    producing content past frame 2. ---
