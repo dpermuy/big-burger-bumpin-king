@@ -2713,3 +2713,54 @@ sub_820B9A58, reached via sub_820B5BC8 <- sub_820CCA68.
     buffer's gate, this newly-mapped self+13520 checkpoint -- all
     terminate at that same unanswered question. That is the real next
     investigation target, not a parallel one. ---
+
+--- Finding 50: implemented VdSwap's real kernel-side write contract
+    (confirmed against Xenia) -- a real, correct fix, but confirmed it
+    does NOT explain the ring-buffer-quiet mystery ---
+
+Pulled Xenia's real VdSwap_entry (src/xenia/kernel/xboxkrnl/
+xboxkrnl_video.cc:352-436) and found something this project's VdSwap
+had never done: on real hardware, VdSwap isn't just a "present" call --
+the KERNEL writes real PM4 content into a small region the caller
+passes in (buffer_ptr, r3; 64 dwords). Confirmed the specific real
+content: a TYPE0 packet writing the caller's 6-dword texture fetch
+constant (fetch_ptr, r4) to register 0x4800 (verified against Xenia's
+register_table.inc:2697, XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 -- this
+exact register already appears in this project's own captured trace
+data from Finding 35), then fills the remainder with real TYPE2 NOPs.
+This project's VdSwap only ever passively read whatever was already in
+the ring buffer -- never performed this side of the real contract.
+Implemented it (host/kernel_impl.cpp), skipping Xenia's own internal
+PM4_XE_SWAP marker and physical-address frontbuffer patching (both
+confirmed Xenia-specific bookkeeping for its own async multi-threaded
+GPU emulation, not part of the real hardware contract, and not needed
+for this project's synchronous tracer).
+
+Tested the natural hypothesis directly: does writing this real content
+finally give the quiet ring buffer something new to parse on later
+frames? Captured the real live value of buffer_ptr across 19 real
+VdSwap calls to check. Answer: no -- buffer_ptr is never inside the
+traced ring buffer at all. It's consistently several megabytes BELOW
+the ring buffer's own registered base (first sample: 0xB8D31570 vs.
+ring buffer base 0xB9131000, a ~4 MB gap), growing substantially every
+single call -- the same 0xB8Dxxxxx address family already seen for
+other per-frame scratch/indirect-buffer data (Finding 35), not a
+rotating slot within the main command stream.
+
+--- Status: real, correct fix, kept (matches the documented Xbox 360
+    kernel contract regardless of whether it explains this particular
+    mystery -- implementing real behavior is not conditional on it
+    being the answer to the current question). Verified live: no
+    crash, no regression, same clean completion. Rules out this
+    specific, well-motivated hypothesis for "why does the ring buffer
+    go quiet after frame 2" with hard evidence rather than leaving it
+    untested. buffer_ptr's real target is a separate, large, steadily-
+    growing per-frame allocation -- worth its own investigation
+    eventually (what the game does with that scratch data, and whether
+    IT eventually gets folded into a real ring-buffer submission
+    somewhere this project hasn't traced yet), but not the same
+    question as the ring buffer's own quiet content. The real "why does
+    the ring buffer stop growing" question, now tested against three
+    separate hypotheses across this session (Finding 38's worker-thread
+    gate, Finding 49's fence-blocks-everything explanation, and this
+    finding's VdSwap-content-location theory) remains open. ---

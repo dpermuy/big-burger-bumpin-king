@@ -1383,6 +1383,55 @@ PPC_FUNC(__imp__VdGetSystemCommandBuffer)
 
 PPC_FUNC(__imp__VdSwap)
 {
+    // Real semantics confirmed against Xenia's VdSwap_entry (src/xenia/kernel/
+    // xboxkrnl/xboxkrnl_video.cc:352-436): VdSwap is not just a "present" call --
+    // the KERNEL is responsible for writing real PM4 content into a small region
+    // the caller passes in (buffer_ptr, r3; 64 dwords / 256 bytes). Real content: a
+    // TYPE0 packet writing the 6-dword texture fetch constant (from fetch_ptr, r4)
+    // to register 0x4800 (confirmed: XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0, Xenia's
+    // register_table.inc:2697 -- this exact register already appears in this
+    // project's own captured real trace data, Finding 35's verification run), then
+    // NOP-fills the rest. Real, correct kernel behavior regardless of the buffer's
+    // actual purpose -- implementing it is not optional.
+    //
+    // Checked live whether buffer_ptr sits inside the main ring buffer this project
+    // already traces, hoping it explained Finding 38/49's "ring buffer goes quiet
+    // after frame 2" mystery: it does not (Finding 50, phase3 spec) -- buffer_ptr is
+    // always several MB below the traced ring buffer's own base, in the same
+    // 0xB8Dxxxxx-family address range as other per-frame scratch data this project
+    // has seen (Finding 35's indirect-buffer targets), growing substantially every
+    // call. Real, but a genuinely separate per-frame scratch allocation, not literally
+    // "into the primary ring buffer" for this title -- this fix is still correct and
+    // worth keeping, it just doesn't explain the ring-buffer-quiet mystery. Skipping
+    // Xenia's own PM4_XE_SWAP marker packet and physical-address frontbuffer
+    // patching -- both are Xenia-internal bookkeeping for its own asynchronous,
+    // multi-threaded GPU emulation (this project's ScanBuffer runs synchronously
+    // inside this same call, no separate GPU thread to signal), not part of the
+    // real hardware PM4 contract.
+    uint32_t swapBufferPtr = (uint32_t)ctx.r3.u64;
+    uint32_t fetchPtr = (uint32_t)ctx.r4.u64;
+    if (swapBufferPtr != 0)
+    {
+        for (uint32_t i = 0; i < 64; i++)
+        {
+            PPC_STORE_U32(swapBufferPtr + i * 4, 0);
+        }
+
+        constexpr uint32_t kRegShaderConstantFetch00_0 = 0x4800;
+        constexpr uint32_t kFetchDwordCount = 6;
+        uint32_t type0Header = ((kFetchDwordCount - 1) & 0x3FFF) << 16 | (kRegShaderConstantFetch00_0 & 0x7FFF);
+        PPC_STORE_U32(swapBufferPtr + 0, type0Header);
+        for (uint32_t i = 0; i < kFetchDwordCount; i++)
+        {
+            uint32_t value = fetchPtr != 0 ? PPC_LOAD_U32(fetchPtr + i * 4) : 0;
+            PPC_STORE_U32(swapBufferPtr + 4 + i * 4, value);
+        }
+        for (uint32_t i = 1 + kFetchDwordCount; i < 64; i++)
+        {
+            PPC_STORE_U32(swapBufferPtr + i * 4, 0x80000000u); // TYPE2 NOP
+        }
+    }
+
     // The frame-present call. Still no real rendering -- nothing to actually present,
     // no renderer exists yet (Phase 3K only adds command-buffer tracing). Real frame
     // presentation is future work once the renderer design (informed by this phase's
