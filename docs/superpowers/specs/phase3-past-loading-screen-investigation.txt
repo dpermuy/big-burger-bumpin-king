@@ -2574,3 +2574,55 @@ capability unlocked.
     behavioral effect. "w_commonobjectshires_fetm.xen" is a genuinely
     new frontier for this investigation and the natural next
     exploration target for a future session. ---
+
+--- Finding 47: found and fixed a real busy-loop in NetDll_XNetGetTitleXnAddr
+    -- the stub's return value literally meant "still pending" -- unlocked
+    clean progress deep into Xbox Live/profile initialization ---
+
+Followed Finding 46's new frontier ("w_commonobjectshires_fetm.xen" and
+the frontend/menu asset wave) with a longer run (300s watchdog) and hit
+a genuinely new, severe symptom: the log exploded to over 1 million
+lines, almost entirely thousands of byte-identical repeated calls to
+NetDll_XNetGetTitleXnAddr(r3=0x1, r4=0xA26A84B8, r5=0x1240,
+r6=0xA26A9520) -- a real, CPU-burning busy-loop, not a clean wait.
+
+Pulled Xenia's real implementation (src/xenia/kernel/xam/xam_net.cc:
+452-475) instead of guessing. Real signature: (caller, XNADDR*
+addr_ptr) -- r3=caller, r4=addr_ptr, matching exactly. Real return
+values are a set of status FLAGS, not a boolean -- and critically,
+XNET_GET_XNADDR_PENDING == 0x00000000, the exact value this stub
+always returned. Every single call was reporting "address resolution
+still in progress," so any caller polling until it stops being pending
+(exactly the observed pattern) would spin forever -- this project's own
+existing stub was accidentally implementing the one specific return
+value guaranteed to never let the caller escape.
+
+Fixed to match Xenia's own real behavior precisely: populate the XNADDR
+output structure with the same loopback/placeholder values Xenia uses
+(real XDK layout: ina u32 @0 = INADDR_LOOPBACK, inaOnline u32 @4 = 0,
+wPortOnline u16 @8 = 0, abEnet[6] @10 = placeholder MAC 0xCC-filled,
+abOnline[20] @16 = zero, total 36 bytes) and return
+XNET_GET_XNADDR_STATIC (0x4) -- a real, settled, non-pending status
+appropriate for this project's scope (offline single-player backup, no
+real Xbox Live connectivity).
+
+Verified live (300s watchdog): NetDll_XNetGetTitleXnAddr now called
+exactly once (was thousands of times in the same window). Total log
+size dropped from 1,026,075 lines to 526 -- the earlier "progress" was
+almost entirely wasted CPU cycles in the infinite retry, not real
+work. Execution now proceeds cleanly past this point into new activity
+(XMsgInProcessCall, and a real, legitimate multi-user
+XamUserGetSigninState/XamUserCheckPrivilege sweep across all 4
+controller/profile slots) with no crash.
+
+--- Status: real, verified fix, second confirmed busy-loop eliminated
+    this session (after Finding 45's memory corruption). This class of
+    bug -- a stub returning the one specific value that happens to mean
+    "not done yet" on real hardware -- is worth keeping in mind for any
+    other still-stubbed Net/Xam functions this project reaches next;
+    cross-referencing Xenia's real return-value semantics before
+    assuming "just return 0/success" is safe caught this one. The run
+    ended at the watchdog boundary during what looks like legitimate,
+    non-looping further activity (no new busy-loop symptom observed) --
+    natural next step for a future session is simply running longer
+    from here to see what comes after the sign-in state sweep. ---

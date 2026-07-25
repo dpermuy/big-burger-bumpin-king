@@ -214,8 +214,43 @@ PPC_FUNC(__imp__NetDll_XNetGetEthernetLinkStatus)
 
 PPC_FUNC(__imp__NetDll_XNetGetTitleXnAddr)
 {
+    // Real signature confirmed against Xenia's NetDll_XNetGetTitleXnAddr_entry
+    // (src/xenia/kernel/xam/xam_net.cc:452-475): (caller, XNADDR* addr_ptr) --
+    // r3=caller, r4=addr_ptr. Real return values are status flags, not a bool;
+    // critically XNET_GET_XNADDR_PENDING == 0, the same value this stub always
+    // returned -- meaning every prior call reported "still resolving," so any
+    // caller polling in a loop until it stops being pending would spin forever.
+    // Confirmed live: exactly this busy-loop, thousands of identical calls in a
+    // row (phase3 spec, Finding 47).
+    //
+    // Fixed to match Xenia's own real behavior: populate the XNADDR structure
+    // with the same loopback/placeholder values (real XDK struct layout: ina
+    // u32 @0, inaOnline u32 @4, wPortOnline u16 @8, abEnet[6] @10, abOnline[20]
+    // @16, size 36) and return XNET_GET_XNADDR_STATIC (0x4) -- a settled,
+    // non-pending status, matching a real offline-but-networked console
+    // (appropriate for this project's single-player-backup scope, no real
+    // Xbox Live connectivity implemented).
     fmt::println("[stub] NetDll_XNetGetTitleXnAddr(r3=0x{:X}, r4=0x{:X}, r5=0x{:X}, r6=0x{:X})", ctx.r3.u64, ctx.r4.u64, ctx.r5.u64, ctx.r6.u64);
-    ctx.r3.u64 = 0;
+
+    uint32_t addrPtr = (uint32_t)ctx.r4.u64;
+    if (addrPtr != 0)
+    {
+        constexpr uint32_t kInAddrLoopback = 0x7F000001; // 127.0.0.1
+        PPC_STORE_U32(addrPtr + 0, kInAddrLoopback);      // ina
+        PPC_STORE_U32(addrPtr + 4, 0);                    // inaOnline
+        PPC_STORE_U16(addrPtr + 8, 0);                    // wPortOnline
+        for (uint32_t i = 0; i < 6; i++)
+        {
+            PPC_STORE_U8(addrPtr + 10 + i, 0xCC);          // abEnet, placeholder MAC
+        }
+        for (uint32_t i = 0; i < 20; i++)
+        {
+            PPC_STORE_U8(addrPtr + 16 + i, 0);             // abOnline
+        }
+    }
+
+    constexpr uint32_t kXNetGetXnAddrStatic = 0x00000004;
+    ctx.r3.u64 = kXNetGetXnAddrStatic;
 }
 
 PPC_FUNC(__imp__NetDll_XNetQosListen)
