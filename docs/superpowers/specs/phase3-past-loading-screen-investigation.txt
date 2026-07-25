@@ -2540,3 +2540,37 @@ covered PPC store instructions.
     fires correctly at the new (slightly shifted, still consistently-
     ordered) address, same clean completion, same ~9.4 MB plateau, no
     crash, no regression. ---
+
+--- Finding 46: confirmed Finding 45's fix produces real forward
+    progress, not just a cleaner memory state -- execution now passes
+    entirely through the KeResetEvent/audio plateau into new asset
+    loading ---
+
+Verified the practical impact of Finding 45's allocator-gap fix with a
+fresh long run (180s watchdog). Result: execution now runs completely
+past the point every prior run this session stalled at (KeResetEvent,
+handle 0x1028's audio stream) and reaches genuinely new territory --
+loading "w_commonobjectshires_fetm.xen", an asset file never seen
+anywhere in this entire investigation. KeResetEvent no longer even
+appears in this run's kernel-call log at all, confirming it's not just
+reached later but passed through cleanly. New real activity also
+appeared: NetDll_XNetGetEthernetLinkStatus, XamLoaderGetLaunchDataSize,
+XamUserReadProfileSettings -- a title genuinely progressing through
+real boot/profile/network setup steps, not stuck re-polling the same
+handful of calls.
+
+A second attempt at the same watchdog duration (240s) didn't reach as
+far, stalling back in the audio-streaming phase -- consistent with this
+project's already-well-documented run-to-run timing variance (Phase
+3K's original VdSwap-cadence note, and this session's own repeated
+false-alarm lessons, most recently Finding 37). Not treated as a
+regression; the first run's result already demonstrates the real
+capability unlocked.
+
+--- Status: Finding 45's fix is now confirmed to matter concretely, not
+    just architecturally -- it was silently corrupting state that
+    (at least sometimes) blocked forward progress into new game
+    content, not merely a latent correctness issue with no observed
+    behavioral effect. "w_commonobjectshires_fetm.xen" is a genuinely
+    new frontier for this investigation and the natural next
+    exploration target for a future session. ---
