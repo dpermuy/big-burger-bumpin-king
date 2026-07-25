@@ -2671,3 +2671,45 @@ buffer's life before it goes quiet.
     separate "system command buffer" subsystem (Finding 39) or finding
     what real game-state condition drives the ring buffer to keep
     producing content past frame 2. ---
+
+--- Finding 49: "implement the system command buffer subsystem" isn't a
+    separate task -- confirmed it's gated by the exact same unresolved
+    fence, at a precise, newly-mapped call site ---
+
+Checked directly whether Finding 39's gate ([self+20056] != 0, needed
+for sub_820C4678's real packet construction to ever run) might finally
+flip true now that Findings 45/47's fixes let execution reach much
+further (past the sign-in sweep). Instrumented the read site (private/
+ppc/ppc_recomp.6.cpp:24457, since reverted) and ran a full 300s window.
+
+Result: only ONE sample ever printed ([self+20056]=0, at the very first
+poll), not because the gate stayed permanently closed across many real
+checks -- because sub_820CCA68 itself only gets called ONCE and never
+returns to check it again. It gets stuck immediately, nested inside its
+own call to sub_820B5BC8 (confirmed: private/ppc/ppc_recomp.6.cpp:
+25220-25253, sub_820CCA68's own direct call to the fence-wait helper,
+target = *(self+13520), refreshed from *(self+10780) after every
+successful/timed-out wait -- the exact same growing-checkpoint pattern
+Finding 31 already mapped for the original fence). This matches
+Finding 48's live backtrace exactly: thread #3 was found stuck inside
+sub_820B9A58, reached via sub_820B5BC8 <- sub_820CCA68.
+
+--- This settles the question precisely: the "system command buffer"
+    isn't an independent piece of unimplemented work sitting parallel
+    to the main fence issue -- it's DOWNSTREAM of it. sub_820CCA68 (the
+    one and only real path to sub_820C4678's packet construction, and
+    to VdSwap itself, Finding 38) cannot get far enough into its own
+    body to even re-check the gate, because its very first real action
+    is waiting on the same never-fully-advancing fence every other
+    finding this session has centered on. All the real infrastructure
+    for tracing/executing this second buffer already exists and works
+    (Finding 39's ScanBuffer reuse, automatically gets EVENT_WRITE_SHD/
+    INTERRUPT execution for free) -- there is nothing left to build
+    there. The one and only real remaining lever, confirmed again from
+    a completely different angle this session, is Finding 38's original
+    question: why does the main ring buffer's real GPU command content
+    stop after its first two frames. Every path this session has
+    explored -- the worker thread's own fence wait, the system command
+    buffer's gate, this newly-mapped self+13520 checkpoint -- all
+    terminate at that same unanswered question. That is the real next
+    investigation target, not a parallel one. ---
