@@ -690,7 +690,7 @@ PPC_FUNC(__imp__NtReadFile)
         PPC_STORE_U32(ioStatusBlockPtr + 4, bytesToRead);
     }
 
-    fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={}", handle, offset, length, bytesToRead);
+    fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={} buffer=0x{:X}", handle, offset, length, bytesToRead, bufferPtr);
 
     // Real NT I/O completion APC (distinct from the user-mode APC queueing in
     // NtQueueApcThread, Phase 3H). Cross-referenced against Xenia's real
@@ -872,24 +872,42 @@ PPC_FUNC(__imp__MmQueryStatistics)
 
 PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 {
-    // r4 (observed 0x19000000, ~400 MB) is implausibly large for a single
-    // physical allocation on 512 MB hardware -- treated as stale register
-    // content, not a real size argument. Always allocates a fixed 64 KiB
-    // block from the same bump allocator NtAllocateVirtualMemory uses
-    // (kBumpAllocatorGap, Finding 45, guards against the adjacent-overrun
-    // corruption that was here) -- confirmed live that every real caller
-    // passes a small, legitimate size well under 64 KiB, so this was never
-    // an undersizing bug in this function itself.
-    constexpr uint32_t kAllocGranularity = 0x10000;
+    // Real signature (Xenia's MmAllocatePhysicalMemoryEx_entry, xboxkrnl_memory.cc):
+    // (flags, region_size, protect, min_addr_range, max_addr_range, alignment).
+    // r4 really is the size: the title's very first call requests ~400 MB
+    // (0x19000000) up front and runs its OWN internal heap inside that region
+    // (audio streaming buffers, GPU ring buffer at base+~0x19000000-top, per-frame
+    // command buffers -- all of it). The old stub capped every allocation at
+    // 64 KiB on the assumption that size was stale register content, which left
+    // the game's heap overlapping every later host-side allocation -- the true
+    // root cause of the Finding 45/51 memory-corruption class (a 9.4 MB audio
+    // stream landing on top of the GPU fence block, among others). Honor the
+    // real size; the 4 GiB anonymous guest arena makes the pages lazy and free.
+    uint32_t requestedSize = (uint32_t)ctx.r4.u64;
+    uint32_t alignment = (uint32_t)ctx.r8.u64;
+    constexpr uint32_t kMinGranularity = 0x10000;
+
+    uint32_t alignedSize = (requestedSize + 0xFFFFu) & ~0xFFFFu;
+    if (alignedSize < kMinGranularity || alignedSize > 0x20000000u)
+    {
+        // Zero/absurd sizes (beyond the real console's 512 MB) fall back to the
+        // old fixed granularity rather than exhausting the guest arena.
+        alignedSize = kMinGranularity;
+    }
 
     uint32_t allocatedAddress;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         allocatedAddress = g_bumpAllocatorNext;
-        g_bumpAllocatorNext += kAllocGranularity + kBumpAllocatorGap;
+        if (alignment != 0 && (alignment & (alignment - 1)) == 0 && alignment > 1)
+        {
+            allocatedAddress = (allocatedAddress + alignment - 1) & ~(alignment - 1);
+        }
+        g_bumpAllocatorNext = allocatedAddress + alignedSize + kBumpAllocatorGap;
     }
 
-    fmt::println("[kernel] MmAllocatePhysicalMemoryEx: {} bytes -> 0x{:X}", kAllocGranularity, allocatedAddress);
+    fmt::println("[kernel] MmAllocatePhysicalMemoryEx: flags=0x{:X} size=0x{:X} protect=0x{:X} align=0x{:X} -> {} bytes at 0x{:X}",
+        (uint32_t)ctx.r3.u64, requestedSize, (uint32_t)ctx.r5.u64, alignment, alignedSize, allocatedAddress);
 
     ctx.r3.u64 = allocatedAddress; // Mm* functions return the address directly, not a status code
 }

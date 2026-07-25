@@ -2764,3 +2764,203 @@ rotating slot within the main command stream.
     separate hypotheses across this session (Finding 38's worker-thread
     gate, Finding 49's fence-blocks-everything explanation, and this
     finding's VdSwap-content-location theory) remains open. ---
+
+--- Finding 51: TRUE root cause of the whole Finding 44/45 corruption class
+    found and fixed -- MmAllocatePhysicalMemoryEx was ignoring the real
+    requested size, and the game runs its own ~400 MB heap inside the
+    region it thinks it got ---
+
+Re-checked the fence block live at the Finding 48 plateau (write-watchpoint
+methodology, Findings 27/34/41/45): the 96-byte fence block (this run at
+0xA0415000) was corrupted AGAIN mid-run despite Finding 45's 4 KiB
+allocator gap -- raw audio-file bytes over both the fence counter (offset
+0) and the position field (offset 4), with the same
+XdvdfsImage::ReadBytes/memmove backtrace as Finding 45's capture. The gap
+fix had only narrowed the window, not removed the cause. (This also
+retroactively explains Finding 32's "garbage 0x44100000 late in a long
+run" sample, which was dismissed at the time as a stress artifact.)
+
+Added the destination buffer pointer to NtReadFile's log line (kept -- it's
+generally useful) and captured the real allocation-vs-read layout:
+handle 0x1028 (speech_generic.xen, 9.4 MB) streams 256 KiB chunks to
+consecutive addresses 0xA0374000 + n*0x40000 -- a contiguous multi-MB
+region matching NO logged allocation. The game believes it owns a huge
+contiguous buffer there. The source: the title's very FIRST
+MmAllocatePhysicalMemoryEx call requests r4=0x19000000 (~400 MB) -- the
+classic "grab all physical memory up front and run your own heap inside
+it" pattern -- and this project's stub explicitly discarded r4 as
+"implausibly large / stale register content" (the old comment even cited
+WATCH-45's small-size samples, which simply missed this first call) and
+returned a fixed 64 KiB block. Every game-heap allocation past 64 KiB
+then silently overlapped every LATER host-side bump allocation --
+including the fence block. This one bug explains every corruption
+observed across Findings 32/44/45/48.
+
+Fix (host/kernel_impl.cpp): MmAllocatePhysicalMemoryEx now honors the
+real size (r4) and alignment (r8), per Xenia's real signature
+(MmAllocatePhysicalMemoryEx_entry: flags, region_size, protect, min,
+max, alignment), with a 64 KiB floor and a 512 MB sanity cap. The 4 GiB
+anonymous guest arena makes the extra pages lazy/free. Verified live:
+the 400 MB request is granted at 0xA0164000; every streaming-read
+destination lands inside [0xA0164000, 0xB9164000); the ring buffer's
+long-known 0xB9131000 base is exactly the game heap's TOP end (heap base
++ ~0x19000000), confirming the game's own internal allocator lays out
+GPU structures from the top down -- the 0xB8Dxxxxx/0xB9xxxxxx "address
+families" this investigation has tracked all session are simply
+game-heap-relative positions. Fence block (now 0xB9405000, outside the
+game heap) stays intact for entire runs: EVENT_WRITE_SHD values 3/5/7
+land and persist, no garbage. Also confirmed the fence's own 96-byte
+allocation arrives as a direct MmAllocatePhysicalMemoryEx call
+(size=0x60) -- Finding 32's "pool allocator" reading was the game's thin
+wrapper, not a separate slab system.
+
+--- Status: real, verified, shipped root-cause fix. Finding 45's gap
+    workaround stays (harmless defense in depth), but its "buffered
+    file-streaming read overruns by a few bytes" explanation is
+    superseded: the reads were never overrunning their own buffer -- the
+    buffer itself was undersized by this allocator bug. ---
+
+--- Finding 52: the game has its own built-in GPU-hang watchdog and
+    recovery path -- mapped end to end, and why it silently does nothing
+    in this harness ---
+
+Read sub_820B9A58 (the "tick-delay helper" every fence-wait iteration
+calls, Findings 20/31/48) in full with fresh eyes: it is not just a
+delay -- it is a real hang watchdog. Per iteration it: reads the host
+tick (ms) via [r13+256]->+88; compares the fence's current value against
+a last-seen copy on the caller's stack struct (+8), resetting a baseline
+timestamp (+12) whenever the fence MOVES; consults a heartbeat word at
+[r13+256]->+332 vs [self+10760] with [self+10864] as an enable; and if
+5000 ms elapse with no progress, calls sub_820BA3C0 (recovery) and
+returns 0 (give up) instead of 1 (keep spinning). This precisely
+explains Finding 32's outer-loop shape (target climbing +6 every ~258M
+iterations): each stuck wait times out after 5 s, the caller re-issues
+with a higher target, forever.
+
+sub_820BA3C0 (the recovery): if [self+13064] (a registered hang-notify
+callback -- read live: always 0, never registered by this title) is
+nonzero, it CPU-completes the fence ([10780]-2 -> fence), sets mode bits
+0x1|0x2 in [self+10809] (rerouting future submissions off the ring --
+the true meaning of Finding 22-24's bit 0x2: a no-GPU fallback mode, not
+a normal path), zeroes the in-flight counter [self+10868], and calls
+sub_820C35D0. With [13064]==0 it instead prints two diagnostics
+(sub_820B9E18) and executes `twi 31,r0,22` -- a fatal assertion trap on
+real hardware. XenonRecomp lowers twi to nothing, so this harness
+silently survives the intended crash and just keeps re-waiting. Verified
+live (temporary WATCH-51B probe, since reverted): recovery genuinely
+fires every ~5 s at the plateau, [13064]==0 every time.
+
+--- Status: no fix here by design -- the game treats a dead GPU as fatal.
+    Real value is the corrected model: the HSIO/bit-0x2 sub-thread
+    (Findings 22-24) was a failover mode, and the only real path forward
+    is making the GPU pipeline actually consume work (Finding 54). ---
+
+--- Finding 53: found and fixed why the graphics interrupt callback's
+    vblank branch has never done any work -- it polls a GPU MMIO
+    register this harness never backed; seeded the register block with
+    Xenia's real read values ---
+
+Read the registered graphics interrupt callback (sub_820B5160, Finding
+33) in full. Its vblank branch (source==0) begins by reading GPU MMIO
+dword 0x7FC80000+0x6544 (register index 0x1951) and returns WITHOUT
+DOING ANYTHING unless bit 0 is set. Xenia ground truth
+(graphics_system.cc GraphicsSystem::ReadRegister): `case 0x1951: //
+interrupt status -- return 1; // vblank`. This harness backs the MMIO
+region with plain zeroed memory, so every vblank dispatch since Finding
+33 has been a no-op -- explaining why wiring the callback never moved
+anything.
+
+Fix (host/main.cpp, kKernelTickPointerSlot precedent): pre-seed the
+register block at boot with Xenia's constant read values -- 0x1951=1
+(interrupt status/vblank), 0x194C=0x2D0 (D1MODE_V_COUNTER),
+0x1961=0x050002D0 (viewport 1280x720), 0x0F00/0x0F01 (EDRAM timing /
+BC control). Verified live (temporary WATCH-51C/D probes, since
+reverted): the vblank branch now really runs -- frame counter
+[ctx+15124] increments every vblank, and the nested callback [ctx+15120]
+(registered: sub_82496C18) fires, signaling an event that wakes a
+dedicated vblank thread (sub_82496C28 -- the previously-mysterious
+thread #11 blocked in NtWaitForSingleObjectEx every sample since
+Finding 43). That thread's own optional callback slot is 0 (nothing
+registered yet), so it currently just counts vblanks -- but the whole
+interrupt->event->thread chain is real and now alive. Also confirmed
+the ISR consults V_COUNTER/viewport via sub_820CC850 (a scanline-timing
+"is it safe to flip" helper) -- with the seeded values it computes 100%
+scanned, i.e. always safe. Real fix, kept.
+
+--- Finding 54: the ring-quiet mystery is SOLVED mechanically -- the
+    submission path switches to an in-flight batching mode after the
+    first swap and nothing ever completes that swap; every piece mapped
+    to exact functions, one precisely-stated blocker remains ---
+
+With Finding 51's corruption gone, instrumented the whole submission
+chain live (temporary WATCH-51 probes, since reverted). The real
+pipeline, now fully mapped:
+
+  sub_820B6220 (flush, called from sub_820B5BC8's wait loop when
+      target==[10780], from sub_820C8E58 end-of-frame, etc.)
+    -> sub_820B5890 (finalize pending command buffer; returns entries)
+    -> sub_820B55C8 -> sub_820B53C0 -> sub_820B4EE8 (allocate next
+       command-buffer space from the game heap's circular region;
+       Finding 43's second wait loop is exactly this allocator waiting
+       for the GPU to release space past *(fence+4))
+    -> sub_820B5B08 (submit) -> sub_820B56B0 (append 3-dword
+       INDIRECT_BUFFER packets [header 0xC0013F00] into the real ring at
+       wptr [self+10820], mask [13480], base [13476], then kick the GPU
+       via a real MMIO store: PPC_MM_STORE_U32(0x7FC80714, wptr) --
+       CP_RB_WPTR, register 0x1C5, matching Xenia's WriteRegister).
+
+  sub_820B5A28 (called per frame-tail) builds the INVALIDATE_STATE +
+  EVENT_WRITE_SHD tail into the current command buffer and increments
+  [self+10780] by 2 -- the fence expectation counter. (Its direct
+  CPU-side fence write really is gated on failover bit 0x2, Finding 52.)
+
+  sub_820B5B08's critical branch: if [self+10868] == 0, append directly
+  to the ring; if nonzero, queue the entry into a spinlocked pending
+  list at self+13000 (sub_820B52B8) and DON'T touch the ring.
+
+Live captures (WATCH-51): the first three flushes appended directly
+(ring wptr 19->22->...->40 dwords = exactly the 172-byte frozen offset
+known since Finding 33 -- mystery answered to the byte), including the
+first SWAP submission (sub_820C8F30, called from sub_820CD7D8, passes
+r7=1, incrementing [10868] to 1). From then on [10868] != 0, so every
+subsequent submission goes to the pending list -- the ring goes quiet
+after "frame 2" not because the game stops producing (it produces
+forever: [10780] reached 199+, the command-buffer circular allocator
+wraps and keeps allocating cleanly) but because everything batches
+behind an in-flight swap that never completes. A hardware write
+watchpoint on [10868] (0x3a000c374) across a full run confirmed: only
+sub_820B5B08's += sites ever write it (it climbed to 31), and the ONLY
+zeroing writer in the entire image is Finding 52's fatal-recovery path.
+The intended decrementer never runs.
+
+The swap packet itself (23-dword indirect buffer, decoded live):
+TYPE0 0x057C x2, 0x0578, WAIT_REG_MEM, PM4_INTERRUPT (source=1, executed
+for real by this project's tracer since Finding 37 -- confirmed
+dispatched), TYPE0 0x045E, WAIT_REG_MEM, TYPE0 0x057C. The ISR's
+source==1 branch would call *([ctx+10772]+16) -- the swap-completion
+callback -- but that slot is 0 (re-confirmed; Finding 33's WATCH-18
+result stands), so the ISR just clears a pending bit in *[ctx+10776]
+and returns. Swap-adjacent packet builders (sub_820CC8E0, sub_820B5C90)
+embed the mangled physical addresses of ([10772]+4)/([10772]+0) into
+GPU packets -- on real hardware the GPU itself writes swap-progress
+markers there; the tracer currently only executes EVENT_WRITE_SHD and
+INTERRUPT, not these TYPE0/other memory-writing swap packets.
+
+--- Status: the ring-quiet question that every thread of this
+    investigation has terminated at since Finding 38 is now reduced to
+    one concrete, falsifiable question: what, on real hardware, clears
+    the in-flight swap ([10868] decrement / ([10772]+4) swap-progress
+    writeback / *([10772]+16) callback registration), and which of
+    those pieces this harness must emulate. Concrete next steps, in
+    order: (1) find who registers *([10772]+16) (grep for stores of 16
+    into the 32-byte object, or write-watch 0x3b9416010 across a full
+    boot) -- if the game registers it later/conditionally, find the
+    gate; (2) decode what registers 0x057C/0x0578/0x045E are (Xenia
+    register table) and what the two WAIT_REG_MEM packets in the swap
+    buffer poll -- if they poll a register/memory value the host can
+    satisfy statically (like Finding 53's 0x1951), the swap sequence
+    may complete with another seed value or a small tracer addition;
+    (3) consider executing the swap buffer's TYPE0 register writes into
+    a real register file so ISR-side reads (e.g. current frontbuffer)
+    see them. All infrastructure for testing any of these already
+    exists and is verified live. ---

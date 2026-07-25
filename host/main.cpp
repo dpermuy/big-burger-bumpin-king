@@ -74,6 +74,21 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     constexpr uint32_t kKernelTickPointerSlot = 0x82670100; // r13(0x82670000) + 256
     PPC_STORE_U32(kKernelTickPointerSlot, kKernelTickStructAddr);
 
+    // GPU MMIO register block at 0x7FC80000. Real hardware (and Xenia) trap these
+    // reads; this harness backs them with plain memory, so registers the game polls
+    // must be pre-seeded with the values Xenia's GraphicsSystem::ReadRegister returns
+    // (ground truth, graphics_system.cc). The critical one is interrupt status
+    // (dword index 0x1951, byte offset 0x6544): the game's own graphics interrupt
+    // callback (sub_820B5160, vblank branch) reads it and returns without doing ANY
+    // vblank work -- including the swap-completion path that unblocks the whole
+    // render pipeline -- unless bit 0 is set. Xenia returns constant 1 here.
+    constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
+    PPC_STORE_U32(kGpuRegisterBase + 0x1951 * 4, 1);          // interrupt status: vblank
+    PPC_STORE_U32(kGpuRegisterBase + 0x194C * 4, 0x000002D0); // R500_D1MODE_V_COUNTER
+    PPC_STORE_U32(kGpuRegisterBase + 0x1961 * 4, 0x050002D0); // AVIVO_D1MODE_VIEWPORT_SIZE (1280x720)
+    PPC_STORE_U32(kGpuRegisterBase + 0x0F00 * 4, 0x08100748); // RB_EDRAM_TIMING
+    PPC_STORE_U32(kGpuRegisterBase + 0x0F01 * 4, 0x0000200E); // RB_BC_CONTROL
+
     return base;
 }
 
