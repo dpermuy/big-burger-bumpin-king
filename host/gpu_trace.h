@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 
 struct PPCContext;
 
@@ -19,11 +20,22 @@ public:
     // owns this allocation) -- just needs to be scanned the same way as the main ring.
     void RegisterSystemCommandBuffer(uint32_t addr, uint32_t size);
     void ScanAndTraceFrame(PPCContext& ctx, uint8_t* base);
-    bool HasRingBuffer() const { return ringBufferBase_ != 0; }
-    uint32_t GraphicsInterruptCallback() const { return graphicsInterruptCallback_; }
-    uint32_t GraphicsInterruptContext() const { return graphicsInterruptContext_; }
+    bool HasRingBuffer();
+    uint32_t GraphicsInterruptCallback();
+    uint32_t GraphicsInterruptContext();
 
 private:
+    // Findings 55/56/57: ring-space wait loops (sub_820B4EE8) deadlocked because
+    // this tracer's scan/fence-advance only ever ran synchronously inside VdSwap,
+    // on the same CPU thread that could get stuck waiting on it. Scanning now runs
+    // from a dedicated pump thread (host/main.cpp) independent of VdSwap, so every
+    // field below is genuinely cross-thread: VdXxx setters write from the main
+    // thread, ScanAndTraceFrame reads/writes from the pump thread. One mutex over
+    // all of it -- writes are init-time-rare, so lock contention is a non-issue.
+    // Recursive: ScanAndTraceFrame holds the lock while PM4_INTERRUPT invokes real
+    // guest code (the registered interrupt callback), which could in principle call
+    // back into another VdXxx export on the same (pump) thread.
+    std::recursive_mutex mutex_;
     void EnsureLogOpen();
     // Parses PM4 packets starting at (bufferAddr, startOffsetBytes) up to sizeBytes,
     // logs them (indented by depth), and returns the offset reached. Used for the main

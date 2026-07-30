@@ -3,6 +3,7 @@
 #include <fmt/core.h>
 #include <file.h>
 #include <image.h>
+#include "gpu_trace.h"
 #include "xdvdfs.h"
 
 #include <cerrno>
@@ -125,6 +126,39 @@ int main(int argc, char** argv)
         }
     });
     tickThread.detach();
+
+    // Finding 57: the fake GPU used to only "consume" ring buffer content
+    // (GpuCommandTracer::ScanAndTraceFrame, which retires packets and advances the
+    // EVENT_WRITE_SHD fence) synchronously inside VdSwap, on the main CPU thread.
+    // That meant the fence could never advance while that same thread was stuck in
+    // a ring-space wait loop (sub_820B4EE8) blocked waiting on exactly that fence --
+    // a real, confirmed-live permanent deadlock (Finding 56). Real hardware doesn't
+    // have this problem: the GPU retires backlog continuously and independently of
+    // whatever the CPU is doing. This thread does the same here -- polls/scans
+    // whenever a ring buffer is registered, on its own ~1ms cadence, detached like
+    // tickThread above. It needs its own PPCContext (own stack, same small-data-area
+    // base as the main context) because ScanBuffer's PM4_INTERRUPT handling actually
+    // invokes real guest code (the registered graphics interrupt callback) -- that
+    // can't safely share the main thread's live register state.
+    constexpr uint32_t kGpuPumpStackBase = 0x90200000; // well clear of the main
+                                                        // thread's stack (below, at
+                                                        // 0x90000000-0x90100000)
+    constexpr uint32_t kGpuPumpStackSize = 0x100000;
+    std::thread gpuPumpThread([base]()
+    {
+        PPCContext pumpCtx{};
+        pumpCtx.r1.u64 = kGpuPumpStackBase + kGpuPumpStackSize - 0x10;
+        pumpCtx.r13.u64 = 0x82670000; // same small-data-area base as the main context
+        while (true)
+        {
+            if (g_gpuTracer.HasRingBuffer())
+            {
+                g_gpuTracer.ScanAndTraceFrame(pumpCtx, base);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    gpuPumpThread.detach();
 
     constexpr uint32_t kStackBase = 0x90000000;
     constexpr uint32_t kStackSize = 0x100000;

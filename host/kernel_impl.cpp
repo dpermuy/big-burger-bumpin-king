@@ -1454,10 +1454,14 @@ PPC_FUNC(__imp__VdSwap)
     // no renderer exists yet (Phase 3K only adds command-buffer tracing). Real frame
     // presentation is future work once the renderer design (informed by this phase's
     // trace output) exists.
-    if (g_gpuTracer.HasRingBuffer())
-    {
-        g_gpuTracer.ScanAndTraceFrame(ctx, base);
-    }
+    //
+    // Ring-buffer scanning no longer happens here (Finding 57): it used to run
+    // synchronously inside this call, on this same thread, which meant it could
+    // never advance the fence while this same thread was stuck in a ring-space wait
+    // loop it was itself blocked on (sub_820B4EE8, Finding 56's confirmed-live
+    // deadlock). A dedicated pump thread (host/main.cpp) now calls
+    // g_gpuTracer.ScanAndTraceFrame independently, matching real hardware's
+    // asynchronous GPU consumption.
 
     // Real hardware fires a GPU/vblank interrupt once per presented frame, delivered
     // to whatever callback the title registered via VdSetGraphicsInterruptCallback.

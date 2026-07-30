@@ -27,6 +27,7 @@ void GpuCommandTracer::EnsureLogOpen()
 
 void GpuCommandTracer::RegisterRingBuffer(uint32_t physAddr, uint32_t sizeLog2Raw)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     ringBufferBase_ = physAddr;
     // Inverts the call site's own computation (private/ppc/ppc_recomp.4.cpp:14842-14856):
     // the game derives sizeLog2Raw as (31 - clz(originalSizeBytes)) - 3, so
@@ -48,18 +49,39 @@ void GpuCommandTracer::RegisterRingBuffer(uint32_t physAddr, uint32_t sizeLog2Ra
 
 void GpuCommandTracer::SetRptrWriteBackAddr(uint32_t addr)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     rptrWriteBackAddr_ = addr;
 }
 
 void GpuCommandTracer::SetIdentifierAddr(uint32_t addr)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     identifierAddr_ = addr;
 }
 
 void GpuCommandTracer::SetGraphicsInterruptCallback(uint32_t callback, uint32_t context)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     graphicsInterruptCallback_ = callback;
     graphicsInterruptContext_ = context;
+}
+
+bool GpuCommandTracer::HasRingBuffer()
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return ringBufferBase_ != 0;
+}
+
+uint32_t GpuCommandTracer::GraphicsInterruptCallback()
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return graphicsInterruptCallback_;
+}
+
+uint32_t GpuCommandTracer::GraphicsInterruptContext()
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return graphicsInterruptContext_;
 }
 
 namespace
@@ -201,11 +223,12 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 // bit (0-5), each targeting a specific hardware thread
                 // (DispatchInterruptCallback(1, n)). This project has no per-core
                 // routing (PPC_CALL_INDIRECT_FUNC always runs on the calling thread's
-                // own ctx, same as the existing APC-delivery precedent) -- fire once,
-                // on whatever thread is running VdSwap right now, if the mask is
-                // non-empty and a callback is registered. source=1, matching Finding 36's
-                // confirmed real convention (source=0 is the separate vblank path,
-                // already dispatched once per VdSwap in kernel_impl.cpp).
+                // own ctx) -- fire once, on the GPU pump thread's own ctx (Finding 57;
+                // previously ran on whatever thread called VdSwap, before scanning moved
+                // off that synchronous path), if the mask is non-empty and a callback is
+                // registered. source=1, matching Finding 36's confirmed real convention
+                // (source=0 is the separate vblank path, still dispatched once per VdSwap
+                // in kernel_impl.cpp, on the main thread).
                 uint32_t cpuMask = LoadU32(base, bufferAddr + offsetBytes + 4);
                 if (cpuMask != 0 && graphicsInterruptCallback_ != 0)
                 {
@@ -259,6 +282,7 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
 
 void GpuCommandTracer::RegisterSystemCommandBuffer(uint32_t addr, uint32_t size)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (systemCmdBufAddr_ != 0)
     {
         return; // one real allocation for the whole run, same as VdGetSystemCommandBuffer's own once-only bump alloc
@@ -275,8 +299,16 @@ void GpuCommandTracer::RegisterSystemCommandBuffer(uint32_t addr, uint32_t size)
     }
 }
 
+// Finding 57: called from the dedicated GPU pump thread (host/main.cpp), on a
+// ~1ms cadence, independent of VdSwap. Previously this only ran synchronously
+// inside VdSwap on the main CPU thread, which meant the fence it advances here
+// could never move while that same thread was stuck in a ring-space wait loop
+// (sub_820B4EE8) -- a real, confirmed-live deadlock (Finding 56). Running it
+// off a separate thread with its own PPCContext matches real hardware, where
+// the GPU retires ring backlog continuously and independently of CPU state.
 void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     EnsureLogOpen();
     frameCounter_++;
     vblankCounter_++;
@@ -297,8 +329,8 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
     lastParsedOffset_ = newOffset;
 
     // Real second buffer (Finding 38) -- scanned the same way as the main ring, right
-    // after it, once per VdSwap. Resumes from where the last scan left off, same
-    // incremental pattern as the main ring's lastParsedOffset_.
+    // after it, once per pump iteration (Finding 57). Resumes from where the last scan
+    // left off, same incremental pattern as the main ring's lastParsedOffset_.
     if (systemCmdBufAddr_ != 0)
     {
         if (logFile_)

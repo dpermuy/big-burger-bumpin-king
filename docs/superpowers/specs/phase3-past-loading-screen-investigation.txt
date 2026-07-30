@@ -3097,3 +3097,83 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     other way to keep the fence moving independently of CPU submission
     progress. Not yet designed or attempted -- flagged for the next
     session as an architecture decision, not a quick patch. ---
+
+--- Finding 57: built the async GPU pump thread (necessary, correct
+    infrastructure) -- confirmed live it does NOT by itself resolve
+    Finding 56's deadlock, and traced the real reason down to a single
+    worker thread that owns both VdSwap and the stuck wait loop.
+
+    Implemented Finding 56's proposed design: GpuCommandTracer::
+    ScanAndTraceFrame (host/gpu_trace.cpp) no longer runs synchronously
+    inside VdSwap. A dedicated detached thread (host/main.cpp, alongside
+    the existing tickThread) now polls on a ~1ms cadence, with its own
+    PPCContext (own stack at 0x90200000, same small-data-area base as
+    the main context -- needed because ScanBuffer's PM4_INTERRUPT
+    handling actually invokes real guest code, the registered graphics
+    interrupt callback, which can't safely share the main thread's live
+    register state). GpuCommandTracer gained a recursive_mutex (host/
+    gpu_trace.h) since its state is now genuinely cross-thread: VdXxx
+    setters write from the main thread, the pump reads/writes from its
+    own thread; recursive because PM4_INTERRUPT dispatch runs guest code
+    while the lock is held, and that guest code could in principle call
+    back into another VdXxx export on the same thread. VdSwap
+    (host/kernel_impl.cpp) no longer calls ScanAndTraceFrame at all --
+    the pump thread is now the sole caller. Builds clean, runs clean
+    (300s, no crash), pump confirmed live at the expected ~1ms cadence
+    (475816 scans over 300s, then again 15786 over a 10s sanity run).
+
+    Live-tested against the exact byte-131080 plateau: NO CHANGE.
+    Bit-for-bit identical to the pre-fix state -- same frozen fence
+    (0xB8D96F08), same stuck retry target sequence (0xB8DAA578 through
+    0xB8DB6D34, 12 distinct values over 300s), same total spin count
+    order of magnitude (~2.69 billion iterations). Faster/decoupled
+    scanning changed nothing because there was never a scanning backlog
+    to catch up on in the first place -- the CPU thread genuinely never
+    writes anything past offset 131080, so there's nothing new for even
+    an infinitely fast pump to find.
+
+    Traced why, definitively, with a live thread-ID probe (temporary,
+    reverted) on both VdSwap's entry and sub_820B4EE8's spin: BOTH run
+    on the exact same thread. Confirmed the full static call chain
+    produces this pairing: the dedicated worker thread (entry
+    sub_820C8D28, Finding 38) runs sub_820CCA68, which calls sub_820B5EE0
+    (private/ppc/ppc_recomp.6.cpp:25234) -> sub_820B53C0
+    (ppc_recomp.4.cpp:13614) -> the stuck sub_820B4EE8. Finding 38 already
+    established this same worker thread calls VdSwap directly on its own
+    cadence. Live call-counting confirmed VdSwap calls hard-stop at
+    ~1500-2000 total and never resume for the remaining ~280+ seconds of
+    a 300s run, exactly when the spin count is climbing into the
+    billions -- i.e. once this one thread wedges requesting its own
+    ring space, it loses BOTH duties permanently: no more submissions,
+    AND no more vblank interrupts (source=0, dispatched inside VdSwap),
+    since VdSwap itself never runs again either.
+
+    Also traced (statically) which buffer sub_820B4EE8 is actually
+    gating in this call chain: NOT the main 1MB ring, NOT the 0xB8Dxxxxx
+    scratch-chunk pool, NOT Finding 38's already-mapped 8-slot queue at
+    self+10768+64..92 -- a third, distinct small structure embedded in
+    self at byte offsets ~13484-13508 (fields observed: 13484 base/
+    capacity-adjacent, 13488 capacity, 13496/13500/13504/13508 read/
+    write-position bookkeeping). sub_820B53C0 computes a small candidate
+    write position from a caller-supplied header (a count field decoded
+    PM4-style from *(r5+0)) and this structure's own capacity, and only
+    calls sub_820B4EE8 when that computed position doesn't already fit;
+    r30 (target) is NOT a growing sequence counter as the static code
+    first suggested -- live it was CONSTANT (0x51) across all 12 stuck
+    retries, meaning self+13500's own source value is itself frozen,
+    consistent with this thread being unable to make ANY forward
+    progress on ANY of its own state once wedged. Not yet mapped: exact
+    byte-level meaning/consumer of this specific sub-buffer, or what
+    real hardware relies on to keep this specific wait satisfiable.
+
+    Decision: keeping the pump-thread infrastructure -- it's correct,
+    matches real hardware's asynchronous GPU-consumption model, and is
+    necessary groundwork regardless (some future fix WILL need
+    consumption decoupled from VdSwap; this just isn't sufficient alone
+    for this specific deadlock). Not reverted. Next concrete step: fully
+    map self+13484-13508's byte layout and real semantics (read
+    sub_820B53C0/sub_820B5EE0/sub_820CCA68 in full, including whatever
+    self+12944/12948 -- referenced alongside it -- actually tracks) to
+    find a legitimate, non-guessed way to keep this wait satisfiable,
+    the same class of problem Finding 55 solved for self+10868 but for a
+    buffer whose real consumer/producer contract isn't understood yet. ---
