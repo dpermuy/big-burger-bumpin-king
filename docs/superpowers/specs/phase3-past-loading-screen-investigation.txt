@@ -3027,3 +3027,73 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     and check whether it correlates with a specific game-side state
     (fence value, tick count, memory address family) rather than being
     a hard ceiling. ---
+
+--- Finding 56: the frame-1821 plateau is a real, confirmed-live deadlock in
+    sub_820B4EE8's ring-space wait loop -- a structural mismatch between
+    this harness's synchronous fake GPU and real hardware's asynchronous
+    one, not a data/seed bug like Findings 51/53.
+
+    Dumped frames 1815-1822 in full (gpu_trace.log). Steady state
+    (1815-1820) is a clean, healthy, identical-shaped repeating pattern
+    each frame: two draw-call indirect buffers (127 and 253 dwords,
+    covering real 3D state -- registers 0x2000-0x2300 range, viewport/
+    shader/vertex setup) each ending in EVENT_WRITE_SHD to the fence at
+    0xB9405000/0xB9405004 (value climbing +4/frame, healthy), plus the
+    23-dword swap tail (registers 0x057C/0x0578/0x045E, PM4_INTERRUPT
+    source=1) already mapped in Finding 54. Frame 1821 is a single
+    degenerate `INDIRECT_BUFFER -> 0xA0000000 (0 dwords)` -- confirmed
+    NOT corruption: 0xA0000000 is the real Xbox 360 physical
+    write-combined alias base, i.e. this is a null/zero-sized target,
+    and it's the last thing the ring ever receives.
+
+    Traced why: sub_820B4EE8 (Finding 43/54's known ring-space
+    allocator) loops calling Finding 52's hang-watchdog helper
+    (sub_820B9A58) each iteration, comparing a caller-supplied target
+    (r30, confirmed live as a small non-address value, e.g. 0x51) and a
+    fence-progress value read from [[self+10768]+4] (r11). Added a
+    temporary counter probe directly in the loop (private/ppc hand-edit,
+    reverted after) and ran live: confirmed a SINGLE call spun past
+    2.67 BILLION iterations with the fence value frozen dead at
+    0xB8D96F08 for the entire span, while different retrying callers'
+    target addresses (r29, the secondary exit check's operand) kept
+    climbing (0xB8DAA578 -> 0xB8DB6D34 and beyond) -- the gap the loop
+    is waiting to close only ever widens, never closes. This is a
+    genuine infinite spin, not a slow-but-eventually-satisfied wait.
+
+    Also confirmed (WATCH-57, temporary probe in host/gpu_trace.cpp,
+    reverted after) that [self+10768] is a pointer directly AT the
+    fence block (0xB9405000 family) -- the same fence Finding 51/54
+    already established works correctly via EVENT_WRITE_SHD -- so this
+    is not a second, independently-stale shadow value; it's the same
+    fence, genuinely frozen because nothing new is executing to advance
+    it. Separately (and NOT the cause of this stall, but a distinct
+    real address worth knowing about for later work): rptrWriteBackAddr_
+    (set via VdEnableRingBufferRPtrWriteBack, currently 0x1940503C this
+    run) is a completely different guest location the harness already
+    updates correctly every VdSwap (host/gpu_trace.cpp:324-327) -- cross-
+    referenced against Xenia's real CommandProcessor::
+    EnableReadPointerWriteBack (ptr is used as-is, no scaling), and
+    this project's MmGetPhysicalAddress is a genuine identity no-op, so
+    0x1940503C is confirmed to be a real, legitimately-computed guest
+    address, not a translation bug.
+
+    Root cause: this harness's fake GPU is entirely synchronous --
+    GpuCommandTracer::ScanAndTraceFrame (which retires ring content and
+    advances the fence) only runs from inside VdSwap, on the same CPU
+    thread that just tried to submit. sub_820B4EE8's wait loop is
+    reached DURING a submission attempt, before that thread can ever
+    reach VdSwap again -- so once inside this loop, the one thing that
+    could unblock it (a fresh fence advance) can structurally never
+    happen. Real hardware doesn't have this problem because the GPU
+    consumes previously-submitted ring backlog continuously and
+    independently of whatever the CPU is currently doing.
+
+    Status: root cause fully confirmed live, not yet fixed. This is a
+    harder class of fix than Findings 51/53/55 (seed a register, honor
+    a size, reset a counter) -- it needs the fake GPU's "consumption"
+    step decoupled from being purely synchronous-inside-VdSwap, e.g. a
+    periodic/background pump that can retire ring content even while
+    the main thread is blocked in a wait loop like this one, or some
+    other way to keep the fence moving independently of CPU submission
+    progress. Not yet designed or attempted -- flagged for the next
+    session as an architecture decision, not a quick patch. ---
