@@ -357,31 +357,4 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
     {
         StoreU32(base, rptrWriteBackAddr_, newOffset / 4);
     }
-
-    // Finding 58: self+10768's fence (this same EVENT_WRITE_SHD progress marker, at
-    // structPtr+4) is also what sub_820B4EE8 blocks on when the game's own small
-    // scratch buffer (self+13484-13508, built by sub_820B53C0) runs out of room and
-    // needs to reclaim old space -- a real, confirmed-live permanent deadlock
-    // (Finding 56/57), because the only thread that could ever submit new content to
-    // advance this fence is the same thread stuck waiting on it.
-    //
-    // That wait only ever needs the fence to reach self+13508: sub_820B53C0's own
-    // precheck (private/ppc/ppc_recomp.4.cpp:11913-11918) already rejects any
-    // candidate write position past self+13508 before sub_820B4EE8 is ever called,
-    // so every candidate sub_820B4EE8 is asked to wait for is bounded above by
-    // self+13508 by construction. Once the fence reaches that ceiling, every future
-    // reservation attempt satisfies the wait immediately. Same "no real async GPU,
-    // approximate completion" philosophy as Finding 55's self+10868 reset -- this
-    // just targets a second, independent consumer of the same missing signal.
-    constexpr uint32_t kGpuManagerSelf = 0xA0009900; // empirically stable, Findings 20-57
-    uint32_t fenceStructPtr = LoadU32(base, kGpuManagerSelf + 10768);
-    if (fenceStructPtr != 0)
-    {
-        uint32_t bufferLimit = LoadU32(base, kGpuManagerSelf + 13508);
-        uint32_t fenceValue = LoadU32(base, fenceStructPtr + 4);
-        if (bufferLimit != 0 && bufferLimit > fenceValue)
-        {
-            StoreU32(base, fenceStructPtr + 4, bufferLimit);
-        }
-    }
 }

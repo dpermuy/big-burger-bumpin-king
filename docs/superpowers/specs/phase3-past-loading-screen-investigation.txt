@@ -3311,3 +3311,70 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     directly rather than inferring it; (3) full static trace of
     self+13000/13496/13040-13060's real contracts if (1)/(2) point to a
     genuine remaining defect rather than intended pacing. ---
+
+--- Finding 60: ran the long test (option 1). Result: Finding 58's fix
+    is a REGRESSION, not an improvement -- reverted it entirely.
+
+    900s live run (Finding 58 enabled, same build as Finding 59):
+    growth is real through frame ~699665 (byte 2380, ~445 real seconds
+    in), then hits a genuine hard flatline for the remaining ~455
+    seconds -- confirmed by dense resampling around the transition
+    (last three distinct byte values: 2308 at frame 620993, 2332 at
+    679967, 2356 at 687783, 2380 at 699665, then nothing ever again).
+    This refutes Finding 59's "maybe it's just the real slow cadence"
+    theory outright -- there IS still a hard ceiling, it just took much
+    longer to hit.
+
+    But the real surprise: 2380 bytes is FAR less content than Finding
+    56/57's own pre-Finding-58 baseline (131080 bytes, reached in under
+    150s). Ran a direct A/B comparison to confirm this wasn't noise --
+    same build, same 900s window, Finding 58's fence-force code gated
+    behind a local `constexpr bool kFinding58Enabled` flipped to false:
+    result was 131080 bytes, matching the known-good Finding 56/57
+    baseline exactly, and OVER 55x MORE content than with Finding 58
+    enabled. Confirmed reproducible, not a fluke.
+
+    Conclusion: forcibly advancing the shared fence at [self+10768]+4
+    to satisfy self+13484-13508's own wait condition (Finding 58's
+    fix) corrupts some OTHER consumer of that exact same fence value --
+    almost certainly the main submission pipeline (sub_820B5B08,
+    Finding 54) or Finding 55's own self+10868 logic, both of which
+    also read this fence and presumably rely on it accurately
+    reflecting real EVENT_WRITE_SHD execution, not an artificially
+    inflated value. Pushing the fence ahead of what's actually been
+    processed apparently causes one of those other consumers to reach
+    an incorrect conclusion (e.g. treating unprocessed work as done)
+    that manifests as an even earlier, tighter stall than doing
+    nothing at all would have. Not yet root-caused which specific
+    consumer or why -- reverted before investigating further, since the
+    A/B result alone was decisive enough to act on immediately.
+
+    Action taken: fully reverted Finding 58's code (host/gpu_trace.cpp)
+    back to the Finding 57 state. Verified clean build, clean 10s
+    sanity run (no crash), git diff shows exactly the 27 lines Finding
+    58 added being removed, nothing else touched. Current committed
+    state (Findings 55 + 57, NOT 58) is confirmed live to reach byte
+    131080 before its own hard stop -- back to the best known-good
+    baseline.
+
+    Lesson for future fix attempts in this investigation: a short
+    (300s) test showing "better than before, no regression" is NOT
+    sufficient evidence to keep a fix in this specific class of problem
+    -- Finding 58 looked strictly better at 300s and was actually much
+    worse by 900s. Any future fence/counter-forcing fix here should be
+    validated against a run at least as long as the best previously-
+    known result took to reach its own plateau (~150s for 131080)
+    before being trusted, and ideally cross-checked with a direct A/B
+    comparison like this one rather than a single before/after run.
+
+    Status: back to Finding 55+57 as the current best state (131080
+    byte ceiling, real progress unblocked from the original Finding
+    38/54 permanent freeze at byte 172, but not fully solved). The
+    self+13484-13508 scratch-buffer deadlock (Finding 56) remains
+    unfixed -- Finding 58's approach to it specifically is now a known
+    dead end, not just unproven. Next attempt on this specific
+    sub-problem should look for a way to let self+13484-13508's wait
+    resolve WITHOUT touching the shared self+10768+4 fence value at
+    all (e.g. a more targeted intervention scoped to only what
+    sub_820B4EE8/sub_820B53C0 themselves read, not a value other real
+    pipeline stages also depend on for correctness). ---
