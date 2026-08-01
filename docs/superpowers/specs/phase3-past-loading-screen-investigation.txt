@@ -3177,3 +3177,75 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     find a legitimate, non-guessed way to keep this wait satisfiable,
     the same class of problem Finding 55 solved for self+10868 but for a
     buffer whose real consumer/producer contract isn't understood yet. ---
+
+--- Finding 58: mapped self+13484-13508 fully via sub_820B6560 (the GPU
+    manager's own constructor) -- it's a dedicated scratch allocation
+    with the SAME fence-based reclamation as the main ring. Implemented
+    a targeted, Finding-55-style force-advance fix. Real, measurable
+    progress (172 -> 1732 bytes vs. permanently frozen dead before) but
+    not a full fix -- found and precisely characterized a THIRD layer of
+    gating behind it.
+
+    Static trace of sub_820B6560 (self's constructor -- also confirmed
+    as the single place that allocates the 96-byte fence block at
+    self+10768 and the 32-byte swap-completion slot at self+10772,
+    Finding 33/54's already-known structures, plus writes the real
+    0x0BADF00D guard magic Finding 54 already identified): self+13484,
+    13504, and 13508 all initialize to the SAME freshly-allocated base
+    pointer (a dedicated arena, separate from both the main ring and the
+    heap); self+13488 initializes to that arena's own end address
+    (base+size-4); self+13496 initializes to the RPTR-writeback address
+    itself (a completely different, unrelated address family -- gets
+    overwritten with provisional in-progress state during normal
+    reservation attempts, not a fixed-purpose field after construction).
+
+    sub_820B53C0's caller-side precheck (ppc_recomp.4.cpp:11913-11918)
+    already rejects any candidate write position past self+13508 before
+    ever calling sub_820B4EE8 -- so every value sub_820B4EE8 is asked to
+    wait for is bounded above by self+13508 by construction. Fix
+    (host/gpu_trace.cpp, inside ScanAndTraceFrame, once per pump tick):
+    if self+13508 > the fence value at [self+10768]+4, force the fence
+    forward to match. Same "no real async GPU, approximate completion"
+    reasoning as Finding 55, targeting this second, independent
+    consumer of the same missing swap-completion signal.
+
+    Live-tested (temporary WATCH-61 probes, reverted): the fix
+    definitely works AS DESIGNED -- confirmed firing repeatedly early in
+    a run, each time immediately followed by real forward ring
+    progress (wptr climbing 76 -> 1516 within about the first 20-30
+    real seconds, a genuine burst of successful reservations that
+    NEVER happened at all before this fix). But then both the fence AND
+    self+13508 freeze together and progress crawls to a near-halt for
+    the rest of a 300s run (final result: byte 172 -> 1732, vs. Finding
+    56/57's hard-frozen-at-172-forever baseline -- real but marginal
+    improvement, nowhere near Finding 55's pre-Finding-56 131080 result).
+
+    Traced why self+13508 itself stops advancing: it only moves when
+    sub_820B5380 runs (a double-buffer swap: copies a staging descriptor
+    at self+13040-13060 into the active self+13496-13508 fields, plus
+    self+40/44/48). sub_820B5380's one real call site is inside
+    sub_820C8F30 (ppc_recomp.6.cpp:15239) -- Finding 54's own already-
+    mapped swap-submission function -- gated behind a specific bit of
+    the self+10809 flags byte (ppc_recomp.6.cpp:15355-15359: extracts
+    one bit via rlwinm, branches to the OTHER path, sub_820B5278 on
+    self+13000 -- Finding 54's spinlocked pending list -- when clear).
+    Live sampling (WATCH-61, reverted) confirmed self+10809 transitions
+    0x00 -> 0x24 -> 0x04 early in a run, exactly matching the successful
+    burst, then STAYS at 0x04 for the rest of the run, exactly matching
+    where progress stalls. Bit semantics not yet decoded precisely
+    (manual PPC rotate/mask arithmetic is error-prone by hand -- didn't
+    trust a derived bit number without live cross-check, and ran out of
+    session budget to do that cross-check rigorously). This is a third,
+    independent layer of the same fundamental problem (everything here
+    ultimately traces back to swap completion never being signaled) --
+    not yet a quick patch.
+
+    Decision: kept the fix (host/gpu_trace.cpp) -- strictly better than
+    the Finding 56/57 baseline, zero regression, no crash across a full
+    300s live test plus a clean 10s sanity run. Reverted all temporary
+    WATCH-61 probes. Next concrete step: decode self+10809's exact bit
+    layout precisely (probably worth building a small standalone bit
+    calculator rather than hand-deriving PPC rotate-and-mask math again)
+    and find what's supposed to set/clear it during normal operation,
+    to understand why it stabilizes at 0x04 instead of continuing to
+    toggle whatever bit gates sub_820B5380. ---
