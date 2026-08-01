@@ -3249,3 +3249,65 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     and find what's supposed to set/clear it during normal operation,
     to understand why it stabilizes at 0x04 instead of continuing to
     toggle whatever bit gates sub_820B5380. ---
+
+--- Finding 59: corrects Finding 58 -- self+13508 does NOT actually
+    freeze after the initial burst. It's genuinely, if slowly and
+    irregularly, continuing to advance the entire time. The Finding 58
+    sub_820B5380/self+10809-bit theory was also a dead end (that bit is
+    unrelated -- see below); the real driver was misidentified.
+
+    First: computed the rlwinm bit-extraction precisely with a Python
+    rotate simulation instead of by hand (private/ppc/ppc_recomp.6.cpp:
+    15355-15357, `rlwinm r27,r11,26,31,31` on a byte-loaded register) --
+    it isolates standard bit 0x40, and every self+10809 value sampled
+    live in Finding 58 (0x00, 0x24, 0x04) has that bit clear the entire
+    time. So sub_820B5380's gate was constantly in the SAME state
+    throughout Finding 58's whole test window -- it cannot be what
+    explains a burst-then-stall pattern, and this bit isn't the one
+    that matters here at all.
+
+    Re-grepped every write site to self+13508 and found the real one:
+    sub_820B6080 (ppc_recomp.4.cpp:13977), NOT sub_820B5380. Confirmed
+    its caller is sub_820B6220 -- Finding 54's own top-level flush entry
+    point, called routinely during normal operation, not some rare
+    edge case. sub_820B6080 also writes self+40 (write cursor) and,
+    when a separate size check passes, rounds self+13496 up to the next
+    4096-byte boundary (ppc_recomp.4.cpp:13991-13996); when the check
+    fails instead it calls back into sub_820B5EE0 -- the same stuck
+    chain from Finding 57's call-chain trace.
+
+    Live-resampled with self+40/44/48/13488/13496 alongside the
+    existing fence/self+13508 pair (temporary WATCH-62 probe, reverted,
+    120s watchdog): self+13496 climbs smoothly and continuously in
+    small (~0x10-0x18) steps roughly every 2-4 real seconds, THE ENTIRE
+    RUN, with no stall at all -- including through the exact 36-second
+    stretch (pump frames 28000-64000) where wptr/fence/self+13508 sat
+    completely still. self+13508 and wptr themselves DO keep moving
+    too, just in bigger, much rarer jumps, not on any fixed interval.
+    This is real, continuous, if slow, forward progress -- not the
+    "freezes solid" characterization Finding 58 reported after a
+    shorter observation window.
+
+    Working theory, not yet confirmed: what looks like a stall is
+    actually this worker thread's genuine, intended operating cadence.
+    Finding 38 (much earlier in this investigation) independently
+    clocked this exact same worker thread calling VdSwap roughly once
+    per ~4.7 real seconds -- the same order of magnitude as what's
+    observed here. If so, Finding 55/57/58 together may have already
+    resolved the actual bug (the permanent deadlock), and what remains
+    is simply this thread doing real work at its own real, always-slow
+    pace, not a further defect needing a fix.
+
+    Status: not chasing further this session -- diminishing clarity
+    returns for the time invested, and the remaining question (is this
+    genuinely the game's real cadence, or one more layer of an
+    artificial gate) needs either a much longer live observation window
+    (many minutes, to see if it ever meaningfully accelerates or hits a
+    real ceiling) or full static mapping of self+13496/13000's exact
+    contracts, neither attempted yet. Next session's concrete options,
+    in order of cost: (1) run much longer (10+ minutes) and see whether
+    throughput ever changes character; (2) map sub_820CCA68's own outer
+    loop/timing precisely to confirm or refute the ~4.7s-cadence theory
+    directly rather than inferring it; (3) full static trace of
+    self+13000/13496/13040-13060's real contracts if (1)/(2) point to a
+    genuine remaining defect rather than intended pacing. ---
