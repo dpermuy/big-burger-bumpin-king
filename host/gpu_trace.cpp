@@ -29,12 +29,18 @@ void GpuCommandTracer::RegisterRingBuffer(uint32_t physAddr, uint32_t sizeLog2Ra
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     ringBufferBase_ = physAddr;
-    // Inverts the call site's own computation (private/ppc/ppc_recomp.4.cpp:14842-14856):
-    // the game derives sizeLog2Raw as (31 - clz(originalSizeBytes)) - 3, so
-    // originalSizeBytes is approximately 8 << (sizeLog2Raw + 3). Not independently
-    // verified against real hardware docs -- a starting point, correctable once trace
-    // output shows packets running past this boundary.
-    ringBufferSize_ = 8u << (sizeLog2Raw + 3);
+    // Finding 62: corrected against real Xenia source (CommandProcessor::
+    // InitializeRingBuffer, command_processor.cc) -- primary_buffer_size_ =
+    // 1 << (size_log2 + 3), not 8 << (size_log2 + 3). The previous formula was 8x
+    // too large (1MB instead of the real 128KB with the observed sizeLog2Raw=14).
+    // Initially suspected (and briefly implemented, then reverted -- Finding 62)
+    // this explained the long-observed ~131000-byte plateau via ring wraparound;
+    // live testing disproved that specifically (the "wrapped" region still held
+    // stale, ancient content, and re-scanning it produced garbage) -- the real
+    // cause is a separate deadlock (Finding 63/64). This formula correction is
+    // kept regardless since it's independently verified correct against real
+    // hardware semantics, wraparound relevance aside.
+    ringBufferSize_ = 1u << (sizeLog2Raw + 3);
     lastParsedOffset_ = 0;
     frameCounter_ = 0;
 

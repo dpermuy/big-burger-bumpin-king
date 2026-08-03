@@ -3378,3 +3378,209 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     all (e.g. a more targeted intervention scoped to only what
     sub_820B4EE8/sub_820B53C0 themselves read, not a value other real
     pipeline stages also depend on for correctness). ---
+
+--- Finding 61: implemented Finding 60's suggested targeted intervention
+    -- a durable, host-level WEAK-SYMBOL OVERRIDE of sub_820B4EE8 itself
+    (new file host/game_overrides.cpp), not a memory poke. Confirmed
+    live: real, safe, working improvement, though not sufficient alone
+    to fully resolve the ring ceiling (see Finding 64).
+
+    XenonRecomp's PPC_WEAK_FUNC macro (thirdparty/XenonRecomp/XenonUtils/
+    ppc_context.h) makes every auto-generated PPC function's outer,
+    plainly-C++-mangled name (e.g. `sub_820B4EE8`, distinct from its
+    strong, extern-"C" `__imp__sub_820B4EE8` implementation) a weak
+    symbol -- any strong definition of the same mangled name elsewhere
+    in the link takes priority, standard toolchain behavior, already
+    proven safe for a static-library object providing hundreds of
+    OTHER unrelated symbols from the same translation unit. Added
+    host/game_overrides.cpp with a real, non-extern-"C", non-__imp__-
+    prefixed `void sub_820B4EE8(PPCContext&, uint8_t*)` and wired it
+    into CMakeLists.txt's BigBumpinHost sources. Confirmed via `nm` +
+    `otool -tv` on the built binary: the linker resolved every call
+    site to this new definition (low host address, real disassembly
+    showing our own chrono/register-load code), not the generated one.
+
+    Reimplements sub_820B4EE8's real contract faithfully (same fence
+    read at [[self+10768]+4], same two-part exit condition) but with a
+    50ms host-timed bound instead of depending on the guest's own
+    watchdog chain (Finding 52's escape valve, confirmed broken because
+    the hang-notify callback it depends on is never registered). Writes
+    NO guest memory at all -- purely bounds this one function's control
+    flow, so nothing else in the pipeline can be corrupted by it, unlike
+    Findings 55's first attempt and Finding 58.
+
+    Live-tested rigorously, applying Finding 60's own lesson: 300s (real
+    growth, still climbing at the end, unlike Finding 58's clear
+    plateau), then 900s (linear growth the entire run, 0->82012 bytes,
+    no plateau at all), then 1800s (crossed and matched the old 131080
+    ceiling exactly, then stopped -- later understood via Finding 62/64
+    to be a DIFFERENT blocker, not this one recurring). No crash in any
+    run. Kept -- real, durable, safe infrastructure improvement,
+    confirmed to eliminate the specific self+13484-13508 deadlock class
+    it targets (Finding 56) even though a separate blocker remains
+    (Finding 64). ---
+
+--- Finding 62: corrected the ring buffer size formula against real
+    Xenia source -- independently correct, briefly suspected (wrongly)
+    to explain the ~131000 ceiling via wraparound, reverted that part
+    after live evidence disproved it, kept the formula fix.
+
+    host/gpu_trace.cpp's RegisterRingBuffer used `8u << (sizeLog2Raw+3)`
+    for ringBufferSize_, its own comment flagging it as "not
+    independently verified." Cross-referenced against real Xenia source
+    (CommandProcessor::InitializeRingBuffer, command_processor.cc):
+    `primary_buffer_size_ = 1 << (size_log2+3)` -- the project's formula
+    was exactly 8x too large (1MB instead of the real 128KB, given the
+    consistently-observed sizeLog2Raw=14). Corrected to `1u << (...)`.
+
+    With the corrected 131072-byte size closely matching the long-
+    observed ~131000-byte ceiling, initially implemented ring
+    wraparound (once no room remained for one more packet header,
+    resume scanning from offset 0) as the presumed root-cause fix.
+    Live-tested (900s, then 2400s to give real margin): reproducibly
+    landed just a few dozen bytes short of the true 131072-byte
+    boundary (131068, then 131020 after fixing an off-by-one in the
+    wrap condition) and got stuck there too, never actually reaching or
+    exercising the wrap logic. Chasing this further (see Finding 63)
+    confirmed it's a genuinely different, independent blocker -- and a
+    live capture of the one run that DID reach the wrap threshold
+    showed the "wrapped" region at offset 0 still holding the
+    ORIGINAL, ancient ME_INIT packet from process start, referencing an
+    indirect-buffer target (0xB8D51000) since recycled many times over
+    by unrelated later content -- re-scanning it produced garbage, not
+    real new data. The ring genuinely isn't being wrapped by real game
+    behavior within any tested timeframe; the wraparound fix was based
+    on a false premise. Reverted the wraparound logic entirely; kept
+    the size-formula correction since it's independently verified
+    correct against real hardware semantics regardless of whether ring
+    wraparound is the active bottleneck here. ---
+
+--- Finding 63: found and fixed a SECOND, independent instance of
+    Finding 61's exact problem class, on a completely different call
+    chain -- confirmed via live lldb thread backtraces, not guessed.
+    Same override pattern, safe and working per-call, but the
+    underlying wait condition turns out to never legitimately resolve
+    in this project's current execution model (see Finding 64).
+
+    With Finding 62's ring-size fix in place (ruling out wraparound),
+    a fresh long run (2400s watchdog) still stalled, reproducibly, in
+    the same ~131000-byte neighborhood. Rather than guess again, set up
+    a monitor script to detect the stall live and auto-attach lldb
+    (`thread backtrace all`) the moment offset held steady across three
+    60s checks. Two samples 30 seconds apart showed the exact same call
+    stack both times (moved by only 2 instructions within the same
+    function, confirming a genuine sustained loop, not a coincidental
+    snapshot): the MAIN game thread (not a worker thread -- traced back
+    to __xstart directly), stuck inside __imp__sub_820B9A58, reached via
+    __imp__sub_820B5BC8 <- __imp__sub_820CCA68 <- __imp__sub_824A76D0 <-
+    ... <- __imp__sub_8212B130 <- __xstart -- the EXACT call chain
+    Findings 19-24, 38, and 43 already mapped early in this
+    investigation, well before this session's work.
+
+    sub_820B5BC8's real contract (private/ppc/ppc_recomp.4.cpp:
+    12980-13101, already precisely documented by Findings 20-24/43):
+    given self and a target, wait until current -- *(*(self+10768)+0),
+    a DIFFERENT field of the same 96-byte fence block sub_820B4EE8 also
+    uses (that one reads offset+4) -- reaches target. Findings 20-24
+    (predating this session, before the vblank interrupt fix existed)
+    already established current's real nature: a dispatcher-object-
+    style signal count, set once at creation, that nothing in this
+    project's implementation was ever confirmed to increment again.
+
+    Added a second override in host/game_overrides.cpp, same pattern as
+    Finding 61: faithfully reimplements the real exit condition
+    (target<=current), preserves the real function's one genuine
+    producer side effect (proactively calling the real sub_820B6220
+    flush entry point when target equals the current self+10780
+    expectation and self+12944 is clear -- called directly via a normal
+    PPC_EXTERN_FUNC declaration, not reimplemented, so its own real
+    effects flow through the already-safe pipeline including Finding
+    61's own override further down the call chain), then bounds the
+    wait to 50ms instead of the guest's own watchdog chain. Writes no
+    guest memory. Confirmed via nm/otool the override resolved
+    correctly, same as Finding 61.
+
+    Live-tested: no crash, confirmed via a second lldb sample that the
+    override itself works exactly as designed (caught mid-sleep inside
+    its own bounded wait, will return within 50ms) -- but total ring
+    growth still stalled at the same ~131068 byte mark for the
+    remainder of a 40-minute run. The override is not wrong; the
+    caller (sub_820CCA68) has no alternative path when this wait
+    "fails" and just retries forever, and the underlying condition
+    genuinely never becomes true in this project's current execution
+    model (see Finding 64 for why). Kept -- real, safe, correctly-
+    bounded infrastructure, same standard as Finding 61, even though it
+    alone doesn't unblock further progress. ---
+
+--- Finding 64: precisely identified WHY self+10768+0 (Finding 63's
+    "current") never advances -- a real, conditionally-gated CPU-side
+    write exists, but its gate gets satisfied only in a no-GPU
+    failover mode this project's healthy execution path never enters.
+    Also discovered self+10768+0 is NOT safely isolated to
+    sub_820B5BC8 -- multiple other functions read and write it, so
+    directly forcing it (Finding 58-style) would be unsafe. Not fixed
+    this session -- precisely scoped for next time.
+
+    Searched every private/ppc/*.cpp file for code that dereferences
+    the pointer at self+10768 specifically at offset+0 (distinct from
+    Finding 56/61's offset+4). Found real hits beyond sub_820B5BC8's
+    own three internal checks: __imp__sub_820B5A28 (write), __imp__
+    sub_820B6340 (read, unexplored), __imp__sub_820B6560 (write, the
+    constructor's own init-to-1), __imp__sub_820B98A8 (read, the
+    wait-loop setup helper), __imp__sub_820B9A58 (read, the watchdog
+    helper itself), __imp__sub_820BA3C0 (write, Finding 52's recovery
+    path), __imp__sub_820BB930 (read, unexplored). Confirms this field
+    is genuinely shared, multi-consumer state -- writing to it directly
+    from the host would carry the same real risk Finding 58 proved out
+    the hard way for the offset+4 fence, not a safe, scoped poke like
+    Finding 61/63's control-flow-only overrides.
+
+    Read sub_820B5A28 in full (private/ppc/ppc_recomp.4.cpp:2733-2850ish)
+    -- this is the SAME per-frame-tail function Finding 54 already
+    documented as incrementing self+10780 (the target/expectation
+    counter) by 2 every frame. It ALSO writes self+10768+0 (and +4)
+    directly, but only inside a gate (ppc_recomp.4.cpp:12822-2838):
+    `if (self+19956 == 0 AND bit 0x2 of self+10809 is set)`. Bit 0x2 of
+    self+10809 is Finding 52's own already-documented "no-GPU failover
+    mode" flag -- normally CLEAR in this project's healthy execution
+    (only ever set inside Finding 52's own fatal-recovery path, which
+    itself never completes because it depends on the same never-
+    registered hang-notify callback). This CPU-side write is a
+    software fallback for when there's genuinely no GPU present, not
+    the normal path -- on real hardware, self+10768+0 is expected to be
+    written directly by the GPU itself, via a real EVENT_WRITE_SHD
+    packet targeting that exact address (0xB9405000, matching the
+    already-confirmed offset+4 target 0xB9405004 this project already
+    executes correctly).
+
+    Checked every EVENT_WRITE_SHD write logged across this whole
+    session's traces (going back to Finding 37): every single one
+    targets 0xB9405004 (offset+4). Not one ever targets 0xB9405000
+    (offset+0) in any captured run. Either the game's own real packet
+    stream never emits an EVENT_WRITE_SHD for that specific address in
+    this execution path (a real, if unexplained, game-side gate,
+    possibly game-state-dependent like several other gates this
+    investigation has found), or this project's packet decoding/
+    scanning is missing something that would normally produce or
+    recognize one. Not yet determined which.
+
+    Status: root cause of the remaining ~131000-byte-ish ceiling now
+    precisely localized (not resolved) to "nothing produces a real
+    write to self+10768+0 in this project's current, actually-executed
+    packet stream, because the only write path that exists is gated
+    behind a failover flag this project's healthy path never sets."
+    Next concrete steps, in order of promise: (1) find whether the
+    real swap/frame-tail packet sequence is SUPPOSED to include a
+    second EVENT_WRITE_SHD targeting 0xB9405000 that this project's
+    game code simply never gets far enough to emit (trace what gates
+    that decision, similar to Findings 51/53's earlier seed-value
+    fixes) -- if so, that's a real, principled fix, not a memory poke;
+    (2) if no such packet is ever supposed to exist in this specific
+    flow, investigate whether self+19956 (the OTHER half of the gate)
+    is itself a fixable, legitimately-should-be-nonzero-or-zero
+    precondition rather than bit 0x2; (3) only as a last resort,
+    consider a host-level write to self+10768+0 mirroring what Finding
+    55 did for self+10868 -- but given this field is confirmed
+    multi-consumer (unlike self+10868, which had exactly one real
+    zeroing writer), this needs a full map of every consumer's
+    contract first, not a repeat of Finding 58's mistake. ---
