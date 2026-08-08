@@ -3584,3 +3584,81 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     multi-consumer (unlike self+10868, which had exactly one real
     zeroing writer), this needs a full map of every consumer's
     contract first, not a repeat of Finding 58's mistake. ---
+
+--- Finding 65: CORRECTS Finding 64's central claim -- self+10768+0 (0xB9405000)
+    IS written by real EVENT_WRITE_SHD packets, every frame, exactly
+    like offset+4. The real problem isn't an unreachable code path; the
+    game's own packet PRODUCTION genuinely halts at a consistent point,
+    and this is the SAME symptom as the long-chased ~131000-byte ring
+    plateau, not a separate bug -- Finding 63's sub_820B5BC8 deadlock
+    was real and is genuinely fixed by Finding 61's override; what
+    remains is one level further upstream.
+
+    A separate live investigation (dispatched to a fork) into whether
+    self+10809 bit 0x2 has any non-fatal setter found one: sub_820B6220
+    (private/ppc/ppc_recomp.4.cpp:14085-14125, Finding 54's own top-
+    level flush entry point, reached every normal frame from
+    sub_820CCA68) sets bit 0x2 for real, gated behind a fixed global at
+    guest address 0x8265C6A0 -- not exclusively Finding 52's fatal path
+    as Finding 64 assumed. This alone doesn't resolve the mystery, but
+    directly contradicted Finding 64's premise enough to warrant
+    re-checking the underlying data rather than trusting the earlier
+    conclusion.
+
+    Re-checked this session's OWN already-captured gpu_trace.log output
+    (from Finding 58-61's own test runs, still on disk) and found
+    something Finding 64 stated backwards: `grep "wrote.*to 0xB9405000"
+    gpu_trace.log` returns real hits (e.g. "wrote 0x00000003 to
+    0xB9405000", "wrote 0x00001C8B to 0xB9405000") -- offset+0 clearly
+    IS written by real EVENT_WRITE_SHD packets, with small monotonic
+    values climbing right alongside offset+4's already-confirmed real
+    writes, contradicting Finding 64's "not one ever targets 0xB9405000"
+    claim outright. That was a real factual error in Finding 64,
+    corrected here.
+
+    Given this, re-ran with a temporary diagnostic (WATCH-65, since
+    reverted) added to Finding 63's sub_820B5BC8 override, printing
+    target/current/expectation whenever the 50ms bound is hit. Live
+    result (40-minute run): current (structPtr+0, i.e. offset+0) froze
+    PERMANENTLY at exactly 7307 (0x1C8B) after some point, while target
+    and expectation (self+10780-derived) kept climbing unboundedly
+    (12,851+ recorded timeouts, target past 58709 and still rising) --
+    the override itself works exactly as designed every single time
+    (zero false negatives), the underlying wait condition just never
+    becomes satisfiable again once current stops. Cross-checked against
+    the SAME run's gpu_trace.log: the last-ever EVENT_WRITE_SHD write to
+    0xB9405000 is "wrote 0x00001C8B to 0xB9405000" -- 0x1C8B = 7307,
+    an EXACT match to the frozen current value. 3639 total real writes
+    to that address across the whole run, then none ever again.
+
+    This means Finding 63's deadlock and the long-standing ~131000-byte
+    ring-content plateau are the SAME underlying symptom, not two
+    separate bugs: real EVENT_WRITE_SHD execution (which requires real
+    packets to exist in the ring buffer, which requires the game's own
+    CPU thread to keep producing them) genuinely stops at a consistent
+    point in every run, for a reason that predates and is independent
+    of every wait-loop deadlock fixed this session (Findings 55, 61,
+    63). Fixing downstream consumers of a signal that's never sent
+    again can't produce content past the point production itself
+    halted -- Findings 61/63's overrides are correctly-functioning,
+    necessary infrastructure (kept), but they were never going to be
+    sufficient alone, and now there's direct evidence why.
+
+    Status: the real open question has shifted, for the first time this
+    session, from "why does a downstream wait loop never unblock" (now
+    well-understood and fixed in every instance found) to "why does the
+    game's own packet-producing thread stop producing new ring/scratch-
+    buffer content at all, around a highly consistent real-time/byte-
+    count point, across every run regardless of which downstream
+    deadlock is or isn't fixed." This is close in spirit to Findings
+    43/44's very original open question from early in the investigation,
+    now sharpened considerably by everything mapped since. Not yet
+    investigated this session (out of session budget) -- concrete next
+    step for a future session: live-sample the MAIN thread (not any
+    worker thread) at the exact moment content production stops (byte
+    ~131068, consistently reproducible) with a full backtrace, the same
+    technique that found Finding 63's deadlock -- if it's blocked on
+    something, that's the real next link in the chain; if it's still
+    running but simply not calling anything that submits new ring
+    content, that points to a game-state gate (like Finding 39's dispatch
+    table) rather than a stall. ---
