@@ -3745,3 +3745,88 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     real bounded work; investigate why the process died between the t=1700s
     and t=1720s samples this pass, since that's itself an unexplained new
     data point (possible latent crash near the plateau, not yet chased).
+
+--- Finding 67: found the real outer loop sub_82451408 lives inside, and got
+    a decisive NEGATIVE result on whether its anomaly flag ever fires -- it
+    doesn't, because a precondition it depends on is permanently false. This
+    rules out sub_82451408 as the actual blocker; the real per-iteration
+    cost is elsewhere in the same loop's other two calls. ---
+
+    Read sub_8244AFB0's real generated code in full (private/ppc/
+    ppc_recomp.57.cpp:1850-1934). It has its own real loop (loc_8244AFD8),
+    previously unidentified as a loop in this investigation. Each pass:
+      1. calls sub_8244AE70 (the known wait/queue-check function, Findings
+         2/6/13/14/15)
+      2. calls sub_8244DC40(fixedAddr, type=3) then sub_824AAFF0 with four
+         loaded fields -- this IS Finding 19/20's exact chain
+         (sub_8244AFB0 -> sub_824AAFF0 -> sub_824A76D0 -> sub_820CCA68 ->
+         sub_820B5BC8 -> sub_820B9A58), now confirmed to be called from
+         INSIDE this loop, once per iteration, not a one-off
+      3. calls sub_82451408 (Finding 66's timing/anomaly function)
+      4. re-reads a flag at kernelbase+136 and loops back to step 1 only if
+         it's still 0
+
+    kernelbase+136 is set to 1 exclusively by sub_82451408's own tail logic
+    (private/ppc/ppc_recomp.58.cpp:4924-4927), gated behind a two-part
+    condition: a count field at [kernelbase-derived-struct+76] must be
+    nonzero, AND an accumulated-average value must exceed a threshold
+    derived from that count. This reads as a genuine, intentional "if
+    real per-iteration time is anomalously high, break the loop and
+    presumably trigger recovery/error handling" escape valve -- the same
+    design pattern already seen in Finding 52's no-GPU failover flag and
+    Finding 64's hang-notify callback.
+
+    Live-tested directly (source-level instrumentation at the exact flag-
+    set site and at the comparison just before it, both inlining-proof per
+    this session's established technique, reverted after capture): added
+    two temporary prints -- one firing whenever the flag-set branch is
+    taken, one firing every 200th call at the comparison point regardless
+    of outcome. Ran two real tests: a 130s run using the reliable single-
+    script technique (Finding 66), well past the point where earlier
+    samples (t=60-80s) already found execution deep inside this exact
+    loop. RESULT: zero hits on either print, the entire run. This is a
+    decisive negative result, not inconclusive -- the comparison print
+    would have fired constantly (every 200th call of a tight loop over
+    130s) if the count-field guard were ever satisfied, and it never was.
+
+    Conclusion: the count field this function depends on ([+76] off the
+    same struct) is permanently 0 in this project's real execution,
+    meaning the ENTIRE averaging/threshold/anomaly-detection half of
+    sub_82451408 is dead code on this project's actual execution path --
+    never reached, not once, regardless of how long the loop has been
+    spinning. sub_82451408 itself is NOT the blocker and its anomaly
+    escape valve can never fire as currently populated. Finding 66's lldb
+    samples caught the PC there simply because it's called on every single
+    pass of a loop that's been spinning for 1700+ seconds -- sheer call
+    volume, not a stuck/expensive computation (consistent with this
+    session's own earlier-learned lesson, Finding 2: a sampled PC location
+    tells you WHERE code was running at an instant, not that it's stuck
+    there).
+
+    This closes off the sub_82451408 lead cleanly and redirects the real
+    next step back to the loop's OTHER two calls: sub_8244AE70 (already
+    well-understood, fast, real submission via Finding 6/13/14/15) and
+    sub_824AAFF0 (the real Finding 19/20/61/63 chain, the one that reaches
+    the 50ms-bounded overrides). Given AE70 is fast and 82451408 is fast
+    (confirmed no work happens once count stays 0), the loop's real
+    per-iteration wall-clock cost -- and therefore the real pacing behind
+    the ~72 bytes/sec ring growth rate measured in Finding 66 -- almost
+    certainly comes from sub_824AAFF0's descendants, i.e. Finding 61/63's
+    own 50ms bounded waits firing on essentially every iteration. That
+    would mean the ~131068-byte ceiling isn't really "content production
+    halting" in the sense Finding 65 originally framed it -- it may be
+    real, correctly-bounded, but PACED work (bounded waits firing
+    repeatedly because their real underlying condition never resolves,
+    per Finding 64's still-open "nothing writes self+10768+0 through the
+    game's normal path" question) rather than a dead stop. Next concrete
+    step for a future pass: instrument iteration count and real elapsed
+    time of loc_8244AFD8's own loop body directly (a simple counter plus
+    timestamp at loop-top, same proven technique) to confirm this loop
+    really is the pacing source and get a real per-iteration timing
+    breakdown across its three callees, rather than inferring it
+    indirectly as done here. Also still open from Finding 66: what
+    kernelbase+136 field's counterpart writer (something that should set
+    the [+76] count field nonzero) is supposed to be -- that's the actual
+    root gap behind this dead anomaly-detection path, though not
+    necessarily on the critical path to the real blocker per the
+    redirection above.
