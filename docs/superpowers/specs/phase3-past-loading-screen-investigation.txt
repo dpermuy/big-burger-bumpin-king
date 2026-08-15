@@ -3830,3 +3830,63 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     root gap behind this dead anomaly-detection path, though not
     necessarily on the critical path to the real blocker per the
     redirection above.
+
+--- Finding 68: measured sub_8244AFB0's real per-iteration timing directly --
+    decisive, clean data that OVERTURNS Finding 67's own redirection.
+    sub_8244AE70 (not sub_824AAFF0) dominates real wall-clock time, ~82-85%
+    of every iteration -- pointing this investigation's real next lead back
+    at the exact busy-spin mechanism Findings 1-18 spent the most effort
+    chasing, now shown to still dominate in this specific (MAIN-thread,
+    per-frame-loop) calling context even after the worker-thread-side TEB
+    fix (Finding 15/16). ---
+
+    Instrumented loc_8244AFD8's loop directly (private/ppc/
+    ppc_recomp.57.cpp): an iteration counter plus real wall-clock timestamps
+    bracketing each of the loop's three real callees (sub_8244AE70,
+    sub_824AAFF0, sub_82451408), accumulated as per-segment sums over
+    50-iteration windows and printed once per window (source-level,
+    inlining-proof, reverted after capture -- this session's proven
+    technique). Ran for a real 120s using the reliable single-script method.
+
+    Real measured result, two full windows:
+      - Window 1 (iters 1-50): 32955ms total, 659ms/iter avg.
+        AE70=28000ms (85.0%), AAFF0=4815ms (14.6%), 82451408=1192ms (3.6%).
+      - Window 2 (iters 51-100): 40601ms total, 812ms/iter avg.
+        AE70=33207ms (81.8%), AAFF0=5511ms (13.6%), 82451408=901ms (2.2%).
+
+    This directly and decisively overturns Finding 67's own reasoning
+    ("AE70 is fast and well-understood... the real per-iteration cost...
+    almost certainly comes from sub_824AAFF0's descendants"). That guess
+    was wrong -- real measurement beats inference every time, exactly the
+    lesson this whole investigation has repeatedly demonstrated. AE70 costs
+    ~560-660ms PER CALL on average in this specific context, not the
+    "fast, real submission" characterization it's carried since Findings
+    6/13-15 (those findings characterized field4/field12's WORKER-thread
+    side at boot time; this measurement is the MAIN thread's own repeated
+    per-frame calls into the same function, a different calling context
+    never directly timed before).
+
+    sub_8244AE70's own body was fully decoded back in Finding 6: calls
+    sub_8212EC78(); if it returns 0, loops calling sub_8212EAF0(8) (the
+    ~9.6M-calls/sec busy-spin tick accumulator) and checking field12,
+    calling sub_82128F58() again each pass. Given AE70 is still costing
+    hundreds of milliseconds per call on the MAIN thread specifically, this
+    strongly suggests the SAME busy-spin mechanism Findings 1-18 spent the
+    most effort chasing (and only partially fixed -- Finding 15/16 fixed
+    the WORKER threads' own deadlock, not necessarily whatever the MAIN
+    thread's calls into this shared machinery are waiting on) is still the
+    real, dominant, unresolved cost driving the ~72 bytes/sec pacing
+    (Finding 66) behind the ~131068-byte ceiling -- not a GPU-dispatch
+    delay as Finding 67 guessed.
+
+    Status: this is the strongest, most concrete lead this investigation
+    has produced in this session -- real, measured, decisive, and it
+    reopens exactly the mechanism this project's own history (Findings
+    6-18) already deeply understands the STRUCTURE of, just not why it's
+    still slow in the MAIN thread's calling context post-Finding-16. Next
+    concrete step for a future pass: instrument sub_8212EC78's real
+    exit-condition checks (field4, field12, sub_82128F58's return value)
+    specifically during a MAIN-thread call to sub_8244AE70 (not a worker
+    thread's sub_8212B210 loop) using the same proven live-instrumentation
+    technique, to find out precisely what within that ~560-660ms window
+    the MAIN thread is actually waiting on this time.
