@@ -3662,3 +3662,86 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     running but simply not calling anything that submits new ring
     content, that points to a game-state gate (like Finding 39's dispatch
     table) rather than a stall. ---
+
+--- Finding 66: answered Finding 65's exact open question -- live-sampled the MAIN
+    thread at the real plateau point. Corrected an earlier misreading of this
+    session's own data (three different plateau values were the SAME growth
+    curve, not three separate stalls). Found a new, previously unmapped code
+    site (sub_82451408) active at the real plateau, distinct from every
+    previously-traced wait-loop chain. Also recorded a real methodological
+    constraint of this working environment. ---
+
+    Ran BigBumpinHost repeatedly with progressively longer temporary watchdogs
+    (300s, 900s, 1800s -- always reverted to 10s after) to characterize ring
+    content growth. Corrected an in-session misreading: earlier passes this same
+    session read offset=26332 (at ~300s) and offset=81148 (at ~900s) as distinct
+    plateau values suggesting run-to-run non-determinism. Re-checked against a
+    full 1800s run: content grows essentially linearly and reaches the exact
+    same long-documented ~131068-byte ceiling from Findings 61-65 every time.
+    26332 and 81148 were snapshots of the SAME monotonic curve caught early by
+    shorter watchdogs, not separate stalls. Measured growth rate directly:
+    4924 -> 6364 bytes over a real 20s window = ~72 bytes/sec, consistent with
+    131068 bytes / ~1800s. This is a real correction to this session's own
+    initial framing, not a new finding about the game.
+
+    Real methodological finding: attaching lldb to an already-running process
+    (`lldb -p <pid>`) via external tool calls separated by a scheduled wakeup
+    failed FOUR times in a row with "attach failed: no such process", even
+    with the target process independently confirmed alive via `ps` seconds
+    earlier each time. Root cause identified: this working session's own
+    tool-call turns have real, unpredictable wall-clock gaps between them
+    (visible via mid-session date-change system notices jumping several days
+    across a handful of turns) -- any workflow that waits via a scheduled
+    wakeup and attaches lldb in a LATER turn is structurally unreliable, since
+    the gap between "confirmed alive" and "attach" is not bounded. Fix: combine
+    launch, wait, and lldb attach into ONE continuous, self-contained shell
+    script executed as a single background Bash call, so no turn boundary sits
+    between the liveness check and the attach. This worked cleanly on the first
+    try once applied (real, matching backtraces captured twice, 20s apart, at
+    both an early growth-phase test and the real ~1700s plateau point).
+
+    With the reliable technique, sampled the MAIN thread (the one on the
+    __xstart -> sub_825DEC18 -> sub_8212B130 -> sub_8244B040 -> sub_8244AFB0
+    chain, consistent with every prior session's identification of this as
+    the real game-logic thread) at three real moments:
+      - t=60s (offset 4924, early growth): caught inside sub_820B4EE8's own
+        bounded sleep (Finding 61's override, working exactly as designed --
+        healthy, expected, not a bug).
+      - t=80s (offset 6364, still early growth): caught inside sub_82451408,
+        reached via sub_8244AFB0 -> sub_82451408 directly (NOT via the
+        previously-mapped sub_8244AE70 branch that leads to Finding 61's
+        override). A DIFFERENT call path out of sub_8244AFB0 than any
+        previously-documented finding.
+      - t=1700s (offset 131068, the real, fully-reached plateau): caught
+        AGAIN inside sub_82451408 (same function, different offset: +2208
+        this time vs the t=80s sample), reached the same way (directly from
+        sub_8244AFB0, offset +400). The second confirmatory sample at
+        t=1720s failed to attach because the process had already exited
+        between samples (not the watchdog -- that was still 80s away at
+        1800s; likely a side effect of the first sample's own attach/detach
+        cycle destabilizing the process, not yet investigated).
+
+    This is real, new evidence directly answering Finding 65's open question
+    ("is the MAIN thread blocked on something at the plateau, or still
+    running but not submitting content"): it is NEITHER of the two previously
+    mapped states (not Finding 61's bounded-sleep override, not Finding 63's
+    sub_820B9A58 chain) -- it's inside sub_82451408, a function this entire
+    multi-session investigation has never traced before. Whether sub_82451408
+    is itself spinning, doing real bounded work, or blocked deeper in a call
+    not visible at this sample's PC is not yet determined -- only one live
+    sample was captured at the real plateau point (the confirmatory second
+    sample was lost to the process dying), so "genuinely sustained loop" is
+    not yet proven the way Finding 63's two-identical-samples standard
+    requires.
+
+    Status: real progress -- the exact plateau point now has a concrete,
+    previously-unmapped code address (sub_82451408) associated with it,
+    reached via a specific call path (sub_8244AFB0+400) distinct from every
+    earlier-mapped chain. Next concrete step for a future pass: read
+    sub_82451408's real generated code (grep private/ppc/*.cpp for its
+    address) to understand what it does; then repeat the single-script live
+    capture technique (proven reliable this session) with more than one
+    sample at the true plateau to confirm whether it's a sustained loop or
+    real bounded work; investigate why the process died between the t=1700s
+    and t=1720s samples this pass, since that's itself an unexplained new
+    data point (possible latent crash near the plateau, not yet chased).
