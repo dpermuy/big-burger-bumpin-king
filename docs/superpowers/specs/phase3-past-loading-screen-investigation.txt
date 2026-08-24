@@ -3662,3 +3662,427 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     running but simply not calling anything that submits new ring
     content, that points to a game-state gate (like Finding 39's dispatch
     table) rather than a stall. ---
+
+--- Finding 66: answered Finding 65's exact open question -- live-sampled the MAIN
+    thread at the real plateau point. Corrected an earlier misreading of this
+    session's own data (three different plateau values were the SAME growth
+    curve, not three separate stalls). Found a new, previously unmapped code
+    site (sub_82451408) active at the real plateau, distinct from every
+    previously-traced wait-loop chain. Also recorded a real methodological
+    constraint of this working environment. ---
+
+    Ran BigBumpinHost repeatedly with progressively longer temporary watchdogs
+    (300s, 900s, 1800s -- always reverted to 10s after) to characterize ring
+    content growth. Corrected an in-session misreading: earlier passes this same
+    session read offset=26332 (at ~300s) and offset=81148 (at ~900s) as distinct
+    plateau values suggesting run-to-run non-determinism. Re-checked against a
+    full 1800s run: content grows essentially linearly and reaches the exact
+    same long-documented ~131068-byte ceiling from Findings 61-65 every time.
+    26332 and 81148 were snapshots of the SAME monotonic curve caught early by
+    shorter watchdogs, not separate stalls. Measured growth rate directly:
+    4924 -> 6364 bytes over a real 20s window = ~72 bytes/sec, consistent with
+    131068 bytes / ~1800s. This is a real correction to this session's own
+    initial framing, not a new finding about the game.
+
+    Real methodological finding: attaching lldb to an already-running process
+    (`lldb -p <pid>`) via external tool calls separated by a scheduled wakeup
+    failed FOUR times in a row with "attach failed: no such process", even
+    with the target process independently confirmed alive via `ps` seconds
+    earlier each time. Root cause identified: this working session's own
+    tool-call turns have real, unpredictable wall-clock gaps between them
+    (visible via mid-session date-change system notices jumping several days
+    across a handful of turns) -- any workflow that waits via a scheduled
+    wakeup and attaches lldb in a LATER turn is structurally unreliable, since
+    the gap between "confirmed alive" and "attach" is not bounded. Fix: combine
+    launch, wait, and lldb attach into ONE continuous, self-contained shell
+    script executed as a single background Bash call, so no turn boundary sits
+    between the liveness check and the attach. This worked cleanly on the first
+    try once applied (real, matching backtraces captured twice, 20s apart, at
+    both an early growth-phase test and the real ~1700s plateau point).
+
+    With the reliable technique, sampled the MAIN thread (the one on the
+    __xstart -> sub_825DEC18 -> sub_8212B130 -> sub_8244B040 -> sub_8244AFB0
+    chain, consistent with every prior session's identification of this as
+    the real game-logic thread) at three real moments:
+      - t=60s (offset 4924, early growth): caught inside sub_820B4EE8's own
+        bounded sleep (Finding 61's override, working exactly as designed --
+        healthy, expected, not a bug).
+      - t=80s (offset 6364, still early growth): caught inside sub_82451408,
+        reached via sub_8244AFB0 -> sub_82451408 directly (NOT via the
+        previously-mapped sub_8244AE70 branch that leads to Finding 61's
+        override). A DIFFERENT call path out of sub_8244AFB0 than any
+        previously-documented finding.
+      - t=1700s (offset 131068, the real, fully-reached plateau): caught
+        AGAIN inside sub_82451408 (same function, different offset: +2208
+        this time vs the t=80s sample), reached the same way (directly from
+        sub_8244AFB0, offset +400). The second confirmatory sample at
+        t=1720s failed to attach because the process had already exited
+        between samples (not the watchdog -- that was still 80s away at
+        1800s; likely a side effect of the first sample's own attach/detach
+        cycle destabilizing the process, not yet investigated).
+
+    This is real, new evidence directly answering Finding 65's open question
+    ("is the MAIN thread blocked on something at the plateau, or still
+    running but not submitting content"): it is NEITHER of the two previously
+    mapped states (not Finding 61's bounded-sleep override, not Finding 63's
+    sub_820B9A58 chain) -- it's inside sub_82451408, a function this entire
+    multi-session investigation has never traced before. Whether sub_82451408
+    is itself spinning, doing real bounded work, or blocked deeper in a call
+    not visible at this sample's PC is not yet determined -- only one live
+    sample was captured at the real plateau point (the confirmatory second
+    sample was lost to the process dying), so "genuinely sustained loop" is
+    not yet proven the way Finding 63's two-identical-samples standard
+    requires.
+
+    Status: real progress -- the exact plateau point now has a concrete,
+    previously-unmapped code address (sub_82451408) associated with it,
+    reached via a specific call path (sub_8244AFB0+400) distinct from every
+    earlier-mapped chain. Next concrete step for a future pass: read
+    sub_82451408's real generated code (grep private/ppc/*.cpp for its
+    address) to understand what it does; then repeat the single-script live
+    capture technique (proven reliable this session) with more than one
+    sample at the true plateau to confirm whether it's a sustained loop or
+    real bounded work; investigate why the process died between the t=1700s
+    and t=1720s samples this pass, since that's itself an unexplained new
+    data point (possible latent crash near the plateau, not yet chased).
+
+--- Finding 67: found the real outer loop sub_82451408 lives inside, and got
+    a decisive NEGATIVE result on whether its anomaly flag ever fires -- it
+    doesn't, because a precondition it depends on is permanently false. This
+    rules out sub_82451408 as the actual blocker; the real per-iteration
+    cost is elsewhere in the same loop's other two calls. ---
+
+    Read sub_8244AFB0's real generated code in full (private/ppc/
+    ppc_recomp.57.cpp:1850-1934). It has its own real loop (loc_8244AFD8),
+    previously unidentified as a loop in this investigation. Each pass:
+      1. calls sub_8244AE70 (the known wait/queue-check function, Findings
+         2/6/13/14/15)
+      2. calls sub_8244DC40(fixedAddr, type=3) then sub_824AAFF0 with four
+         loaded fields -- this IS Finding 19/20's exact chain
+         (sub_8244AFB0 -> sub_824AAFF0 -> sub_824A76D0 -> sub_820CCA68 ->
+         sub_820B5BC8 -> sub_820B9A58), now confirmed to be called from
+         INSIDE this loop, once per iteration, not a one-off
+      3. calls sub_82451408 (Finding 66's timing/anomaly function)
+      4. re-reads a flag at kernelbase+136 and loops back to step 1 only if
+         it's still 0
+
+    kernelbase+136 is set to 1 exclusively by sub_82451408's own tail logic
+    (private/ppc/ppc_recomp.58.cpp:4924-4927), gated behind a two-part
+    condition: a count field at [kernelbase-derived-struct+76] must be
+    nonzero, AND an accumulated-average value must exceed a threshold
+    derived from that count. This reads as a genuine, intentional "if
+    real per-iteration time is anomalously high, break the loop and
+    presumably trigger recovery/error handling" escape valve -- the same
+    design pattern already seen in Finding 52's no-GPU failover flag and
+    Finding 64's hang-notify callback.
+
+    Live-tested directly (source-level instrumentation at the exact flag-
+    set site and at the comparison just before it, both inlining-proof per
+    this session's established technique, reverted after capture): added
+    two temporary prints -- one firing whenever the flag-set branch is
+    taken, one firing every 200th call at the comparison point regardless
+    of outcome. Ran two real tests: a 130s run using the reliable single-
+    script technique (Finding 66), well past the point where earlier
+    samples (t=60-80s) already found execution deep inside this exact
+    loop. RESULT: zero hits on either print, the entire run. This is a
+    decisive negative result, not inconclusive -- the comparison print
+    would have fired constantly (every 200th call of a tight loop over
+    130s) if the count-field guard were ever satisfied, and it never was.
+
+    Conclusion: the count field this function depends on ([+76] off the
+    same struct) is permanently 0 in this project's real execution,
+    meaning the ENTIRE averaging/threshold/anomaly-detection half of
+    sub_82451408 is dead code on this project's actual execution path --
+    never reached, not once, regardless of how long the loop has been
+    spinning. sub_82451408 itself is NOT the blocker and its anomaly
+    escape valve can never fire as currently populated. Finding 66's lldb
+    samples caught the PC there simply because it's called on every single
+    pass of a loop that's been spinning for 1700+ seconds -- sheer call
+    volume, not a stuck/expensive computation (consistent with this
+    session's own earlier-learned lesson, Finding 2: a sampled PC location
+    tells you WHERE code was running at an instant, not that it's stuck
+    there).
+
+    This closes off the sub_82451408 lead cleanly and redirects the real
+    next step back to the loop's OTHER two calls: sub_8244AE70 (already
+    well-understood, fast, real submission via Finding 6/13/14/15) and
+    sub_824AAFF0 (the real Finding 19/20/61/63 chain, the one that reaches
+    the 50ms-bounded overrides). Given AE70 is fast and 82451408 is fast
+    (confirmed no work happens once count stays 0), the loop's real
+    per-iteration wall-clock cost -- and therefore the real pacing behind
+    the ~72 bytes/sec ring growth rate measured in Finding 66 -- almost
+    certainly comes from sub_824AAFF0's descendants, i.e. Finding 61/63's
+    own 50ms bounded waits firing on essentially every iteration. That
+    would mean the ~131068-byte ceiling isn't really "content production
+    halting" in the sense Finding 65 originally framed it -- it may be
+    real, correctly-bounded, but PACED work (bounded waits firing
+    repeatedly because their real underlying condition never resolves,
+    per Finding 64's still-open "nothing writes self+10768+0 through the
+    game's normal path" question) rather than a dead stop. Next concrete
+    step for a future pass: instrument iteration count and real elapsed
+    time of loc_8244AFD8's own loop body directly (a simple counter plus
+    timestamp at loop-top, same proven technique) to confirm this loop
+    really is the pacing source and get a real per-iteration timing
+    breakdown across its three callees, rather than inferring it
+    indirectly as done here. Also still open from Finding 66: what
+    kernelbase+136 field's counterpart writer (something that should set
+    the [+76] count field nonzero) is supposed to be -- that's the actual
+    root gap behind this dead anomaly-detection path, though not
+    necessarily on the critical path to the real blocker per the
+    redirection above.
+
+--- Finding 68: measured sub_8244AFB0's real per-iteration timing directly --
+    decisive, clean data that OVERTURNS Finding 67's own redirection.
+    sub_8244AE70 (not sub_824AAFF0) dominates real wall-clock time, ~82-85%
+    of every iteration -- pointing this investigation's real next lead back
+    at the exact busy-spin mechanism Findings 1-18 spent the most effort
+    chasing, now shown to still dominate in this specific (MAIN-thread,
+    per-frame-loop) calling context even after the worker-thread-side TEB
+    fix (Finding 15/16). ---
+
+    Instrumented loc_8244AFD8's loop directly (private/ppc/
+    ppc_recomp.57.cpp): an iteration counter plus real wall-clock timestamps
+    bracketing each of the loop's three real callees (sub_8244AE70,
+    sub_824AAFF0, sub_82451408), accumulated as per-segment sums over
+    50-iteration windows and printed once per window (source-level,
+    inlining-proof, reverted after capture -- this session's proven
+    technique). Ran for a real 120s using the reliable single-script method.
+
+    Real measured result, two full windows:
+      - Window 1 (iters 1-50): 32955ms total, 659ms/iter avg.
+        AE70=28000ms (85.0%), AAFF0=4815ms (14.6%), 82451408=1192ms (3.6%).
+      - Window 2 (iters 51-100): 40601ms total, 812ms/iter avg.
+        AE70=33207ms (81.8%), AAFF0=5511ms (13.6%), 82451408=901ms (2.2%).
+
+    This directly and decisively overturns Finding 67's own reasoning
+    ("AE70 is fast and well-understood... the real per-iteration cost...
+    almost certainly comes from sub_824AAFF0's descendants"). That guess
+    was wrong -- real measurement beats inference every time, exactly the
+    lesson this whole investigation has repeatedly demonstrated. AE70 costs
+    ~560-660ms PER CALL on average in this specific context, not the
+    "fast, real submission" characterization it's carried since Findings
+    6/13-15 (those findings characterized field4/field12's WORKER-thread
+    side at boot time; this measurement is the MAIN thread's own repeated
+    per-frame calls into the same function, a different calling context
+    never directly timed before).
+
+    sub_8244AE70's own body was fully decoded back in Finding 6: calls
+    sub_8212EC78(); if it returns 0, loops calling sub_8212EAF0(8) (the
+    ~9.6M-calls/sec busy-spin tick accumulator) and checking field12,
+    calling sub_82128F58() again each pass. Given AE70 is still costing
+    hundreds of milliseconds per call on the MAIN thread specifically, this
+    strongly suggests the SAME busy-spin mechanism Findings 1-18 spent the
+    most effort chasing (and only partially fixed -- Finding 15/16 fixed
+    the WORKER threads' own deadlock, not necessarily whatever the MAIN
+    thread's calls into this shared machinery are waiting on) is still the
+    real, dominant, unresolved cost driving the ~72 bytes/sec pacing
+    (Finding 66) behind the ~131068-byte ceiling -- not a GPU-dispatch
+    delay as Finding 67 guessed.
+
+    Status: this is the strongest, most concrete lead this investigation
+    has produced in this session -- real, measured, decisive, and it
+    reopens exactly the mechanism this project's own history (Findings
+    6-18) already deeply understands the STRUCTURE of, just not why it's
+    still slow in the MAIN thread's calling context post-Finding-16. Next
+    concrete step for a future pass: instrument sub_8212EC78's real
+    exit-condition checks (field4, field12, sub_82128F58's return value)
+    specifically during a MAIN-thread call to sub_8244AE70 (not a worker
+    thread's sub_8212B210 loop) using the same proven live-instrumentation
+    technique, to find out precisely what within that ~560-660ms window
+    the MAIN thread is actually waiting on this time.
+
+--- Finding 69: AE70's own retry loop is NOT the cost; sub_82461D28 is --
+    (WATCH68b negative result, WATCH68c pinpoint) ---
+
+    Finding 68 pointed back at sub_8244AE70 as the real dominant cost, and
+    speculated it was the same sub_8212EC78/field4/field12 busy-spin
+    machinery from Findings 1-18. Two follow-up instrumentation passes
+    tested this directly.
+
+    WATCH68b (retry-loop hit counter): instrumented AE70's own internal
+    retry loop (loc_8244AF60, the one calling sub_8212EC78 then re-checking
+    sub_82128EB0's low16 result -- this is a DIFFERENT, later-decoded loop
+    than the sub_8212EC78/sub_8212EAF0 pair Finding 6 originally described;
+    AE70's real body, fully read this session, is: sequential calls to
+    sub_824584C8, sub_82461D28, sub_824A4BC8, conditionally sub_8212C4B8,
+    sub_82460518, sub_8245D2E8, sub_82467478, conditionally sub_8212D368,
+    conditionally sub_825F8C80, then sub_82128EB0 -- only entering the
+    retry loop if THAT call's low16 result is zero). Ran 90s live: the
+    retry loop was entered ZERO times. Decisive negative result -- AE70's
+    own busy-spin/retry path is dead code on this project's real execution
+    path in this context. Finding 68's "same busy-spin machinery" guess
+    was wrong.
+
+    WATCH68c (full per-callee timing breakdown inside AE70): wrapped every
+    one of AE70's ~10 sequential callees in real wall-clock timers, printed
+    once per call. Ran live and captured the breakdown directly. Result:
+    sub_82461D28 alone accounts for the overwhelming majority of AE70's
+    per-call cost (~901ms out of AE70's ~901-950ms total per call once
+    the cost "locks in" -- see below); every other callee in the sequence
+    (824584C8, 824A4BC8, 8212C4B8, 82460518, 8245D2E8, 82467478, 8212D368,
+    825F8C80, 82128EB0_first) is consistently fast (low single-digit ms
+    or less).
+
+    Notable secondary observation, not yet explained, worth a future pass:
+    the first ~24 calls to AE70 in a run are ALL fast (sub-ms range for
+    sub_82461D28 specifically); the cost then locks in at ~901ms/call
+    starting around call #25 and stays there for the rest of the run. This
+    looks like a real state transition inside whatever sub_82461D28 (or
+    something it depends on) is doing -- not simply "always slow" and not
+    a warm-up artifact that fades. Flagged for a future pass; not
+    investigated further this session.
+
+    Conclusion: the real, dominant, unexplained cost is inside
+    sub_82461D28, not AE70's own retry logic and not the historical
+    Findings 1-18 busy-spin path. Investigation redirected there.
+
+--- Finding 70: narrowing inside sub_82461D28 -- indirect dispatches ruled
+    out, loop-vs-tail split points at the tail ---
+
+    sub_82461D28's real body was read in full this session (private/ppc/
+    ppc_recomp.59.cpp): a per-item loop over up to 3 items (loc_82461D84
+    through loc_82461F38, back-edge on r24 < item_count), each iteration
+    reading a byte "layer" tag and branching into ONE of two
+    PPC_CALL_INDIRECT_FUNC (vtable-style) dispatch sites depending on the
+    tag/condition -- one for "case 0" (vtable+32), one shared by "cases
+    1-4" (vtable+16/20/24/28). After the loop, a tail region (starting at
+    loc_82461F38) with two possible exit paths: one via sub_82406A88 then
+    conditionally sub_824A6F78 -> sub_82497E10 -> sub_824998B8 ->
+    conditionally sub_8245BAC0 (returns); the other via conditionally
+    sub_8244DF88 -> sub_8244DD08 -> sub_82457EF0 (returns).
+
+    WATCH69 (indirect-call timing): wrapped BOTH PPC_CALL_INDIRECT_FUNC
+    sites individually with real wall-clock timers (>10ms threshold to
+    print). Ran live: NEITHER indirect call individually exceeded 10ms,
+    across the run's full duration including calls made after the ~901ms
+    lock-in point. Decisive negative result -- narrows away from the
+    natural first guess (an indirect/vtable call not returning promptly,
+    e.g. blocking on a GPU fence) as the cost's location. The per-item
+    loop's own dispatch targets are not where the time goes.
+
+    WATCH70 (loop-vs-tail split): timestamped AE70's call into
+    sub_82461D28 at function entry, then printed elapsed time on reaching
+    loc_82461F38 (i.e. the moment the per-item loop exits and the tail
+    begins), threshold >10ms. Result: ~350ms is spent reaching
+    loc_82461F38 (the loop itself, across its non-indirect/direct calls:
+    sub_824A5AD0, sub_8251EE58, sub_820A74A8, sub_82460D38, sub_82406A88
+    [loop instance], sub_824AA698 -- none of which are individually
+    instrumented yet), and since WATCH68c measured the whole call at
+    ~901ms, the remaining ~550ms majority is in the TAIL region (after
+    the loop, before either of the two return points).
+
+    Status: cost is narrowed to two candidate regions, weighted toward
+    the tail (~550ms, larger share) but the loop's own direct calls
+    (~350ms) are not yet individually ruled out either. Neither region's
+    individual calls have been instrumented yet. Concrete next step for a
+    future pass: instrument the tail's direct calls specifically first
+    (sub_82406A88 [tail instance], sub_824A6F78, sub_82497E10,
+    sub_824998B8, sub_8245BAC0 on one exit path; sub_8244DF88,
+    sub_8244DD08, sub_82457EF0 on the other) using the same per-call
+    wall-clock timing technique, since the tail carries the larger (~550ms)
+    share of the unexplained cost. If the tail comes back clean, fall back
+    to instrumenting the loop's six direct calls individually next.
+
+    All WATCH68b/68c/69/70 instrumentation reverted after capture (per
+    this session's standing practice); host/main.cpp's watchdog reset to
+    the committed baseline (10s); confirmed clean rebuild
+    (cmake --build build --target BigBumpinHost) after all reverts, single
+    harmless -Wasm-operand-widths warning only, no new warnings/errors.
+
+--- Finding 71: root cause found -- the whole per-call cost is N x 50ms hits
+    on Finding 61/63's OWN bounded-wait escape valves, called far more often
+    than either finding assumed ---
+
+    Continued narrowing sub_82461D28's ~550ms tail directly. Instrumented
+    all 8 of the tail's direct calls (sub_82406A88, sub_824A6F78,
+    sub_82497E10, sub_824998B8, sub_8245BAC0, sub_8244DF88, sub_8244DD08,
+    sub_82457EF0) with per-call wall-clock timers. Result: only
+    sub_824998B8 crosses the threshold, consistently ~550-551ms per call --
+    the entire tail cost is inside this one function.
+
+    Read sub_824998B8's real body (private/ppc/ppc_recomp.65.cpp) and
+    instrumented its own 7 call sites (sub_820CD7D8 x2, sub_820CD158 x2,
+    sub_820CBA50 x3). Result: sub_820CBA50 costs ~50ms per call (8 calls/
+    invocation across its two loop sites = ~400ms) and sub_820CD7D8 costs
+    ~150ms per call (1 call/invocation) -- 400+150=550ms, fully accounted
+    for.
+
+    Read sub_820CBA50's real body (private/ppc/ppc_recomp.6.cpp, a ~1950-
+    line function) and instrumented its two most-frequently-called direct
+    callees, sub_820B6220 (8 call sites in the function) and sub_820BA928
+    (6 call sites). Result: sub_820B6220 alone is the ~50ms cost;
+    sub_820BA928 never crosses even a 5ms threshold.
+
+    Read sub_820B6220's real body (private/ppc/ppc_recomp.4.cpp) and
+    instrumented its 5 direct callees. Result: TWO calls split the ~50ms
+    cost roughly in half -- sub_820B5890 (~50ms) and sub_820B55C8 (~50ms)
+    -- wait, both individually cost ~50ms (not half each), meaning
+    sub_820B6220's real total per-call cost in this state is actually
+    ~100ms (50+50), not 50ms; the earlier sub_820CBA50-level measurement
+    of "~50ms per sub_820B6220 call" was an average across calls that hit
+    zero, one, or both of these paths depending on control flow, not a
+    fixed per-call constant -- consistent with the two callees having a
+    shared root cause rather than one being "the" cost.
+
+    That shared root cause: both sub_820B5890 and sub_820B55C8 bottom out
+    in host-level overrides already present in host/game_overrides.cpp
+    from Findings 61 and 63 (an EARLIER session's work, not this one):
+    sub_820B4EE8 and sub_820B5BC8. Both are intentional, host-timed
+    bounded-wait escape valves for a PPC-level deadlock class Findings
+    56-63 already fully diagnosed: a progress fence the waiting code
+    depends on is never advanced by anything this project implements, so
+    the real (guest) busy-wait can never legitimately exit. Both overrides
+    cap the wait at a hardcoded `constexpr auto kMaxWait =
+    std::chrono::milliseconds(50)` (game_overrides.cpp:55 and :146) before
+    giving up and returning anyway, polling every 100 microseconds via
+    std::this_thread::sleep_for while waiting.
+
+    THE KEY NEW FACT this session's measurement adds: Finding 61/63's own
+    comments describe the deadlock as a specific, presumably uncommon
+    class of stall ("every real (non-stuck) case resolves within this
+    wait almost immediately") -- but Findings 68-71 together now prove
+    this bounded-wait path is being hit CONSTANTLY, many times per single
+    sub_8244AE70 call (which itself runs once per MAIN-thread frame-loop
+    iteration), each hit unconditionally burning the full 50ms timeout
+    because the fence genuinely never advances during this phase (exactly
+    as Finding 63 already suspected in general, just not knowing how often
+    it would actually apply in practice). This is not a rare edge case
+    being correctly bounded -- it is the permanent, constant steady state
+    for this entire post-Finding-61/63 code path during the "past loading
+    screen" phase, and the 50ms constant is now effectively the primary
+    knob controlling the whole investigation's ~72 bytes/sec pacing
+    (Finding 66) and the resulting ~131068-byte plateau.
+
+    This closes the loop from Finding 68 all the way down to two exact,
+    already-identified, already-host-level (not PPC-recomp) functions:
+    sub_820B4EE8 (host/game_overrides.cpp:40-76) and sub_820B5BC8
+    (host/game_overrides.cpp:111-156).
+
+    Not yet done: no fix has been applied. This finding only completes
+    the diagnosis. Two candidate directions for a future pass, both
+    consistent with Finding 61/63's own reasoning ("current is confirmed
+    to never legitimately advance on its own regardless of how long
+    anything waits" -- meaning the wait has never once, across this whole
+    investigation's live measurements, actually observed the fence
+    advance before timing out):
+      1. Shrink kMaxWait substantially (both sites) -- since Finding 63's
+         own text already argues waiting never helps in the confirmed-
+         permanent-deadlock case, a much shorter bound (or none) would
+         directly cut the ~50ms-per-hit tax without changing behavior for
+         any case that actually would have succeeded (none have been
+         observed to).
+      2. Detect the permanent-deadlock precondition up front (the same
+         condition already described in each override's own comments) and
+         return immediately without entering the wait loop at all, rather
+         than tuning the timeout duration.
+      Either change touches only host/game_overrides.cpp (not gitignored
+      private/ instrumentation) and would be a real, user-facing behavior
+      change to already-reasoned-about code from a prior session -- flagged
+      for explicit confirmation before implementing, not applied in this
+      pass.
+
+    All WATCH71-74 instrumentation (private/ppc/ppc_recomp.59.cpp,
+    ppc_recomp.65.cpp, ppc_recomp.6.cpp, ppc_recomp.4.cpp) reverted after
+    capture; host/main.cpp watchdog reset to the committed baseline (10s);
+    confirmed clean rebuild, single harmless -Wasm-operand-widths warning
+    only, no new warnings/errors.
