@@ -3988,3 +3988,101 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     the committed baseline (10s); confirmed clean rebuild
     (cmake --build build --target BigBumpinHost) after all reverts, single
     harmless -Wasm-operand-widths warning only, no new warnings/errors.
+
+--- Finding 71: root cause found -- the whole per-call cost is N x 50ms hits
+    on Finding 61/63's OWN bounded-wait escape valves, called far more often
+    than either finding assumed ---
+
+    Continued narrowing sub_82461D28's ~550ms tail directly. Instrumented
+    all 8 of the tail's direct calls (sub_82406A88, sub_824A6F78,
+    sub_82497E10, sub_824998B8, sub_8245BAC0, sub_8244DF88, sub_8244DD08,
+    sub_82457EF0) with per-call wall-clock timers. Result: only
+    sub_824998B8 crosses the threshold, consistently ~550-551ms per call --
+    the entire tail cost is inside this one function.
+
+    Read sub_824998B8's real body (private/ppc/ppc_recomp.65.cpp) and
+    instrumented its own 7 call sites (sub_820CD7D8 x2, sub_820CD158 x2,
+    sub_820CBA50 x3). Result: sub_820CBA50 costs ~50ms per call (8 calls/
+    invocation across its two loop sites = ~400ms) and sub_820CD7D8 costs
+    ~150ms per call (1 call/invocation) -- 400+150=550ms, fully accounted
+    for.
+
+    Read sub_820CBA50's real body (private/ppc/ppc_recomp.6.cpp, a ~1950-
+    line function) and instrumented its two most-frequently-called direct
+    callees, sub_820B6220 (8 call sites in the function) and sub_820BA928
+    (6 call sites). Result: sub_820B6220 alone is the ~50ms cost;
+    sub_820BA928 never crosses even a 5ms threshold.
+
+    Read sub_820B6220's real body (private/ppc/ppc_recomp.4.cpp) and
+    instrumented its 5 direct callees. Result: TWO calls split the ~50ms
+    cost roughly in half -- sub_820B5890 (~50ms) and sub_820B55C8 (~50ms)
+    -- wait, both individually cost ~50ms (not half each), meaning
+    sub_820B6220's real total per-call cost in this state is actually
+    ~100ms (50+50), not 50ms; the earlier sub_820CBA50-level measurement
+    of "~50ms per sub_820B6220 call" was an average across calls that hit
+    zero, one, or both of these paths depending on control flow, not a
+    fixed per-call constant -- consistent with the two callees having a
+    shared root cause rather than one being "the" cost.
+
+    That shared root cause: both sub_820B5890 and sub_820B55C8 bottom out
+    in host-level overrides already present in host/game_overrides.cpp
+    from Findings 61 and 63 (an EARLIER session's work, not this one):
+    sub_820B4EE8 and sub_820B5BC8. Both are intentional, host-timed
+    bounded-wait escape valves for a PPC-level deadlock class Findings
+    56-63 already fully diagnosed: a progress fence the waiting code
+    depends on is never advanced by anything this project implements, so
+    the real (guest) busy-wait can never legitimately exit. Both overrides
+    cap the wait at a hardcoded `constexpr auto kMaxWait =
+    std::chrono::milliseconds(50)` (game_overrides.cpp:55 and :146) before
+    giving up and returning anyway, polling every 100 microseconds via
+    std::this_thread::sleep_for while waiting.
+
+    THE KEY NEW FACT this session's measurement adds: Finding 61/63's own
+    comments describe the deadlock as a specific, presumably uncommon
+    class of stall ("every real (non-stuck) case resolves within this
+    wait almost immediately") -- but Findings 68-71 together now prove
+    this bounded-wait path is being hit CONSTANTLY, many times per single
+    sub_8244AE70 call (which itself runs once per MAIN-thread frame-loop
+    iteration), each hit unconditionally burning the full 50ms timeout
+    because the fence genuinely never advances during this phase (exactly
+    as Finding 63 already suspected in general, just not knowing how often
+    it would actually apply in practice). This is not a rare edge case
+    being correctly bounded -- it is the permanent, constant steady state
+    for this entire post-Finding-61/63 code path during the "past loading
+    screen" phase, and the 50ms constant is now effectively the primary
+    knob controlling the whole investigation's ~72 bytes/sec pacing
+    (Finding 66) and the resulting ~131068-byte plateau.
+
+    This closes the loop from Finding 68 all the way down to two exact,
+    already-identified, already-host-level (not PPC-recomp) functions:
+    sub_820B4EE8 (host/game_overrides.cpp:40-76) and sub_820B5BC8
+    (host/game_overrides.cpp:111-156).
+
+    Not yet done: no fix has been applied. This finding only completes
+    the diagnosis. Two candidate directions for a future pass, both
+    consistent with Finding 61/63's own reasoning ("current is confirmed
+    to never legitimately advance on its own regardless of how long
+    anything waits" -- meaning the wait has never once, across this whole
+    investigation's live measurements, actually observed the fence
+    advance before timing out):
+      1. Shrink kMaxWait substantially (both sites) -- since Finding 63's
+         own text already argues waiting never helps in the confirmed-
+         permanent-deadlock case, a much shorter bound (or none) would
+         directly cut the ~50ms-per-hit tax without changing behavior for
+         any case that actually would have succeeded (none have been
+         observed to).
+      2. Detect the permanent-deadlock precondition up front (the same
+         condition already described in each override's own comments) and
+         return immediately without entering the wait loop at all, rather
+         than tuning the timeout duration.
+      Either change touches only host/game_overrides.cpp (not gitignored
+      private/ instrumentation) and would be a real, user-facing behavior
+      change to already-reasoned-about code from a prior session -- flagged
+      for explicit confirmation before implementing, not applied in this
+      pass.
+
+    All WATCH71-74 instrumentation (private/ppc/ppc_recomp.59.cpp,
+    ppc_recomp.65.cpp, ppc_recomp.6.cpp, ppc_recomp.4.cpp) reverted after
+    capture; host/main.cpp watchdog reset to the committed baseline (10s);
+    confirmed clean rebuild, single harmless -Wasm-operand-widths warning
+    only, no new warnings/errors.
