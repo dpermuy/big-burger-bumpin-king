@@ -3890,3 +3890,101 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     thread's sub_8212B210 loop) using the same proven live-instrumentation
     technique, to find out precisely what within that ~560-660ms window
     the MAIN thread is actually waiting on this time.
+
+--- Finding 69: AE70's own retry loop is NOT the cost; sub_82461D28 is --
+    (WATCH68b negative result, WATCH68c pinpoint) ---
+
+    Finding 68 pointed back at sub_8244AE70 as the real dominant cost, and
+    speculated it was the same sub_8212EC78/field4/field12 busy-spin
+    machinery from Findings 1-18. Two follow-up instrumentation passes
+    tested this directly.
+
+    WATCH68b (retry-loop hit counter): instrumented AE70's own internal
+    retry loop (loc_8244AF60, the one calling sub_8212EC78 then re-checking
+    sub_82128EB0's low16 result -- this is a DIFFERENT, later-decoded loop
+    than the sub_8212EC78/sub_8212EAF0 pair Finding 6 originally described;
+    AE70's real body, fully read this session, is: sequential calls to
+    sub_824584C8, sub_82461D28, sub_824A4BC8, conditionally sub_8212C4B8,
+    sub_82460518, sub_8245D2E8, sub_82467478, conditionally sub_8212D368,
+    conditionally sub_825F8C80, then sub_82128EB0 -- only entering the
+    retry loop if THAT call's low16 result is zero). Ran 90s live: the
+    retry loop was entered ZERO times. Decisive negative result -- AE70's
+    own busy-spin/retry path is dead code on this project's real execution
+    path in this context. Finding 68's "same busy-spin machinery" guess
+    was wrong.
+
+    WATCH68c (full per-callee timing breakdown inside AE70): wrapped every
+    one of AE70's ~10 sequential callees in real wall-clock timers, printed
+    once per call. Ran live and captured the breakdown directly. Result:
+    sub_82461D28 alone accounts for the overwhelming majority of AE70's
+    per-call cost (~901ms out of AE70's ~901-950ms total per call once
+    the cost "locks in" -- see below); every other callee in the sequence
+    (824584C8, 824A4BC8, 8212C4B8, 82460518, 8245D2E8, 82467478, 8212D368,
+    825F8C80, 82128EB0_first) is consistently fast (low single-digit ms
+    or less).
+
+    Notable secondary observation, not yet explained, worth a future pass:
+    the first ~24 calls to AE70 in a run are ALL fast (sub-ms range for
+    sub_82461D28 specifically); the cost then locks in at ~901ms/call
+    starting around call #25 and stays there for the rest of the run. This
+    looks like a real state transition inside whatever sub_82461D28 (or
+    something it depends on) is doing -- not simply "always slow" and not
+    a warm-up artifact that fades. Flagged for a future pass; not
+    investigated further this session.
+
+    Conclusion: the real, dominant, unexplained cost is inside
+    sub_82461D28, not AE70's own retry logic and not the historical
+    Findings 1-18 busy-spin path. Investigation redirected there.
+
+--- Finding 70: narrowing inside sub_82461D28 -- indirect dispatches ruled
+    out, loop-vs-tail split points at the tail ---
+
+    sub_82461D28's real body was read in full this session (private/ppc/
+    ppc_recomp.59.cpp): a per-item loop over up to 3 items (loc_82461D84
+    through loc_82461F38, back-edge on r24 < item_count), each iteration
+    reading a byte "layer" tag and branching into ONE of two
+    PPC_CALL_INDIRECT_FUNC (vtable-style) dispatch sites depending on the
+    tag/condition -- one for "case 0" (vtable+32), one shared by "cases
+    1-4" (vtable+16/20/24/28). After the loop, a tail region (starting at
+    loc_82461F38) with two possible exit paths: one via sub_82406A88 then
+    conditionally sub_824A6F78 -> sub_82497E10 -> sub_824998B8 ->
+    conditionally sub_8245BAC0 (returns); the other via conditionally
+    sub_8244DF88 -> sub_8244DD08 -> sub_82457EF0 (returns).
+
+    WATCH69 (indirect-call timing): wrapped BOTH PPC_CALL_INDIRECT_FUNC
+    sites individually with real wall-clock timers (>10ms threshold to
+    print). Ran live: NEITHER indirect call individually exceeded 10ms,
+    across the run's full duration including calls made after the ~901ms
+    lock-in point. Decisive negative result -- narrows away from the
+    natural first guess (an indirect/vtable call not returning promptly,
+    e.g. blocking on a GPU fence) as the cost's location. The per-item
+    loop's own dispatch targets are not where the time goes.
+
+    WATCH70 (loop-vs-tail split): timestamped AE70's call into
+    sub_82461D28 at function entry, then printed elapsed time on reaching
+    loc_82461F38 (i.e. the moment the per-item loop exits and the tail
+    begins), threshold >10ms. Result: ~350ms is spent reaching
+    loc_82461F38 (the loop itself, across its non-indirect/direct calls:
+    sub_824A5AD0, sub_8251EE58, sub_820A74A8, sub_82460D38, sub_82406A88
+    [loop instance], sub_824AA698 -- none of which are individually
+    instrumented yet), and since WATCH68c measured the whole call at
+    ~901ms, the remaining ~550ms majority is in the TAIL region (after
+    the loop, before either of the two return points).
+
+    Status: cost is narrowed to two candidate regions, weighted toward
+    the tail (~550ms, larger share) but the loop's own direct calls
+    (~350ms) are not yet individually ruled out either. Neither region's
+    individual calls have been instrumented yet. Concrete next step for a
+    future pass: instrument the tail's direct calls specifically first
+    (sub_82406A88 [tail instance], sub_824A6F78, sub_82497E10,
+    sub_824998B8, sub_8245BAC0 on one exit path; sub_8244DF88,
+    sub_8244DD08, sub_82457EF0 on the other) using the same per-call
+    wall-clock timing technique, since the tail carries the larger (~550ms)
+    share of the unexplained cost. If the tail comes back clean, fall back
+    to instrumenting the loop's six direct calls individually next.
+
+    All WATCH68b/68c/69/70 instrumentation reverted after capture (per
+    this session's standing practice); host/main.cpp's watchdog reset to
+    the committed baseline (10s); confirmed clean rebuild
+    (cmake --build build --target BigBumpinHost) after all reverts, single
+    harmless -Wasm-operand-widths warning only, no new warnings/errors.
