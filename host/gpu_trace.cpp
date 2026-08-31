@@ -366,7 +366,20 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
     // since that's where real content actually ends) -- what it changes is a run where the
     // two disagree, which is now visible in gpu_trace.log instead of silently trusting
     // whichever one runs first.
+    //
+    // Finding 68: a wptrBytes < lastParsedOffset_ disagreement is real ring wraparound,
+    // confirmed live -- a 60-minute run reached lastParsedOffset_ = 131068 (the exact
+    // historical plateau from Findings 43/44 onward) while CP_RB_WPTR reported 53732,
+    // i.e. the real write pointer had already wrapped back near the start while this
+    // project's scanner, which only ever treated the ring as a flat buffer capped at
+    // ringBufferSize_, sat stuck 4 bytes from the physical end with nowhere left to go.
+    // Finding 62 looked for wraparound once already and found only stale garbage at
+    // offset 0 -- that was before any real wrap had happened yet (a premature check, not
+    // a disproof); this time the drop in a live-polled hardware register is the
+    // confirmation Finding 62 didn't have.
     uint32_t scanBound = ringBufferSize_;
+    bool wrapPending = false;
+    uint32_t wrapTargetBytes = 0;
     if (wptrObserved_)
     {
         uint64_t wptrBytes = static_cast<uint64_t>(lastWptrDwords_) * 4;
@@ -374,18 +387,44 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
         {
             scanBound = static_cast<uint32_t>(wptrBytes);
         }
-        else if (logFile_ && wptrBytes < lastParsedOffset_)
+        else if (wptrBytes < lastParsedOffset_)
         {
-            // WPTR claims less real content than the heuristic already parsed -- either a
-            // real wraparound (Finding 62 found no live evidence of one yet) or the
-            // heuristic scanned past real submitted data into stale/garbage memory that
-            // happens to look like well-formed packets. Worth a look if this ever fires.
-            fprintf(logFile_, "(WARNING: CP_RB_WPTR=%u bytes is behind already-parsed offset=%u bytes)\n",
-                static_cast<uint32_t>(wptrBytes), lastParsedOffset_);
+            wrapPending = true;
+            wrapTargetBytes = static_cast<uint32_t>(wptrBytes);
+            if (logFile_)
+            {
+                fprintf(logFile_, "(CP_RB_WPTR=%u bytes is behind already-parsed offset=%u bytes -- real "
+                    "wraparound, will finish this frame's tail then resume scanning from offset 0)\n",
+                    wrapTargetBytes, lastParsedOffset_);
+            }
         }
     }
 
+    uint32_t startOffsetThisFrame = lastParsedOffset_;
     uint32_t newOffset = ScanBuffer(ctx, base, ringBufferBase_, lastParsedOffset_, scanBound, 0);
+
+    // Bug (live-caught, same session): originally required newOffset >= scanBound to call
+    // the tail "exhausted", but the zero-byte heuristic stops at the first unwritten dword
+    // -- which is always at or before scanBound, never past it -- so that never actually
+    // fires once scanBound is the ring's physical end (131072) and the real trailing
+    // padding starts 4 bytes earlier (131068). Confirmed live: this hung in an identical
+    // "wraparound pending" loop every single frame, forever, never following the wrap.
+    // The real, correct exhaustion signal is simpler: no new packets were parsed out of
+    // the tail this frame (newOffset == startOffsetThisFrame). Real content still pending
+    // in the tail makes real progress and this naturally won't fire until it's genuinely
+    // used up, same as intended.
+    if (wrapPending && newOffset == startOffsetThisFrame)
+    {
+        // The tail up to the physical end of the ring is exhausted (the normal case --
+        // real hardware doesn't leave a dangling unconsumed tail across a wrap either).
+        // Follow the real write pointer back around to the start, same as any circular
+        // buffer consumer would.
+        if (logFile_)
+        {
+            fprintf(logFile_, "--- wrapped: resuming scan at offset 0 (target %u bytes) ---\n", wrapTargetBytes);
+        }
+        newOffset = ScanBuffer(ctx, base, ringBufferBase_, 0, wrapTargetBytes, 0);
+    }
 
     if (logFile_)
     {

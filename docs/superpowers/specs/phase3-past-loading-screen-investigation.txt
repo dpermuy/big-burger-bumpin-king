@@ -3803,3 +3803,96 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     then attach lldb the moment it reports frozen -- this needs to be
     budgeted as its own dedicated span of session time, not squeezed in
     alongside other work. ---
+
+--- Finding 68: took Finding 67's advice and ran a genuinely long
+    verification (watchdog temporarily extended to 3600s, reverted after
+    -- same precedent as every prior extended run this session). Never
+    got to the lldb step -- attach hung indefinitely (process
+    interrupt never returned any output, debugserver spawned but
+    produced nothing after 20+ real seconds); this environment appears
+    not to have the OS-level permission a debugger needs to attach to
+    another process (task_for_pid). Abandoned that path rather than
+    escalate sandboxing to force it. Didn't matter -- the run's own log
+    already answered the question before any backtrace was needed.
+
+    At t=768.5s the log had already recorded the smoking gun directly:
+    lastParsedOffset_ (this project's own zero-byte-heuristic scan
+    position) reached exactly 131068 bytes -- the long-documented
+    historical plateau from Findings 43/44 onward, reproduced live in
+    this session for the first time with a known mechanism instead of
+    just a repeated number -- while CP_RB_WPTR (the real hardware
+    doorbell, Finding 66) read only 53732 bytes, clearly behind. This is
+    real, confirmed ring wraparound: the actual write pointer had
+    already cycled back near the start of the ring while this project's
+    scanner, which had only ever treated the ring as a flat buffer
+    capped at ringBufferSize_, sat stuck 4 bytes from the physical end
+    with nowhere further to go. Finding 62 checked for wraparound once
+    before and found only stale garbage at offset 0 -- concluded, at the
+    time, that wraparound wasn't the explanation. That check happened
+    before any real wrap had occurred yet (nothing to find); this
+    session's live-polled register drop is the confirmation Finding 62
+    didn't have available.
+
+    Implemented a wrap-follow fix in GpuCommandTracer::ScanAndTraceFrame
+    (host/gpu_trace.cpp): when CP_RB_WPTR reads behind the already-parsed
+    offset, finish scanning whatever real tail remains before the
+    physical end, then resume scanning from offset 0 up to the new
+    (now-behind, post-wrap) WPTR value, same as any circular buffer
+    consumer.
+
+    First attempt had a real bug, caught live rather than assumed
+    correct: it treated the tail as "exhausted" only when the scan
+    reached exactly the ring's physical end (newOffset >= scanBound).
+    The zero-byte heuristic never actually reaches that far -- it always
+    stops 4 bytes short, at the first unwritten trailing dword. Verified
+    live: this hung in an identical "wraparound pending, will resume"
+    log line every single frame, forever, at the same two byte values,
+    never following the wrap -- a real infinite loop introduced by this
+    session's own fix, caught by watching the live log rather than
+    trusting the code. Fixed the exhaustion check to the real correct
+    condition -- no new packets parsed out of the tail this frame
+    (newOffset == the offset the frame started at) -- and re-verified
+    live from scratch.
+
+    The corrected fix worked, twice, live, in the same run: two full
+    ring wraps followed cleanly (grep-countable "wrapped: resuming scan
+    at offset 0" log lines), each followed by real continued forward
+    progress in lockstep with CP_RB_WPTR exactly like Finding 66
+    documented for the pre-wrap region -- no re-freeze at the old
+    131068 plateau on either pass. One transient stall was observed
+    mid-run (offset 76596, a real non-zero but unrecognized packet
+    header -- Type 1/legacy or an opcode this project doesn't decode
+    yet, logged via the existing RAW-dump fallback) that resolved itself
+    within the same run without intervention; flagged, not chased
+    further this session. A 10s default-watchdog regression run after
+    reverting the temporary extension reproduced Finding 66's original
+    baseline exactly (24 CP_RB_WPTR observations, no wrap needed at that
+    short a timescale) -- no regression introduced for the common case.
+
+    This is the first time this investigation has gotten real GPU
+    ring-buffer content production past the ~131000-byte mark under any
+    conditions -- every finding back to 43/44 treated that point as
+    either an unexplained plateau or (Finding 65) a permanent freeze.
+    It was neither: it was this project's own scanner hitting the wall
+    of a flat-buffer assumption against a real circular one. The
+    underlying game logic producing ring content this whole time was
+    never blocked at all in the runs observed this session (Findings 66
+    -68's short/medium runs all showed continuous, if uneven, real
+    forward progress) -- Finding 65's specific 40-minute "current froze
+    permanently at 7307" result remains unexplained and not
+    contradicted by this (different metric -- an EVENT_WRITE_SHD
+    execution count at a separate struct address, not the ring's own
+    byte offset -- and a much longer timescale than anything reproduced
+    here), but the mechanism this session chased down and fixed was real
+    and is now gone as a source of a stall, live-verified twice.
+
+    Status: real, live-verified, twice-reproduced fix, kept. Concrete
+    next step: with the flat-buffer wraparound wall now gone, re-attempt
+    a genuinely long run (approaching Finding 65's original 40-minute
+    timescale) to see how far real content production now gets with
+    this blocker removed -- does it keep wrapping indefinitely in the
+    same small-content loading-screen holding pattern seen this session,
+    or does removing this wall let some later, different gate (a real
+    game-state advance, or a genuinely different stall) show up that
+    was previously unreachable because the scanner itself never got
+    past byte 131068 before. ---
