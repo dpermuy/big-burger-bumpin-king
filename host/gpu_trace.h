@@ -19,6 +19,14 @@ public:
     // keeps happening. addr/size are already known host-side (VdGetSystemCommandBuffer
     // owns this allocation) -- just needs to be scanned the same way as the main ring.
     void RegisterSystemCommandBuffer(uint32_t addr, uint32_t size);
+    // Finding 66: real hardware/Xenia's CP_RB_WPTR MMIO register write is the
+    // authoritative "CPU has produced real content up to here" doorbell -- this
+    // project's GPU register block is untrapped plain memory (host/main.cpp), so a
+    // write can't be intercepted, but the pump thread polls the register's current
+    // value every tick and reports it here. Used to bound ScanAndTraceFrame's main-ring
+    // scan instead of trusting the zero-byte-padding heuristic alone, and logged on
+    // every change as a live cross-check against that heuristic's own derived offset.
+    void ObserveWritePointer(uint32_t dwordIndex);
     void ScanAndTraceFrame(PPCContext& ctx, uint8_t* base);
     bool HasRingBuffer();
     uint32_t GraphicsInterruptCallback();
@@ -61,6 +69,11 @@ private:
     uint32_t systemCmdBufAddr_ = 0;
     uint32_t systemCmdBufSize_ = 0;
     uint32_t systemCmdBufLastOffset_ = 0;
+    // Finding 66: last CP_RB_WPTR value polled from the GPU register block, in dwords
+    // (matches the real hardware register's units, and this project's own newOffset/4
+    // rptr writeback units). wptrObserved_ distinguishes "never written" from a real 0.
+    uint32_t lastWptrDwords_ = 0;
+    bool wptrObserved_ = false;
     FILE* logFile_ = nullptr;
 };
 

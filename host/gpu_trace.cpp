@@ -90,6 +90,34 @@ uint32_t GpuCommandTracer::GraphicsInterruptContext()
     return graphicsInterruptContext_;
 }
 
+void GpuCommandTracer::ObserveWritePointer(uint32_t dwordIndex)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (wptrObserved_ && dwordIndex == lastWptrDwords_)
+    {
+        return; // no change since last poll -- don't spam the log every 1ms tick
+    }
+
+    EnsureLogOpen();
+    if (logFile_)
+    {
+        // Logged unconditionally on every real change, independent of ScanAndTraceFrame's
+        // own frame cadence -- this is the ground truth to diff against
+        // lastParsedOffset_/newOffset in the frame log around it. If CP_RB_WPTR keeps
+        // climbing past the point the zero-byte-padding heuristic stops finding new
+        // content, that's direct evidence the heuristic is the bug, not real production
+        // (Finding 65's open question). If it freezes at the same point the heuristic
+        // does, that's direct evidence production really does stop upstream, exactly as
+        // Finding 65 concluded.
+        fprintf(logFile_, "[CP_RB_WPTR] observed %u -> %u dwords (%u -> %u bytes); heuristic offset currently %u bytes\n",
+            lastWptrDwords_, dwordIndex, lastWptrDwords_ * 4, dwordIndex * 4, lastParsedOffset_);
+        fflush(logFile_);
+    }
+
+    lastWptrDwords_ = dwordIndex;
+    wptrObserved_ = true;
+}
+
 namespace
 {
     // Real IT_OPCODE values for the ATI/AMD R500-family PM4 command format Xenos
@@ -324,7 +352,33 @@ void GpuCommandTracer::ScanAndTraceFrame(PPCContext& ctx, uint8_t* base)
         fprintf(logFile_, "--- frame %u (starting offset %u) ---\n", frameCounter_, lastParsedOffset_);
     }
 
-    uint32_t newOffset = ScanBuffer(ctx, base, ringBufferBase_, lastParsedOffset_, ringBufferSize_, 0);
+    // Finding 66: prefer the real CP_RB_WPTR doorbell (polled by the caller into
+    // ObserveWritePointer) over the full ring size as the scan's upper bound, when it's
+    // available and makes sense as one. This doesn't change what a well-formed run looks
+    // like (the zero-byte heuristic still stops exactly where WPTR says content ends,
+    // since that's where real content actually ends) -- what it changes is a run where the
+    // two disagree, which is now visible in gpu_trace.log instead of silently trusting
+    // whichever one runs first.
+    uint32_t scanBound = ringBufferSize_;
+    if (wptrObserved_)
+    {
+        uint64_t wptrBytes = static_cast<uint64_t>(lastWptrDwords_) * 4;
+        if (wptrBytes >= lastParsedOffset_ && wptrBytes <= ringBufferSize_)
+        {
+            scanBound = static_cast<uint32_t>(wptrBytes);
+        }
+        else if (logFile_ && wptrBytes < lastParsedOffset_)
+        {
+            // WPTR claims less real content than the heuristic already parsed -- either a
+            // real wraparound (Finding 62 found no live evidence of one yet) or the
+            // heuristic scanned past real submitted data into stale/garbage memory that
+            // happens to look like well-formed packets. Worth a look if this ever fires.
+            fprintf(logFile_, "(WARNING: CP_RB_WPTR=%u bytes is behind already-parsed offset=%u bytes)\n",
+                static_cast<uint32_t>(wptrBytes), lastParsedOffset_);
+        }
+    }
+
+    uint32_t newOffset = ScanBuffer(ctx, base, ringBufferBase_, lastParsedOffset_, scanBound, 0);
 
     if (logFile_)
     {

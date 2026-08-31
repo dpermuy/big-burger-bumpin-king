@@ -3662,3 +3662,96 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     running but simply not calling anything that submits new ring
     content, that points to a game-state gate (like Finding 39's dispatch
     table) rather than a stall. ---
+
+--- Finding 66: cross-referenced a real, independent recompilation of a
+    different Xbox 360 title (skate3recomp, github.com/mchughalex/
+    skate3recomp) whose GPU/kernel layer (its rexglue-sdk submodule,
+    github.com/mchughalex/rexglue-skate3) turns out to be Xenia's real
+    GPU command processor repackaged for static recompilation --
+    src/graphics/command_processor.cpp, graphics_system.cpp,
+    src/kernel/xboxkrnl/xboxkrnl_video.cpp. Real, authoritative ground
+    truth, not a guess -- and it exposed a genuine gap in this project's
+    model, not just a documentation nicety.
+
+    The gap: real hardware/Xenia drives ring-buffer consumption off the
+    CPU writing the CP_RB_WPTR MMIO register (graphics_system.cpp:428,
+    register index 0x1C5) -- that write is trapped and calls
+    CommandProcessor::UpdateWritePointer(value), the authoritative
+    "content is valid up to here" signal. This project's entire model
+    (GpuCommandTracer::ScanBuffer) has never known about this register at
+    all -- it only ever guessed the real/unwritten-content boundary by
+    scanning for the first all-zero dword (Finding tracked since the
+    project's earliest GPU work). The GPU MMIO register block at
+    0x7FC80000 (host/main.cpp) is plain, untrapped memory -- the game's
+    writes land there same as any other store, so this project can't
+    intercept the write the way Xenia does, but CAN poll the value.
+
+    Implemented: the GPU pump thread (Finding 57's ~1ms-cadence thread)
+    now polls CP_RB_WPTR every tick (GpuCommandTracer::
+    ObserveWritePointer, host/gpu_trace.cpp/.h) and logs every real
+    change. ScanAndTraceFrame now bounds its main-ring scan by the polled
+    WPTR value (in bytes) instead of unconditionally trusting the full
+    ring size + zero-byte heuristic -- when WPTR is behind the
+    heuristic's own already-parsed offset, that's logged as a WARNING
+    (never observed live yet, but exactly the shape Finding 62's
+    wraparound suspicion would produce if it were ever real).
+
+    Verified live, twice (default 10s watchdog, then a temporary 60s
+    extension per this project's own established verify-then-revert
+    precedent -- reverted after, host/main.cpp's watchdog is back to
+    10s):
+
+      10s run: CP_RB_WPTR climbs in lockstep with the zero-byte
+      heuristic's own derived offset for 26 real observed changes, then
+      both freeze together, permanently, at 379 dwords / 1516 bytes, for
+      the rest of the run (frames 2 through 7925).
+
+      60s run: same lockstep behavior, 164 real observed WPTR changes,
+      freezing together at 1231 dwords / 4924 bytes, for the rest of the
+      run (frames well past 49687).
+
+    In both runs, at every single one of the 190 combined WPTR
+    observations, the heuristic's own "offset currently" value logged
+    alongside the new WPTR value was EXACTLY the previous WPTR value --
+    zero drift, zero disagreement, the whole time. This directly answers
+    part of Finding 65's open question: the zero-byte-padding heuristic
+    is not the bug. It has been tracking the real, hardware-authoritative
+    content boundary with perfect accuracy this whole investigation.
+    When production stops, it's a real stop -- now confirmed by two
+    independent signals (this project's own parser AND the real MMIO
+    register the game itself writes) agreeing exactly, not just one.
+
+    Honest caveat: neither run's freeze point (1516 bytes, then 4924
+    bytes) matches the long-documented ~131000-byte plateau from earlier
+    sessions (Findings 43/44 onward) or Finding 65's 7307-dword/
+    0xB9405000 numbers -- this run's furthest real progress is
+    substantially short of that. Not a contradiction: this investigation
+    has landed several real fixes since those numbers were captured
+    (Findings 55/57/61/63 among them), and the exact point production
+    currently stalls has moved before as a direct result of earlier
+    fixes in this same session. Whatever gate the game is waiting on
+    before producing more ring content is apparently earlier/different
+    right now than the specific 131000-byte-plateau gate previously
+    chased -- worth re-establishing which stall is the current one
+    before continuing Finding 65's "sample the MAIN thread when
+    production stops" plan, now that this fix makes the exact freeze
+    point independently confirmable via CP_RB_WPTR without needing the
+    old scan-heuristic to be trusted at all.
+
+    Also notable, not yet investigated: the system command buffer
+    (Finding 38) had zero real content in either verification run this
+    session ("zero padding at offset 0, stopping" every single frame) --
+    contrasts with earlier findings describing real content there.
+    Possibly run-to-run I/O timing variance, possibly related to
+    whatever's now gating the main ring earlier than before. Flagged,
+    not chased further this session.
+
+    Status: real, live-verified infrastructure improvement (WPTR
+    polling + bound + divergence warning), kept. Confirms Finding 65's
+    diagnosis was correct and rules out the scanner itself as an
+    alternative explanation. Concrete next step: re-run Finding 65's own
+    planned technique (live-sample the MAIN thread with a full backtrace
+    at the moment CP_RB_WPTR's polled value stops changing, which is now
+    directly observable in gpu_trace.log without guessing) against
+    wherever production stalls in the CURRENT build, not the old
+    131000-byte number. ---

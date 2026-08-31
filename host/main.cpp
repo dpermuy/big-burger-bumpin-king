@@ -17,6 +17,22 @@
 
 PPC_EXTERN_FUNC(_xstart);
 
+// GPU MMIO register block base (Xenia/rexglue-confirmed convention: register index r,
+// as used in guest code, maps to byte address kGpuRegisterBase + r*4). File-scope so both
+// SetupMemoryImage (seeding read-only registers) and the pump thread (polling CP_RB_WPTR,
+// Finding 66) can use it.
+constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
+// CP_RB_WPTR (Finding 66): confirmed against real reference (rexglue-skate3/skate3recomp's
+// graphics_system.cpp, itself Xenia's real GPU command processor) -- register index 0x1C5.
+// Real hardware/Xenia traps writes to this MMIO register as the doorbell that tells the GPU
+// how far the CPU has produced real ring-buffer content (CommandProcessor::
+// UpdateWritePointer). This project's GPU register block is untrapped plain memory (see
+// below) -- the CPU's writes land there same as any store, so this project can't intercept
+// the write, but CAN poll the value: it's the same authoritative content boundary the real
+// hardware would have used, instead of this project's own zero-byte-padding heuristic
+// (GpuCommandTracer::ScanBuffer). See gpu_trace.cpp's ObserveWritePointer.
+constexpr uint32_t kCpRbWptrRegAddr = kGpuRegisterBase + 0x1C5 * 4;
+
 static uint8_t* SetupMemoryImage(const char* xexPath)
 {
     void* mem = mmap(nullptr, PPC_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -83,7 +99,6 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     // callback (sub_820B5160, vblank branch) reads it and returns without doing ANY
     // vblank work -- including the swap-completion path that unblocks the whole
     // render pipeline -- unless bit 0 is set. Xenia returns constant 1 here.
-    constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
     PPC_STORE_U32(kGpuRegisterBase + 0x1951 * 4, 1);          // interrupt status: vblank
     PPC_STORE_U32(kGpuRegisterBase + 0x194C * 4, 0x000002D0); // R500_D1MODE_V_COUNTER
     PPC_STORE_U32(kGpuRegisterBase + 0x1961 * 4, 0x050002D0); // AVIVO_D1MODE_VIEWPORT_SIZE (1280x720)
@@ -153,6 +168,9 @@ int main(int argc, char** argv)
         {
             if (g_gpuTracer.HasRingBuffer())
             {
+                // Finding 66: poll the real CP_RB_WPTR doorbell register every tick,
+                // same cadence as the scan itself. See kCpRbWptrRegAddr's comment above.
+                g_gpuTracer.ObserveWritePointer(PPC_LOAD_U32(kCpRbWptrRegAddr));
                 g_gpuTracer.ScanAndTraceFrame(pumpCtx, base);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
