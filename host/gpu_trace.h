@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -74,6 +75,11 @@ private:
     // rptr writeback units). wptrObserved_ distinguishes "never written" from a real 0.
     uint32_t lastWptrDwords_ = 0;
     bool wptrObserved_ = false;
+    // Finding 66 follow-up: wall-clock anchor for [CP_RB_WPTR] log lines, so a frozen
+    // period's real duration is readable directly from gpu_trace.log instead of having to
+    // correlate frame counters against an external clock by hand.
+    std::chrono::steady_clock::time_point startTime_{};
+    bool startTimeSet_ = false;
     FILE* logFile_ = nullptr;
 };
 

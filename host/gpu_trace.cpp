@@ -23,6 +23,11 @@ void GpuCommandTracer::EnsureLogOpen()
     {
         logFile_ = fopen("gpu_trace.log", "w");
     }
+    if (!startTimeSet_)
+    {
+        startTime_ = std::chrono::steady_clock::now();
+        startTimeSet_ = true;
+    }
 }
 
 void GpuCommandTracer::RegisterRingBuffer(uint32_t physAddr, uint32_t sizeLog2Raw)
@@ -109,8 +114,10 @@ void GpuCommandTracer::ObserveWritePointer(uint32_t dwordIndex)
         // (Finding 65's open question). If it freezes at the same point the heuristic
         // does, that's direct evidence production really does stop upstream, exactly as
         // Finding 65 concluded.
-        fprintf(logFile_, "[CP_RB_WPTR] observed %u -> %u dwords (%u -> %u bytes); heuristic offset currently %u bytes\n",
-            lastWptrDwords_, dwordIndex, lastWptrDwords_ * 4, dwordIndex * 4, lastParsedOffset_);
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - startTime_).count();
+        fprintf(logFile_, "[CP_RB_WPTR] t=%lldms observed %u -> %u dwords (%u -> %u bytes); heuristic offset currently %u bytes\n",
+            (long long)elapsedMs, lastWptrDwords_, dwordIndex, lastWptrDwords_ * 4, dwordIndex * 4, lastParsedOffset_);
         fflush(logFile_);
     }
 

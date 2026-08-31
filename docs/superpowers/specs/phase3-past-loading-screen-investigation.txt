@@ -3755,3 +3755,51 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     directly observable in gpu_trace.log without guessing) against
     wherever production stalls in the CURRENT build, not the old
     131000-byte number. ---
+
+--- Finding 67: attempted Finding 66's own next step (live-sample the
+    MAIN thread once CP_RB_WPTR genuinely stops changing) this session.
+    Added a wall-clock timestamp to every [CP_RB_WPTR] log line
+    (host/gpu_trace.cpp/.h, kept -- cheap, generally useful) so a frozen
+    period's real duration is readable directly from the log. Built a
+    monitor script that tails gpu_trace.log and declares "frozen" once
+    the polled dword value holds for >=4 real seconds, intending to
+    attach lldb at that moment and capture the game thread's backtrace.
+
+    Ran three more live verification passes (10s watchdog once, then two
+    temporarily-extended runs -- 60s and 90s, both reverted after, same
+    established precedent) specifically to catch that frozen moment:
+
+      10s run: froze quickly, matching Finding 66's own 10s run shape.
+      60s run: froze at 1231 dwords (matching Finding 66 exactly --
+      same build, same conditions, reproducible).
+      90s run: did NOT freeze at all -- continuous, if uneven, forward
+      progress the entire run, reaching 2137 dwords (8548 bytes) still
+      climbing when the watchdog cut it off at t=89926ms. Monitor script
+      never saw a 4-second-stable window to trigger on.
+
+    This is a real, honest negative result, not a failed attempt: the
+    "freeze" observed in Finding 66's shorter runs isn't a fixed,
+    deterministic wall -- it's run-to-run timing variance in how fast
+    the loading screen's real work (disc I/O, asset setup, whatever
+    gates each new packet) proceeds, matching Finding 59's
+    characterization ("slow continuous progress", not a hard freeze)
+    more closely than Finding 65's "permanently froze" language. Worth
+    noting: Finding 65's own 7307-dword freeze was captured over a
+    40-MINUTE live run, not a 60-90 second one -- this session's runs
+    are 25-40x too short to have any real chance of reaching that same
+    point, freeze or no freeze. The ~131000-byte plateau and the
+    7307-count EVENT_WRITE_SHD freeze both likely need comparable real
+    time to reproduce, not just a longer watchdog in the 60-90s range.
+
+    Status: Finding 66's WPTR polling infrastructure confirmed
+    reproducible and working correctly across all three new runs (kept).
+    The MAIN-thread live-sample technique itself was not executed this
+    session -- session time didn't stretch to a real 40+-minute watchdog
+    run plus active monitoring plus an lldb attach at the right moment.
+    Concrete next step: run the monitor script (scratchpad's
+    monitor_freeze.sh, or an equivalent) against a genuinely long run
+    (approaching or exceeding 40 real minutes, matching Finding 65's own
+    successful timescale) with the watchdog extended to match, and only
+    then attach lldb the moment it reports frozen -- this needs to be
+    budgeted as its own dedicated span of session time, not squeezed in
+    alongside other work. ---
