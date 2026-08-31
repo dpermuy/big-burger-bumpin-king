@@ -947,6 +947,51 @@ PPC_FUNC(__imp__XamNotifyCreateListener)
     ctx.r3.u64 = handle;
 }
 
+// Finding 69: real contract (confirmed against skate3recomp's rexglue-sdk,
+// src/kernel/xam/xam_notify.cpp -- itself Xenia's real XNotifyGetNext) is
+// (handle, match_id, id_ptr, param_ptr) -> BOOL, dequeuing one notification
+// from the listener object created by XamNotifyCreateListener above. The
+// previous stub (host/kernel_stubs.cpp) unconditionally returned 0 without
+// ever validating the handle or writing id_ptr/param_ptr at all -- a real
+// contract violation independent of whatever the game does with the return
+// value: real callers can rely on *id_ptr being written even on the empty
+// path, and this host left that guest memory untouched. This project has no
+// code anywhere that enqueues a real notification into a listener yet (no
+// producer exists for the mask a listener subscribes to), so honestly this
+// always reports "none available" today, same observable result as the old
+// stub for now -- but it does it by validating the handle and following the
+// real memory-write contract, both worth having regardless of whether a real
+// notification source is ever added.
+PPC_FUNC(__imp__XNotifyGetNext)
+{
+    uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t idPtr = (uint32_t)ctx.r5.u64;
+    uint32_t paramPtr = (uint32_t)ctx.r6.u64;
+
+    if (paramPtr != 0)
+    {
+        PPC_STORE_U32(paramPtr, 0);
+    }
+
+    if (idPtr == 0)
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
+    PPC_STORE_U32(idPtr, 0);
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_handleTable.find(handle);
+    if (it == g_handleTable.end())
+    {
+        ctx.r3.u64 = 0; // unrecognized handle -- real XNotifyGetNext returns 0 here too
+        return;
+    }
+
+    // No real notification source exists in this project yet -- nothing to dequeue.
+    ctx.r3.u64 = 0;
+}
+
 PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)
 {
     ctx.r3.u64 = 0; // old IRQL; no real interrupt masking under single-execution-context

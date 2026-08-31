@@ -3896,3 +3896,103 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     game-state advance, or a genuinely different stall) show up that
     was previously unreachable because the scanner itself never got
     past byte 131068 before. ---
+
+--- Finding 69: ran Finding 68's own proposed follow-up -- a long run
+    (watchdog temporarily extended to 3600s, reverted after, same
+    precedent) specifically to see what happens now that the flat-buffer
+    wraparound wall is gone. Answer, reproducibly: it keeps wrapping
+    indefinitely in the same small-content loading-screen holding
+    pattern. Not a new stall -- a clean negative result.
+
+    Over ~46 real minutes (matching and slightly exceeding Finding 65's
+    original 40-minute timescale): 2 full ring wraps handled cleanly by
+    Finding 68's fix, a 3rd pass in progress at t=2748s (100380/131072
+    bytes) when stopped, CP_RB_WPTR and the heuristic offset in lockstep
+    the entire time, no re-freeze, no new unrecognized-packet stall like
+    the transient one Finding 68 saw at offset 76596. The ring mechanism
+    itself is now solid.
+
+    But real game-state progress (NtReadFile calls, VdSwap calls -- both
+    tracked via grep counts against run.log/the host's own kernel
+    logging) stayed flat at 264 for the entire 46 minutes, identical to
+    every shorter run this session. The only repeating activity visible
+    in run.log's tail the whole time was XNotifyGetNext, alternating
+    between two handles.
+
+    Initially read this as a confirmed blocking idle-spin gate and wrote
+    it up that way -- wrong, caught and corrected before committing by
+    actually checking real reference semantics (skate3recomp's
+    rexglue-sdk, src/kernel/xam/xam_notify.cpp) instead of assuming.
+    Two real mistakes in that first read:
+
+      1. Misread the logged args. This project's stub logs them
+      positionally as (r3, r4, r5, r6); the real XNotifyGetNext
+      signature is (handle, match_id, id_ptr, param_ptr) -- so the
+      "0x1012" and "0x103D" values are listener HANDLES, not
+      notification-type IDs, and every observed call passed match_id=0
+      ("just get me whatever's next"), not a specific ID being awaited.
+      Confirmed these are real handles, not garbage: this project's own
+      __imp__XamNotifyCreateListener (host/kernel_impl.cpp:942) hands
+      out real bump-allocated handles the same way, and the game
+      creating two separate listeners and polling both once each is
+      completely ordinary Xbox 360 per-frame housekeeping, not evidence
+      of anything stuck.
+
+      2. Assumed returning 0 ("no notification yet") is itself the bug.
+      It isn't -- the real implementation returns exactly 0 whenever a
+      listener's queue is genuinely empty, which is the overwhelmingly
+      common case even on real hardware. A real game polling every frame
+      and getting 0 back almost every time is normal, expected behavior,
+      not proof of a stall this project introduced.
+
+    So Finding 65's "game-state gate" alternative is NOT confirmed by
+    this session's evidence after all -- retracting that specific claim.
+    What ARE real, confirmed problems with this project's
+    __imp__XNotifyGetNext (host/kernel_stubs.cpp:772), found by diffing
+    it against the real contract:
+
+      - It never looks up the handle against this host's own handle
+      table at all (contrast with real XNotifyGetNext, which returns 0
+      immediately for an unrecognized handle -- ours would return 0 for
+      that same reason today, by accident, not by checking).
+      - It never writes to id_ptr or param_ptr (r5/r6) -- the real
+      contract always writes *id_ptr (even 0 on the empty-queue path)
+      and *param_ptr when non-null. Whatever guest memory those
+      pointers target is left as whatever it already contained --
+      genuinely wrong regardless of whether any notification would ever
+      really be available, and a plausible source of unrelated
+      downstream bugs if the game ever reads that memory back
+      unconditionally.
+      - It never delivers ANY real notification, ever, because nothing
+      in this project produces one (no code path calls the listener's
+      enqueue side) -- so even a correct, contract-following
+      implementation would still always report "none" today. Whether
+      the game is waiting on a specific real notification before
+      proceeding, and which one, remains genuinely unknown -- not
+      confirmed this session, contrary to this finding's own first draft
+      above.
+
+    Fixed the contract violations this session (moved __imp__XNotifyGetNext
+    from host/kernel_stubs.cpp to host/kernel_impl.cpp, next to
+    XamNotifyCreateListener so it can share g_handleTable/g_stateMutex):
+    validates the handle against this host's real handle table, writes
+    *id_ptr (and *param_ptr when non-null) unconditionally matching the
+    real contract, still honestly returns "none available" since nothing
+    in this project produces a real notification to dequeue yet. 10s
+    regression run after the change: identical NtReadFile completion
+    pattern to every prior baseline run, no crash, no behavior change
+    observable from outside (expected -- the fix corrects memory-write
+    contract and validation, not the "always empty" outcome itself).
+
+    Status: Finding 68's fix confirmed robust under sustained real load
+    (kept, no changes needed) -- that part of this finding stands.
+    XNotifyGetNext's contract violations are fixed (kept). Whether
+    XNotifyGetNext is actually gating progress at all is still genuinely
+    open -- concrete next step for a fresh session: determine, with real
+    evidence (e.g. instrumenting whether the calling code branches on
+    the return value at all, or just polls and continues regardless of
+    it), whether this call has anything to do with the loading-screen
+    stall before investing further here, and separately, whether this
+    project needs a real notification producer at all (what would it
+    even deliver, and does any code path expect one) before building
+    one speculatively. ---
