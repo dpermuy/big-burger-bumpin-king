@@ -3996,3 +3996,94 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     project needs a real notification producer at all (what would it
     even deliver, and does any code path expect one) before building
     one speculatively. ---
+
+--- Finding 70: followed through on Finding 69's own open question
+    ("does the calling code branch on XNotifyGetNext's return value at
+    all") by reading the real call sites directly instead of
+    instrumenting further. Checked 3 of 5 real callers (private/ppc/
+    ppc_recomp.46.cpp:23102, .62.cpp:15166, .64.cpp:20037/20071) --
+    every one follows the identical, ordinary real-world idiom: call
+    it, if the return is 0 (no notification queued) skip the
+    notification-handling block entirely and continue with the rest of
+    the function; one site (recomp.64) is a drain loop that also
+    terminates immediately the moment it sees 0. None of the three
+    block waiting for a nonzero return. This closes the question with a
+    clean, static-analysis-backed NO: XNotifyGetNext, as called from
+    real game code, cannot be the loading-screen's blocking gate --
+    confirmed by reading the actual logic, not inferred from behavior.
+
+    While re-running to double check this, removing Finding 69's
+    per-call debug log made something else visible that had been
+    drowned out by it before: with logging silenced, run.log's tail
+    went completely dark after the last real disc read -- no more
+    kernel activity of any kind, not even XNotifyGetNext. Added a
+    throttled call-counter probe (WATCH-70, temporary, reverted after)
+    to tell "silently polling a LOT" apart from "genuinely dead" -- 5
+    total XNotifyGetNext calls in a 90-second run, all in the first
+    moments of startup, not spinning at all during the stall. Matches
+    the static analysis above: this call plays no ongoing role here.
+
+    The real surprise came from the same probe run: real disc activity
+    went dramatically further than any run this whole investigation
+    before Finding 69's fix. Previous baseline (Finding 66/67/68, every
+    run all session): exactly one real package file
+    ("speech_generic.xen", opened repeatedly, 9,461,760 bytes read from
+    the last handle) before going silent, reproduced identically across
+    10-second, 60-second, 90-second, and 46-minute runs alike -- a hard,
+    consistent wall. This session's post-Finding-69-fix runs (90s AND a
+    600s run, to rule out the watchdog just cutting off more progress --
+    both landed on the EXACT same final state: 264 total NtReadFile
+    calls, the exact same 27 distinct real package files opened in the
+    exact same order, ending at the exact same handle/offset/byte count.
+    Confirmed real and deterministic, not a coincidence of timing.
+
+    This means Finding 69's contract fix -- writing *id_ptr/*param_ptr
+    on every call instead of leaving whatever guest memory was already
+    there, the way the old kernel_stubs.cpp stub did -- did far more
+    than the "cheap, probably-unrelated correctness fix" framing it got
+    at the time. Real, credible mechanism: id_ptr/param_ptr point into
+    the CALLER's own stack (r1+80/r1+84 or r1+84/r1+80 across the sites
+    read above), reused constantly by this same function across many
+    calls over a long-running thread's lifetime -- genuinely stale, not
+    zero-initialized. The old stub's failure to write *id_ptr at all
+    left whatever prior stack content was there, which the caller's own
+    logic (seen directly above) DOES read and branch on whenever r3 is
+    accidentally nonzero from an equally-stale register, or whenever
+    *id_ptr's leftover garbage coincidentally matched one of the
+    specific IDs (10, 14, 0x4000002, 0x4000003 -- real XNotify ID
+    constants, decoded from the comparisons in sub_823E1F70) the caller
+    treats as meaningful. This project's own bump-allocator-adjacent
+    memory reuse patterns (Finding 47 fixed an unrelated but similarly-
+    shaped stale/overlapping-memory bug earlier this investigation) make
+    stale stack content anything but implausible as a real trigger. Not
+    fully proven with a live single-instrumented repro this session --
+    flagged honestly as the most credible mechanism given direct
+    evidence (the fix, and only the fix, precedes the jump from 1 file
+    to 27), not as a confirmed root cause.
+
+    The NEW stall point, characterized the same rigorous way as every
+    prior one this investigation: file "w_commonobjectshires.xen" (or
+    its _hires variant depending on exact path casing logged), opened 4
+    times in a row (handles 0x1042-0x1045, matching the established
+    "reopen the same real file several times, read only from the last
+    handle" pattern seen with every package this run), read up through
+    offset 26,738,688 with a final partial 98,304-byte read, then
+    nothing -- no NtClose, no further NtCreateFile, no logged activity
+    of any kind, confirmed identical whether cut off at 90s or a full
+    600s (10 minutes) of real time. A new wall, not the old one, roughly
+    3x further into the real file (given the file's own read pattern) --
+    genuinely further progress, not a coincidence landing on the same
+    place.
+
+    Status: real, substantial forward progress (kept -- Finding 69's fix
+    already committed, nothing new to commit for the analysis itself).
+    Concrete next step for a fresh session: characterize this NEW stall
+    at w_commonobjectshires.xen's final partial read the same way
+    Findings 43-69 characterized the ring-buffer stall -- what does the
+    main thread do immediately after that read (live call-stack sample,
+    now worth retrying the lldb path with a fresh look at why attach
+    hung, or a different instrumentation approach if it's still
+    unavailable), and does it match any previously-seen shape (a wait
+    loop, a dispatch-table gate, something else entirely) or is this
+    genuinely new territory the investigation has never reached before
+    Finding 69 unlocked it. ---
