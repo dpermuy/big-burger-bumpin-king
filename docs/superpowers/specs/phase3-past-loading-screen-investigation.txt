@@ -4087,3 +4087,104 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     loop, a dispatch-table gate, something else entirely) or is this
     genuinely new territory the investigation has never reached before
     Finding 69 unlocked it. ---
+
+--- Finding 71: started characterizing Finding 70's new stall (after
+    w_commonobjectshires.xen's final read, handle 0x1045) live. First,
+    confirmed the file read genuinely completes -- the final partial
+    read (98,304 bytes) lands at exactly offset 26,836,992, which
+    matches the file's own real size (NtSetInformationFile's own
+    position=26836992 EOF-seek, logged earlier for the same file's
+    metadata-query handles) exactly. Not a mid-file stall; the read
+    finishes clean, something after it is what's stuck.
+
+    Added a temporary caller-return-address probe to __imp__NtReadFile
+    (WATCH-71, reverted after) to find the real loader function directly
+    rather than guess from disassembly alone -- unremarkable, matched
+    the established sequential-chunk-read pattern. Far more useful: with
+    Finding 69's per-call log gone, run.log's tail went completely dark
+    after the last read (no NtClose, nothing) -- added a matching probe
+    to __imp__NtWaitForSingleObjectEx and found something big: 7.3
+    MILLION calls in ~25 real seconds, all from the same real PPC call
+    site (0x820AB270, inside a small self-looping wait helper --
+    private/ppc/ppc_recomp.11.cpp:37480/sub_82127EE0 and an
+    architecturally-identical sibling at ppc_recomp.64.cpp:23223/
+    sub_82496C28). This is NOT a dead wait -- it's a genuine, real,
+    CPU-saturating busy-spin.
+
+    Traced which return path actually dominates (WATCH-71d, reverted
+    after, a return-path histogram instead of guessing): ruled out two
+    plausible mechanisms with real counts before finding the real one --
+    the short-timeout retry path: zero hits; endless-APC-redelivery: only
+    5 hits, correctly draining a real small queue then stopping (TryDeliverOneApc
+    does pop_front correctly, not a leak). The dominant path by far,
+    confirmed via a 200000-call-throttled histogram: "unbounded-success"
+    -- tens of millions of calls, every single one succeeding INSTANTLY,
+    overwhelmingly on one specific handle (0x1017, later corroborated as
+    type=Event) plus a second (0x100A, also type=Event).
+
+    Root cause, found by reading this host's own NtWaitForSingleObjectEx
+    and NtCreateEvent against real reference semantics (skate3recomp's
+    rexglue-sdk, xboxkrnl_threading.cc's NtCreateEvent_entry: real
+    signature is (handle_ptr, obj_attributes_ptr, event_type,
+    initial_state); event_type==0 is NotificationEvent/manual-reset,
+    nonzero is SynchronizationEvent/auto-reset -- confirmed via
+    `ev->Initialize(!event_type, ...)`): this project's NtCreateEvent
+    never read event_type (r5) at all, and NtWaitForSingleObjectEx never
+    cleared an object's `signaled` flag on a successful acquire for
+    EITHER a Mutant or an auto-reset Event -- real NT dispatcher-object
+    semantics require both to atomically consume the signal on
+    acquisition (a Mutant unconditionally; an auto-reset Event only).
+    Every object in this project stayed signaled=true forever once first
+    set. A real producer-consumer wait loop expecting to block between
+    work items instead found its auto-reset event still signaled from
+    the moment of creation, succeeded instantly, and looped straight
+    back with no actual wait ever happening -- millions of times a
+    second, exactly matching the live evidence.
+
+    Fixed for real (host/kernel_impl.cpp): added `bool autoReset` to
+    HandleObject (defaults false, so every pre-existing call site and
+    every other HandleObjectType is unaffected); NtCreateEvent now reads
+    r5 and records it; NtWaitForSingleObjectEx now clears `signaled` on
+    every successful (non-APC) acquire when the object is a Mutant or an
+    auto-reset Event, via a fresh g_handleTable[handle] lookup (matching
+    the existing wakePredicate's own pattern) rather than the
+    possibly-rehash-invalidated `it` iterator taken before the wait.
+
+    Verified live: CPU usage during a 20-second run dropped to 3.9%
+    (measured via `ps -o pcpu`), versus the confirmed-live tens-of-
+    millions-of-calls-per-second spin beforehand -- the busy-spin itself
+    is genuinely gone. 10-second default-watchdog regression run
+    afterward is byte-identical to every prior baseline (47 reads, same
+    handle/offset progression, no crash) -- no regression.
+
+    Honest, load-bearing caveat: fixing this real bug did NOT unblock
+    Finding 70's file-loading stall. A fresh 60-second verification run
+    after the fix landed on the EXACT same final state as before (264
+    reads, 27 files, same handle 0x1045, same final partial read) --
+    identical to the pre-fix runs. This means the busy-spin found and
+    fixed here is a genuinely SEPARATE issue from whatever blocks
+    w_commonobjectshires.xen's loading from continuing -- likely a
+    different thread or subsystem entirely (the spun-on events,
+    0x1017/0x100A, were never directly tied to the file-loading call
+    path in any of this session's evidence). Both are real; fixing one
+    doesn't imply anything about the other.
+
+    Also flagged, not fixed (out of this session's confirmed-live
+    evidence, so not touched): __imp__KeSetEvent (host/kernel_impl.cpp)
+    is a complete no-op -- doesn't touch g_handleTable at all. Any real
+    code path using the kernel-mode KeSetEvent (as opposed to the
+    user-mode NtSetEvent variant fixed here, which already worked
+    correctly) can never actually signal anything. Same "host never
+    signals what the game expects" shape as this session's main fix, but
+    not confirmed live as relevant to any specific observed stall yet --
+    a real gap worth checking, not guessed into a fix without evidence.
+
+    Status: real, live-verified fix for a genuine, substantial bug
+    (kept). Does not explain Finding 70's stall -- that investigation is
+    still open. Concrete next step: apply the SAME direct technique that
+    worked here (temporary caller-return-address + return-path-histogram
+    probes on the specific kernel calls the file-loading thread makes
+    right after its last read) to find what THAT thread is actually
+    doing -- NtWaitForSingleObjectEx on some other handle entirely,
+    RtlEnterCriticalSection contention, or something not yet
+    instrumented at all. ---

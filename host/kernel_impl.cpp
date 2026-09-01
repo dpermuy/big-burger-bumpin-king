@@ -214,6 +214,18 @@ struct HandleObject
 {
     HandleObjectType type;
     bool signaled;
+    // Finding 71: real NT dispatcher-object semantics -- a Mutant is always
+    // auto-reset (single-owner: a successful wait atomically claims ownership,
+    // clearing signaled until NtReleaseMutant), and an Event's reset behavior
+    // depends on its real EVENT_TYPE (confirmed against skate3recomp's
+    // rexglue-sdk, xboxkrnl_threading.cc's NtCreateEvent_entry:
+    // Initialize(!event_type, ...) -- event_type==0 is NotificationEvent
+    // (manual-reset), nonzero is SynchronizationEvent (auto-reset)). Only
+    // meaningful for Event; Mutant's auto-reset is unconditional and doesn't
+    // read this field. Defaults false so every other HandleObjectType (and
+    // any Event created before this field existed in an aggregate-init call
+    // site) behaves exactly as before.
+    bool autoReset = false;
 };
 
 static std::unordered_map<uint32_t, HandleObject> g_handleTable;
@@ -290,13 +302,18 @@ PPC_FUNC(__imp__NtCreateMutant)
 PPC_FUNC(__imp__NtCreateEvent)
 {
     uint32_t handleOutPtr = (uint32_t)ctx.r3.u64;
+    // Finding 71: real signature (confirmed against skate3recomp's rexglue-sdk,
+    // xboxkrnl_threading.cc NtCreateEvent_entry) is (handle_ptr, obj_attributes_ptr,
+    // event_type, initial_state) -- r5=event_type was never read before; 0 =
+    // NotificationEvent (manual-reset), nonzero = SynchronizationEvent (auto-reset).
+    bool autoReset = ctx.r5.u64 != 0;
     bool initialState = ctx.r6.u64 != 0;
 
     uint32_t handle;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         handle = g_nextHandle++;
-        g_handleTable[handle] = HandleObject{ HandleObjectType::Event, initialState };
+        g_handleTable[handle] = HandleObject{ HandleObjectType::Event, initialState, autoReset };
     }
 
     PPC_STORE_U32(handleOutPtr, handle);
@@ -383,6 +400,32 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
     };
     auto wakePredicate = [&] { return g_handleTable[handle].signaled || (alertable && hasPendingApc()); };
 
+    // Finding 71: real NT dispatcher-object semantics -- a successful wait on a
+    // Mutant (always) or an auto-reset Event (SynchronizationEvent) atomically
+    // consumes the signal, leaving it non-signaled until explicitly released/
+    // re-signaled. This host never did that (every object stayed signaled=true
+    // forever once first set), which meant any real producer-consumer loop
+    // waiting on a pre-signaled auto-reset event succeeded instantly and looped
+    // right back with no actual wait ever happening -- a genuine, confirmed-live
+    // busy-spin (millions of calls/sec, 100% host CPU, zero forward progress)
+    // found live investigating the w_commonobjectshires.xen loading stall.
+    // Manual-reset Events (NotificationEvent) and Generic/Thread/File handles
+    // are unaffected -- they're supposed to stay signaled until something
+    // explicit resets them.
+    // Uses a fresh g_handleTable[handle] lookup rather than the `it` iterator taken
+    // above -- condition_variable::wait releases the lock internally while blocked,
+    // during which another thread could rehash the map and invalidate `it` (the
+    // existing wakePredicate above already follows this same fresh-lookup pattern
+    // for the same reason).
+    auto consumeSignalOnAcquire = [&] {
+        HandleObject& obj = g_handleTable[handle];
+        if (obj.type == HandleObjectType::Mutant ||
+            (obj.type == HandleObjectType::Event && obj.autoReset))
+        {
+            obj.signaled = false;
+        }
+    };
+
     if (timeoutPtr != 0)
     {
         int64_t timeoutValue = (int64_t)PPC_LOAD_U64(timeoutPtr);
@@ -399,6 +442,10 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
                 ctx.r3.u64 = 0xC0; // STATUS_USER_APC
                 return;
             }
+            if (woke)
+            {
+                consumeSignalOnAcquire();
+            }
             ctx.r3.u64 = woke ? 0 : 258; // STATUS_SUCCESS or STATUS_TIMEOUT
             return;
         }
@@ -414,6 +461,7 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
         ctx.r3.u64 = 0xC0; // STATUS_USER_APC
         return;
     }
+    consumeSignalOnAcquire();
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
