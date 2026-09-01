@@ -4188,3 +4188,65 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     doing -- NtWaitForSingleObjectEx on some other handle entirely,
     RtlEnterCriticalSection contention, or something not yet
     instrumented at all. ---
+
+--- Finding 72: applied Finding 71's own suggested next step -- a
+    temporary, uncapped-in-practice entry probe on
+    __imp__NtWaitForSingleObjectEx (WATCH-72, capped at 2000 lines as a
+    safety net, reverted after) plus a caller-return probe on
+    __imp__NtReadFile, run for a full 60 real seconds spanning
+    w_commonobjectshires.xen's last read.
+
+    First and most important result: the cap was never hit. Total real
+    NtWaitForSingleObjectEx calls across the entire 60-second run: 1923
+    -- roughly 32/sec, an ordinary per-tick polling rate, not a spin.
+    This is a clean, direct confirmation that Finding 71's fix
+    genuinely eliminated the pathological busy-spin (previously tens of
+    millions of calls/sec on this exact same primitive) rather than
+    just moving it elsewhere or partially masking it.
+
+    Breakdown of what's actually being waited on, by call count:
+    handle 0x1007 (1106 calls, the clear majority) by self=0 -- the
+    MAIN thread itself, not a worker; handle 0x1004 (275 calls) by
+    self=0x1005; smaller amounts on 0x1015 (78), 0x1017 (68, self=
+    0x1018), 0x100A (68, self=0x1009), 0x1006 (22), 0x1002 (22), 0x1003
+    (16), and single-digit one-offs on a few others. This is a coherent
+    picture: the MAIN thread and (at least) three distinct worker
+    threads (self=0x1005/0x1009/0x1018) are each genuinely, correctly
+    waiting/polling on their own dispatcher object, at a sane real-world
+    pace, all still active well before AND after
+    w_commonobjectshires.xen's last read (this isn't something that
+    newly starts once the file finishes -- it was already the dominant
+    activity throughout).
+
+    No new dead-wait or spin was found at the exact moment of the last
+    read specifically -- the same small set of threads that were already
+    idling continue idling, at the same modest pace, indefinitely.
+    Nothing in this activity is itself anomalous NT wait behavior
+    anymore (post-Finding-71); the remaining open question has shifted
+    from "is something broken in how waits work" (no -- confirmed clean)
+    to "why does nothing ever produce the work these threads are
+    waiting for". Handle 0x1007 (Mutant, polled by MAIN) is the
+    strongest lead -- a mutex-guarded work-queue check-and-idle pattern
+    is a completely standard real Xbox 360 idiom, and if this project
+    never enqueues anything into whatever 0x1007 guards, this is exactly
+    what a real console would ALSO do (idle correctly) -- the actual gap
+    is architectural (a real background/worker step -- likely package
+    decompression or asset registration following
+    w_commonobjectshires.xen's raw read -- was never modeled to happen
+    at all), not a synchronization bug.
+
+    Status: confirms Finding 71's fix is clean and complete (kept,
+    nothing further needed there). Reframes Finding 70's stall precisely:
+    not a deadlock or missing kernel-primitive semantics (both now
+    ruled out with direct evidence), but a real gap in what this project
+    models happening after a raw package read -- something (real
+    hardware would run actual decompression/parsing here) never
+    executes, so the objects these idle threads are waiting on never
+    get signaled with real work. Concrete next step for a fresh session:
+    trace what real Xbox 360 processing is SUPPOSED to happen to a
+    freshly-read .xen package's raw bytes (decompression? a specific
+    parse/registration call?) by finding what sub_82127EE0 and its
+    siblings' own callers do around their wait loop -- the answer likely
+    isn't inside the wait primitive at all, but in whatever real
+    game-side worker logic this project has never had a reason to model
+    until reaching this deep into loading. ---
