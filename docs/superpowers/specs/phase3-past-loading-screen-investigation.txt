@@ -4250,3 +4250,103 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     isn't inside the wait primitive at all, but in whatever real
     game-side worker logic this project has never had a reason to model
     until reaching this deep into loading. ---
+
+--- Finding 73: traced Finding 72's own concrete next step -- what real
+    game-side worker logic runs around the read loop -- all the way
+    down, using this project's existing game_overrides.cpp technique
+    (Finding 61's precedent: a plain, unmangled PPC_WEAK_FUNC override
+    that calls through to the real __imp__ implementation, so real
+    behavior is preserved and only observed, not changed) instead of
+    trusting hand-disassembly alone. Caught and corrected a real mistake
+    in that hand-disassembly along the way, live, before it went anywhere.
+
+    First hand-traced private/ppc/ppc_recomp.12.cpp:11040-11210 (the
+    function containing sub_8212F788's only real call site) and
+    concluded incorrectly that a rich per-chunk "process, report
+    progress, throttle, loop" block ran after every successful read.
+    Live instrumentation (temporary pass-through overrides on the three
+    functions that block was supposed to call) immediately contradicted
+    that: one fired 813,216 times in 10 seconds (a generic yield
+    utility, unrelated), the other two only a handful of times each with
+    values that didn't fit "runs every chunk" at all. The real bug: a
+    `cmpwi r3,0; bne <success-looking-block>` branch, and r3 (sub_8212F788's
+    own real return value, confirmed always 1 = success) makes `bne`
+    ALWAYS true -- so that whole block is real, but it's the FAILURE/
+    retry path, never reached on a real successful read stream. Fixed
+    the misread live rather than leave a wrong conclusion standing.
+
+    Rebuilt the trace bottom-up with direct evidence instead: instrumented
+    sub_8212F788 itself, confirmed its one real caller-return address
+    (0x8212CC3C, unconditionally, matching sub_8212CAC8's own body) is
+    inside sub_8212CAC8, called from exactly one place --
+    sub_8212A9E8 (private/ppc/ppc_recomp.12.cpp:5778), itself only
+    reachable indirectly (no direct `bl` anywhere -- a real callback
+    target, not a plain subroutine).
+
+    Instrumented __imp__NtReadFile directly (host/kernel_impl.cpp,
+    temporary) to see the real completion-notification arguments live:
+    every real package read passes apcRoutine=0x8212F721 (masked to
+    0x8212F720), apcContext=0x8212A9E8 -- i.e. sub_8212A9E8 is BOTH the
+    request-submitter and, via a small generic IoCompletion trampoline
+    (sub_8212F720, private/ppc/ppc_recomp.12.cpp:17904-17965, which
+    unpacks the real IoStatusBlock into (status, bytesTransferred) and
+    indirectly calls back into whatever context it's given), its own
+    completion handler -- confirmed this project's existing APC
+    machinery (Findings 43H, 71) delivers it correctly and completely:
+    162 real deliveries logged for 154-162 real reads across two live
+    runs, no drops.
+
+    Traced sub_8212A9E8's real completion-side logic (previously only
+    read a fragment of; read the FULL function, private/ppc/
+    ppc_recomp.12.cpp:5778-6003, this time): on success, it updates real
+    rate/throughput bookkeeping, throttles via the generic yield
+    function when needed, and -- critically -- when a request's
+    remaining-bytes counter reaches exactly 0 (the whole file is fully
+    read), calls sub_82127E78 (private/ppc/ppc_recomp.11.cpp:37413-37474)
+    before unconditionally submitting whatever comes next via
+    sub_8212CAC8 again. sub_82127E78 itself unconditionally loads a
+    caller-supplied function pointer and argument from the request
+    struct's own +308/+312 fields and calls it -- a real, generic
+    "notify: this whole multi-part request just finished" completion
+    hook, not chunk-specific.
+
+    Instrumented that hook live (temporary): it fires reliably, once per
+    real file, with a real incrementing argument (0 through 10 across an
+    11-file run) -- and the LAST log line of the entire run, every time,
+    is this exact call firing for the file that was loading when
+    progress stopped. Confirmed it isn't silently skipped or starved.
+
+    Traced the callback it invokes (sub_82127E18, private/ppc/
+    ppc_recomp.11.cpp:37348-37398): it searches a small count-prefixed
+    array for an entry matching the passed file index, then -- found or
+    not -- uses whatever entry it landed on to compute a slot in a
+    SECOND array and sets bit 4 (0x10) of that slot's own flags word (a
+    +324 convention shared with sub_8212A9E8/sub_82127EE0/sub_82127E78's
+    own bit-0/bit-1 checks -- clearly one real shared per-slot state
+    structure across this whole subsystem). This looked like the most
+    likely remaining failure point (an unpopulated or mismatched lookup
+    table silently flagging the wrong -- or no real -- slot), so it was
+    checked live rather than assumed: a read-only mirror of the real
+    search logic, run immediately before the real call, confirmed
+    count=1 and matchedAt=0 for every single one of the 11 real calls in
+    a live run, including the very last one. The search always finds
+    its target. This mechanism is not where the problem is either.
+
+    Status: the ENTIRE completion-notification chain -- real read
+    completes, real APC delivered, real completion handler runs, real
+    per-file-done hook fires exactly once per file with the correct
+    index, real callback correctly finds its target slot and sets its
+    completion bit -- is now traced end to end with live confirmation at
+    every single link, for the actual final file in a real stalled run.
+    None of it is broken. The bit being set (bit 4, offset+324, on the
+    slot sub_82127E18 computes) is real and does get set correctly. What
+    remains completely uninvestigated: WHO reads that bit, and does it
+    do the right thing when it sees it set. Concrete next step for a
+    fresh session: that reader is the actual missing link now -- find
+    what checks bit 4 of a slot's +324 flags word (the same struct
+    family already implicated in Finding 72's main-thread Mutex-poll
+    theory, handle 0x1007 -- worth checking whether that poll loop's own
+    "is there real work" condition is exactly this bit, tying both
+    findings' evidence together into one coherent chain), and whether it
+    correctly advances to opening the next queued package or has its own
+    separate, still-undiscovered gap. ---
