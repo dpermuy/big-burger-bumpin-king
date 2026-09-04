@@ -4350,3 +4350,61 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     findings' evidence together into one coherent chain), and whether it
     correctly advances to opening the next queued package or has its own
     separate, still-undiscovered gap. ---
+
+--- Finding 74: answered Finding 73's own open question -- who reads
+    bit 4 of the completion struct's +324 flags word -- directly,
+    without needing to find the exact reader function first. Compiler
+    codegen builds the same fixed address (0x82668CE8, confirmed:
+    sub_82127E18's own real second table-base computation nets to
+    exactly this, and it matches the same "self" value already seen in
+    Finding 73's sub_82127E78/DELIVER logs -- this "slot" IS the one
+    shared per-download struct, not a separate queue entry) via
+    different lis/addi immediate pairs at every real call site, making
+    a literal-constant search across the disassembly unreliable. Watched
+    the raw memory location itself instead (host/main.cpp's existing
+    1ms-cadence GPU pump thread, temporary addition, reverted after) --
+    doesn't need to know which PPC function touches it, just whether
+    anything does.
+
+    Decisive result, live, over a 90-second run: the value at
+    0x82668E2C oscillates continuously between 0x3 and 0x13 -- 22 real
+    transitions, 11 full set-then-clear cycles. Bit 4 (0x10) gets set by
+    sub_82127E18 (Finding 73) and reliably CLEARED again shortly after,
+    every single time, by something real and functioning. This flatly
+    contradicts the "maybe nothing reads it" possibility Finding 73 left
+    open -- something does, correctly, every time.
+
+    Most important: this includes the file that was loading when the
+    run's real progress stopped. The exact same run's log tail shows the
+    LAST real NtReadFile completing, immediately followed by "0x3 ->
+    0x13" (set) and then "0x13 -> 0x3" (cleared) -- the reader
+    processes this final completion exactly like all ten before it. Then
+    nothing else happens for the rest of the run, same wall as every
+    prior finding (264 reads, 27 distinct files, same handle 0x1045).
+
+    This closes Finding 73's open question completely and reframes the
+    whole remaining mystery. The full pipeline -- read completes, APC
+    delivered, completion handler runs, per-file hook fires with the
+    right index, callback finds the right slot and sets the bit,
+    SOMETHING reads and correctly clears that bit -- is now proven
+    end-to-end, through the actual last real completion in the actual
+    stalled state, with no gap anywhere in it. The bug (or gap) is NOT
+    in processing a completed download. It's upstream of that: nothing
+    ever enqueues the NEXT download request once the current one's
+    completion has been fully, correctly processed. Finding 72's
+    "architectural gap" theory holds, but sharper now -- it's
+    specifically an ENQUEUE gap, not a stuck consumer.
+
+    Status: real, decisive, live-confirmed answer (nothing further to
+    fix here -- this is a diagnostic result, not a bug in this project's
+    own host code). Concrete next step for a fresh session: find what's
+    SUPPOSED to queue the next package request after this reader
+    finishes processing a completion (very likely inside the same
+    reader this finding proved exists but hasn't yet located -- probably
+    reachable from the main thread's Mutex-poll loop already implicated
+    in Finding 72, handle 0x1007) and determine whether it has more
+    packages it isn't queuing (a real list/manifest this project doesn't
+    fully drive), or whether this loading phase is legitimately supposed
+    to end here and the real next step is a different game-state
+    transition entirely (not more file loads at all) that this
+    investigation hasn't looked for yet. ---
