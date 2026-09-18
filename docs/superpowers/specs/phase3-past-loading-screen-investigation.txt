@@ -4553,3 +4553,125 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     technique that found Finding 68's wraparound) is likely more
     productive than continuing to guess at which existing PPC function
     might be it. ---
+
+--- Finding 77: built the real memory-write watchpoint Finding 76
+    proposed, hit a real platform limit, pivoted to a disciplined static
+    search instead, and found -- and live-confirmed -- the actual
+    per-file dispatch mechanism this whole investigation has been
+    missing since Finding 70.
+
+    First, the watchpoint: since lldb attach still hangs in this
+    environment (Finding 68, no task_for_pid permission) and ARM64
+    hardware debug registers need the same privilege, built a real
+    software watchpoint instead -- mprotect() the host page backing one
+    guest address read-only, catch the SIGSEGV/SIGBUS on the first real
+    write, dladdr() the faulting host PC to recover which real
+    __imp__subXXXXXXXX PPC function is executing the store, then
+    unprotect and let it complete. This genuinely works (confirmed live:
+    caught real symbol names for real writes). It hit a real, decisive
+    platform limit, though: Apple Silicon's actual host mprotect
+    granularity is 16KB, far coarser than this struct's own field
+    layout, and BOTH candidate target fields (the queue count at
+    0x8267259C, and an array entry's own match field at kArrayBase+904)
+    share their host page with an unrelated, extremely hot neighboring
+    field -- one hit 20,000+ times before real disc I/O even began, the
+    other 50+ times in the first few milliseconds. Chasing the real
+    target through that noise (even with a real per-address suppression
+    table to filter confirmed-noisy neighbors) added enough signal-
+    handling overhead to visibly stall real game progress (one run
+    managed exactly 1 real NtReadFile in 10 seconds, versus the normal
+    ~47) -- a real, self-inflicted Heisenbug, caught and abandoned
+    rather than trusted. All of Finding 77's watchpoint code (host/
+    main.cpp) was fully reverted; nothing from this specific technique
+    is kept.
+
+    Pivoted to a disciplined static search instead, anchored on a real,
+    distinctive literal constant (-18972) already confirmed once before
+    (Finding 73/74's own trace of sub_82127E18's real base computation
+    for kArrayBase) rather than another guess. Filtered the handful of
+    real matches by requiring the SAME real "+9628 immediately before
+    -18972" pattern (confirming the same real base chain, not a
+    coincidental same-immediate-value in unrelated code), and found two
+    new, real, previously-unexamined references in
+    private/ppc/ppc_recomp.12.cpp: sub_8212DC20 (line 13639) and, via
+    its own real caller chain, sub_8212EA80 (line 15743) and sub_8212EAF0
+    (line 15821).
+
+    Read all three in full, for real, rather than guessed from
+    addresses alone: sub_8212DC20 searches the download-queue array
+    (Finding 73/74's own array) by a real match field (its own
+    parameter's +332), then updates a real per-entry state field
+    (+928) and conditionally calls sub_82129F38 -- the SAME function
+    Finding 76 found and dismissed as "generic, unrelated
+    refcounted-object Release() internals". It wasn't unrelated; Finding
+    76's dismissal is retracted here, corrected by the deeper trace
+    rather than left standing. sub_8212DC20 is called from sub_8212EA80,
+    which scans a real fixed 3-slot table (stride 340) for any slot with
+    bit 4 (0x10) set in its own +324 flags word -- and that table's real
+    base address (0x82670000 - 29464 = 0x82668CE8) is EXACTLY Finding
+    73/74's own already-confirmed download-manager struct address, and
+    the flag word it checks (struct+324 = 0x82668E2C) is the EXACT SAME
+    address Finding 74's live memory-watch already recorded toggling
+    0x3<->0x13 eleven times. Every real piece of static evidence from
+    three separate findings (73, 74, 76) converges on one real struct.
+    sub_8212EA80 itself is called from sub_8212EAF0, a real per-tick
+    network/download-manager update function (real delta-time
+    computation via __rdtsc, confirmed) -- every one of its 4 real
+    static call sites passes a flags value with bit 0x8 set (three pass
+    the literal 8, the fourth passes 0xFFFF), so the gate reaching
+    sub_8212EA80 is unconditionally satisfied whenever this chain runs
+    at all.
+
+    Instrumented all three live (temporary, reverted after, same
+    pass-through-override technique as every prior live check this
+    session) for a genuine 90-second run. Decisive result: sub_8212EAF0
+    ticks steadily and healthily for the entire run -- 119 real ticks
+    over 90 seconds, no stall, no gap, still running fine at the very
+    end. sub_8212DC20, reached through it, fires EXACTLY 11 times, with
+    its own real match-field argument incrementing 0 through 0xA (10) --
+    an EXACT match to the long-established real historical count (11
+    real file completions, Findings 70-76's own repeated observation) --
+    and then genuinely stops, permanently, for the remaining ~80 seconds
+    of the same run, while the outer tick loop keeps running perfectly
+    normally around it.
+
+    This is the clearest, most complete confirmation this investigation
+    has produced. The full real mechanism -- per-tick heartbeat, 3-slot
+    dispatch scan, per-file driver, array search, state update, all the
+    way down to Finding 73's own completion-notification chain -- is now
+    traced and live-verified end to end, and NONE of it is broken,
+    stuck, or silently failing anywhere. The heartbeat never stops. The
+    scan never stops. The dispatch fires exactly as many times as real
+    files were ever actually available to dispatch, then correctly,
+    healthily stops calling a function that has nothing left to do.
+
+    Status: real, decisive, fully live-confirmed (nothing to fix --
+    every function in this chain works exactly as designed). Also fixed
+    a real, disruptive environment issue hit while verifying the clean
+    revert: Homebrew's llvm auto-updated to 22.1.8 during this session's
+    gap and started targeting a macOS SDK version (27) newer than any
+    installed Command Line Tools SDK (highest available: 26.5) -- a
+    plain rebuild failed with real, unrelated-looking libc++ errors
+    (missing FP_NAN, ldiv_t, etc.) that had nothing to do with any
+    source change (confirmed via a clean `git status` first). Fixed
+    locally by reconfiguring CMake with an explicit CMAKE_OSX_SYSROOT
+    pointing at the real installed 26.5 SDK -- build/ is gitignored, so
+    this needed no tracked-file change and isn't part of this
+    investigation's own findings, just a note for whoever hits the same
+    wall next.
+
+    This closes the mechanism-tracing arc this session's Findings 70-77
+    have been running: Finding 75's "the queue is genuinely empty, and
+    the loaded set is a coherent front-end-only boundary" conclusion no
+    longer rests on inference alone -- it's now backed by a complete,
+    live-verified trace showing the real dispatch mechanism healthily
+    running out of real work, not failing to do real work that exists.
+    Concrete next step for a fresh session, sharpened to its final,
+    narrowest point: find what real condition or event is supposed to
+    add a 12th entry back into the array Finding 73/74 already mapped in
+    full (this is now the ONLY missing piece -- every consumer, dispatcher,
+    and notification path around it is confirmed healthy) -- most likely
+    a real menu-navigation input event, a sign-in completion, or another
+    async game-state transition this project has genuinely never had a
+    reason to model before reaching this deep into the front-end's own
+    boot sequence. ---
