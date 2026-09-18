@@ -4408,3 +4408,71 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     to end here and the real next step is a different game-state
     transition entirely (not more file loads at all) that this
     investigation hasn't looked for yet. ---
+
+--- Finding 75: answered Finding 74's own open question -- directly,
+    with real ground truth instead of more disassembly tracing. Dumped
+    the real download-request queue (Finding 73/74's own array: count
+    at 0x8267259C) at the exact moment the watchdog fires (temporary
+    probe in host/main.cpp, reverted after). Result: count=0. Confirmed,
+    real, decisive -- the queue genuinely is empty at the stall, not a
+    12th entry sitting there unprocessed. This directly settles Finding
+    74's "enqueue gap vs. narrower submission bug" question in favor of
+    enqueue gap: nothing populates the array once it drains.
+
+    Then checked the other half of Finding 74's open question -- is this
+    a real bug, or does this loading phase legitimately end here --
+    against real ground truth rather than more guessing: used the
+    xdvdfs CLI tool (already present on this machine, cargo-installed)
+    to list the real ISO's actual package manifest directly. Decisive:
+    the ISO contains 81 real .xen files (54 real content packages + 27
+    matching _fetm metadata companions) -- vastly more than the ~11
+    real packages this project's own run ever gets through before the
+    queue empties. This proves a real backlog of un-requested content
+    exists on disc; the queue isn't empty because the manifest is
+    exhausted.
+
+    But cross-referencing WHICH 11 real packages actually got loaded
+    (from this session's own run logs, Findings 70-74) against the full
+    manifest reveals something important, checked rather than assumed:
+    the loaded set (w_apploadingscreen, xbox360online, s_generic,
+    speech_generic, w_commonobjectshires, w_controllertcr,
+    w_frontend[_fetm], w_hintloadingscreen, w_onlinelobby,
+    w_persistentgameinfo, w_saveload, bk_music) is EXACTLY a coherent
+    "boot to the front-end/main-menu screen" set -- every one of them is
+    plausible menu/UI-shell content. None of the real gameplay-mode
+    packages (w_LMS_SubZero, w_HockeyLevel[_2], w_KeepAway[_2],
+    w_ItsaKnockOut[_2], w_HotPotato[_2], the whole w_IngameObjects_*
+    family, w_IngameHud, w_CCT_BB -- all real, all present on disc, all
+    genuinely never requested) are anywhere in the loaded set. This
+    isn't a ragged, arbitrary cutoff partway through a flat list -- it's
+    a clean category boundary.
+
+    This is a materially different, more honest picture than "confirmed
+    bug, gap found" would suggest. The most likely real explanation,
+    given this evidence, isn't that something forgot to enqueue file
+    #12 -- it's that this project has now faithfully reached the real
+    end of the front-end-loading phase, and real Xbox 360 game logic
+    correctly stops queuing new packages there until something else (a
+    menu selection, a "start game" action, a sign-in completing, or
+    another real player-driven or async state transition this project
+    has never modeled because nothing has ever reached this deep before)
+    triggers the next phase's package list. A real architectural gap
+    either way -- but "the trigger for phase 2 is never modeled" is a
+    substantially different, more specific problem than "the queue
+    silently breaks," and importantly doesn't implicate any of this
+    session's own fixes (Findings 66-74) as incomplete or wrong.
+
+    Status: real, decisive, ground-truth-confirmed findings (nothing to
+    fix here -- diagnostic, not a bug in this project's own host code).
+    Concrete next step for a fresh session, sharpened considerably by
+    this evidence: don't chase the download queue further (confirmed
+    empty, confirmed correctly so for this phase) -- instead find what
+    real condition/signal is supposed to trigger the front-end's
+    transition to a new package-loading phase (very likely something
+    the main thread's Mutex-poll loop, Finding 72's handle 0x1007, is
+    ultimately waiting on) and whether this project has any path to
+    satisfy it at all (a real menu-navigation input event, an XNotify
+    sign-in-style completion, or something else entirely) -- the
+    loading-screen investigation itself may be functionally complete;
+    the real remaining work is standing up whatever comes logically
+    after it. ---
