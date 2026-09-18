@@ -4476,3 +4476,80 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     loading-screen investigation itself may be functionally complete;
     the real remaining work is standing up whatever comes logically
     after it. ---
+
+--- Finding 76: two real efforts this session -- one abandoned honestly
+    mid-course, one that ran to a decisive, confirming conclusion.
+
+    First: tried to identify the real PPC caller behind Finding 72's
+    dominant main-thread wait (handle 0x1007, a Mutant, 1106 of 1923
+    calls in Finding 72's own 60s measurement). Traced the generic wait
+    trampoline (sub_820AB238, whose own caller-return is always the same
+    fixed address regardless of who calls it -- useless on its own) down
+    through a chain of live probes to its real ultimate source: a
+    35-call-site-deep generic "wait on handle r3" utility
+    (sub_820A9710), filtered live to the one real caller-return that
+    actually matters for handle 0x1007. Found real evidence, but it
+    didn't point where expected: the callers were sub_821298C0 (a
+    one-time zero-init routine for a large struct at a fixed address)
+    and sub_82129F38 (which, on closer real reading, looks like a
+    generic engine-wide refcounted-object Release() path -- a real
+    0xDEADBEEF tagged-pointer validity check, a linear scan of a
+    count/array pair, a refcount decrement). Neither looks specific to
+    package loading. Honest conclusion: 0x1007 is most likely an
+    ordinary object-lifecycle lock exercised by routine, unrelated
+    engine activity -- not "the download manager's own idle-poll" as
+    Finding 72 speculated. Abandoned this thread rather than keep
+    reverse-engineering unrelated internals on a premise the evidence
+    was actively undermining. (Also caught and corrected a real error
+    from earlier in this same session while pivoting away: sub_8212AB88,
+    assumed during Finding 73's exploration to be "the package-submission
+    entry point," turned out to never be called even once across a real
+    60-second run once actually instrumented -- a leftover wrong
+    identification from before Finding 73's own correction, never
+    checked until now. Noted and dropped; the real submission mechanism
+    remains genuinely unidentified.)
+
+    Second, more productive: extended Finding 75's queue-count check
+    (0x8267259C) from a single ~10-second snapshot into a continuous
+    live watch over a genuine 30 real minutes (watchdog temporarily
+    extended to 1800s, reverted after -- confirmed by real wall-clock
+    correlation: process launched 23:35:21, exited exactly at 00:05:21,
+    30 minutes later, matching the configured duration precisely despite
+    the exit message's own hardcoded "10 seconds" text, a preexisting
+    display-only inconsistency from earlier temporary watchdog bumps
+    this session, not a new bug). Result: count transitioned 21 times
+    total (0->1->0, ten full real enqueue/consume cycles, matching the
+    ~11-file count established since Finding 70), then settled at 0 and
+    never changed again for the remaining ~29 minutes of real run time --
+    by far the longest single confirmation this specific mechanism has
+    ever received.
+
+    Status: real, decisive reinforcement of Finding 75's core conclusion
+    (kept -- diagnostic, nothing to fix). Over 30x longer than the
+    original snapshot, and comfortably longer than any timescale
+    previously tested for ANY mechanism in this investigation except
+    Finding 65's original 40-minute ring capture, the download queue
+    never refills on its own. This makes "the queue is waiting on
+    something this project has never modeled" (Finding 75's own
+    conclusion) considerably more solid than "maybe it just needs more
+    real time" -- ruled out directly, not just theorized.
+
+    Concrete next step for a fresh session, narrowed by process of
+    elimination: the real trigger for phase 2's package list is neither
+    a background timer/retry (ruled out, 30 real minutes) nor gated by
+    handle 0x1007 (ruled out, unrelated engine lock) nor reachable
+    through sub_8212AB88 (ruled out, never called). Genuinely
+    unidentified candidates worth checking with the same live-instrumentation
+    technique that has worked throughout this session: a real controller/
+    input-state check this harness has never fed a value into (this
+    project has no controller/XInput plumbing at all as far as this
+    investigation has confirmed), a real XamShowSigninUI-style
+    sign-in-completion gate, or a distinct, not-yet-found real "queue the
+    next phase" function this session never located -- the ACTUAL real
+    enqueue-side function (whatever writes entry+904 in Finding 73/74's
+    array to add a NEW request) was never directly identified this
+    entire session, either, and doing so directly (a live memory-write
+    watchpoint on the array's own memory range, the same class of
+    technique that found Finding 68's wraparound) is likely more
+    productive than continuing to guess at which existing PPC function
+    might be it. ---
