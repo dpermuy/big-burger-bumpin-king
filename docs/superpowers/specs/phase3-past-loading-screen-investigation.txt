@@ -4922,4 +4922,62 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     the name buffer AND the *(kernelState+1012) handle feed into) to
     pin down exactly what kind of object *(kernelState+1012) points at,
     which should finally make the real writer recognizable by its own
-    real argument/return type instead of by a bare offset. ---
+    real argument/return type instead of by a bare offset.
+
+--- Finding 81: continued Finding 80's own next step directly, all
+    static reading this pass (no live runs). Real, useful progress --
+    both remaining unread functions from Finding 80's list.
+
+    Read sub_823EE590 (private/ppc/ppc_recomp.48.cpp:57) in full: a real
+    strchr clone (r3=string, r4=char-to-find; r4==0 is the special
+    "find the terminator" case). The real call site (self+76, 92) is
+    therefore checking self+76 -- sub_82452DD0's own per-package name
+    field -- for a literal backslash (ASCII 92 = '\\'). Confirms the
+    three-way branch Finding 80 traced is really "does this package's
+    stored name already look like a full path (has a backslash), or is
+    it a short name needing table-driven resolution" -- exactly the
+    kind of check a real path-vs-bare-name disambiguator would do, and
+    further confirms self+76 is a genuine name/path field.
+
+    Read sub_82129760 (private/ppc/ppc_recomp.12.cpp:2918) in full: real
+    args are r3=self (=*(kernelState+1012), Finding 80's "object
+    handle"), r4=the built "<name>.xen" buffer, r5=constant 1 (unused
+    inside this function). Real body: saves the handle to r6, then
+    checks whether it's 0.
+      - Handle == 0: calls sub_821296E8(buffer, 1) -- not yet read, but
+        by position/shape a real "look this name up globally" path.
+      - Handle != 0 (the normal, observed case): calls
+        sub_82125A40(buffer, 0) -- not yet read, shape suggests a real
+        hash/key derivation from the name buffer -- then
+        sub_82125B70(handle, thatKey) -- not yet read, shape suggests a
+        real keyed lookup INSIDE whatever table the handle owns. If
+        found (non-null), dereferences +8 of the result and returns
+        that; otherwise returns the raw (likely null) lookup result.
+
+    Status: real, decisive reframing. *(kernelState+1012) is not a bare
+    name or a per-package struct itself -- it is a real CONTAINER/
+    REGISTRY HANDLE: something that owns a keyed table of named entries,
+    and the whole sub_8212A298 call is "resolve '<name>.xen' as a key
+    inside this container" (or globally, if no container is set yet).
+    That means sub_82452DD0's own self (r31, the per-package state
+    struct with its already-known self+72 state field and self+76 name
+    field) and *(kernelState+1012) (the container/registry the name gets
+    looked up IN) are two clearly distinct real objects -- the state
+    machine walks one per-package struct per call, but resolves each
+    package's name against a single shared container referenced by
+    kernelState+1012. This narrows the original "advance to package 12"
+    question one more real step: the write this investigation is
+    hunting for either (a) swaps which container kernelState+1012 points
+    at, or (b) never needs to change at all if the SAME container is
+    reused across all packages and it's the PER-PACKAGE self+72/self+76
+    struct that actually advances between packages (a question this
+    pass didn't yet settle -- worth checking directly next). Concrete
+    next step: find where sub_82452DD0's own self (r31) comes from at
+    ITS OWN call site (i.e. read sub_82452DD0's caller, likely
+    sub_82460518, private/ppc/ppc_recomp.59.cpp:21345, still not read in
+    full) -- if the caller iterates a real fixed array of per-package
+    structs and calls sub_82452DD0 once per element, that loop and its
+    own real bound is the actual "queues exactly 11, never 12" answer,
+    and *(kernelState+1012) may turn out to be a constant, shared
+    container that was a red herring for THIS specific question (though
+    still real and correctly understood now). ---
