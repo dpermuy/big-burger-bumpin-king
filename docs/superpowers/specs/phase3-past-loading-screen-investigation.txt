@@ -5198,4 +5198,53 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     question, the pipeline is now mapped end to end, live-confirmed at
     two independent, exactly-matching points, and healthy throughout --
     the standing Finding 74-76 diagnosis (a real, non-buggy content
-    boundary) stands with this session's strongest evidence yet. ---
+    boundary) stands with this session's strongest evidence yet.
+
+--- Finding 85: continued Finding 84's own next step (find what links
+    new entries into kernelState+648's list), all static reading, no
+    live runs. Correctly abandoned a lead rather than chase noise --
+    the real, useful result of this pass is knowing where the signal-
+    to-noise ratio of this specific static-manifest hunt ran out.
+
+    First confirmed kernelState+648 itself is never separately written
+    anywhere in the 8 kernelState-confirmed files -- consistent with it
+    being a fixed, embedded 4x160-byte array INSIDE kernelState (Finding
+    82's "addi r29,r30,648" was address arithmetic on a field within the
+    struct, not a pointer load), not a separate allocation with its own
+    head pointer to reassign. That means "populating a new package"
+    means writing directly into one of the 4 embedded slots' own fields,
+    not linking a new node into the list.
+
+    Tried the same restricted-file-list technique Finding 83/84 used
+    successfully on offsets 868/1012/1016, this time on offset+72 (the
+    per-slot state field) to find a real "state=1, new package started"
+    initializer. This offset was too common even within the 8 already-
+    narrowed files -- 60+ real hits, the large majority confirmed (by
+    quick inspection of a sample) to be completely unrelated structs
+    that simply happen to also share a source file with kernelState
+    code, not per-package slots. Correctly abandoned without chasing
+    further, the same discipline Finding 77 established for a bare
+    offset grep -- a narrowed file list alone isn't enough when the
+    offset itself is this common; it would need per-hit base-computation
+    verification (confirming each candidate's own base register was
+    itself derived from kernelState+648+n*160, not just "some r31") to
+    be trustworthy, which is real, slow, one-hit-at-a-time work with no
+    shortcut found this pass.
+
+    Status: honest reassessment rather than a fabricated resolution.
+    Findings 78, 83, and 84 together already deliver the strongest real
+    result this investigation is likely to produce for the original
+    loading-screen question: the full download pipeline, from per-
+    package state machine through concurrency-gated commit, staging,
+    advance, and name resolution, is mapped end to end and live-
+    confirmed healthy at two independent, exactly-matching points (11
+    enqueues, 11 advances, now known to be the same real event). The one
+    remaining open thread -- exactly which real static data seeds the
+    4-slot worker pool with precisely 11 total package entries and none
+    more -- is real, honest, unresolved curiosity, but finding it
+    requires slower one-hit-at-a-time base verification with no further
+    shortcut visible from this pass, and does not change the standing
+    diagnostic conclusion (Findings 74-76: a real, coherent, non-buggy
+    content boundary) in any way. Recommending this as a natural
+    stopping point for the core investigation unless there's a specific
+    reason to keep pursuing the exact manifest source. ---
