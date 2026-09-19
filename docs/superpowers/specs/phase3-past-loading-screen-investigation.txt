@@ -5045,4 +5045,89 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     now, the standing diagnostic conclusion (Findings 74-76: the
     pipeline is fully healthy end-to-end and legitimately runs out of
     real work at a coherent boot-to-front-end content boundary, not a
-    bug) still holds and is unchanged by this pass. ---
+    bug) still holds and is unchanged by this pass.
+
+--- Finding 83: per explicit user direction ("keep climbing, continue"),
+    went back up sub_8212E2A0's own caller chain instead of deeper into
+    the worker-pool internals Finding 82 flagged as a dead end for the
+    "why 11, never 12" question. Found and LIVE-CONFIRMED the real
+    advance mechanism this whole Finding 79-82 arc was hunting for.
+
+    Correctly abandoned a noisy lead first, following this session's own
+    established discipline (Finding 77/79): a bare grep for real STORES
+    to offset+1012/+1016 across the whole codebase surfaced a hit in
+    ppc_recomp.56.cpp (stw r28,1012/1016(r31)) that looked promising on
+    offset alone, but its containing function is real 3D vector/skinning
+    math (vupkd3d128, vsldoi, a real transform struct with fields at
+    +260/+272/+328/+832/+976/+992/+996) -- an unrelated struct that
+    happens to share the same byte offsets. Ruled out without live
+    verification, purely from the surrounding real code shape, and
+    correctly excluded from the real search.
+
+    Narrowed the real search instead to the 8 files that use the exact
+    confirmed kernelState access pattern (lis r11,-32143 / lwz
+    r3,-29808(r11) -- the same real global-pointer read this whole
+    session's kernelState+1012/1016/1004/868/816/824 tracing has used
+    throughout). Grepping real STORES to +1012/+1016 restricted to
+    those 8 files surfaced exactly one new, real, base-confirmed
+    candidate: private/ppc/ppc_recomp.58.cpp:7784-7785, inside
+    sub_82452728 (private/ppc/ppc_recomp.58.cpp:7523). Real body,
+    confirmed base register (r11, loaded via the same -29808 global
+    pointer at line 7779): `r10 = *(kernelState+868); *(kernelState+1016)
+    = r10` -- a real COPY from a real "staged next package" field
+    (+868) into the real "active package" field (+1016) this whole arc
+    has been tracing. The same function ALSO reads *(kernelState+868)
+    at its own top (r31 = *(kernelState+868), line ~7557-7558) and
+    resets that package's own state field to 0 (`*(r31+72) = 0`,
+    `*(r31+148) = 0`) -- exactly the real "hand off the staged package
+    and reset its state machine" shape the "advance" step should have.
+    No static callers were found for sub_82452728 anywhere in the
+    recompiled PPC text (grepped for both direct calls and the literal
+    address as data -- zero hits beyond its own definition and the
+    guest-to-host function mapping table), meaning it's reached through
+    a real indirect/callback dispatch this project's plain-text
+    disassembly can't show directly -- so confirmed the real call count
+    LIVE instead of relying on static reading alone.
+
+    Live probe (Finding 61's established override technique: strong
+    override logging then calling through to __imp__sub_82452728,
+    120-second extended watchdog, reverted immediately after): run
+    2026-09-19 17:29:18-17:31:xx EDT. Real result: sub_82452728 fired
+    EXACTLY 11 times -- an exact match to Finding 78's own independently
+    confirmed 11 real sub_8212DE28 enqueue calls -- with the identical
+    self/r4 addresses on every single call (a fixed, reused struct slot,
+    not a fresh allocation per package, matching the "advance the SAME
+    active-slot pointer to a new staged target" theory rather than any
+    per-package heap churn).
+
+    After reverting both the probe and the temporary 120s watchdog and
+    rebuilding, the default 10s regression check showed a real, honest
+    surprise: 152 NtReadFile lines instead of the historical 47-line
+    baseline, with an otherwise identical clean shutdown message and a
+    verified-clean git diff (source exactly matches HEAD). Rather than
+    assume either "still broken" or "fine, ignore it," ran a second
+    immediate regression check (17:32:15-17:32:25 EDT): 47 lines,
+    exact match to the historical baseline including the same final
+    handle/offset. Concluded the 152-line run was real wall-clock
+    variance (OS disk-cache warm-up from this session's own many prior
+    runs letting more real I/O complete inside the same fixed 10-second
+    window), not a functional regression -- confirmed by the immediate
+    47-line repeat rather than assumed.
+
+    Status: real, decisive, LIVE-CONFIRMED progress. The "advance to
+    next package" mechanism Finding 79 first went looking for is now
+    identified (sub_82452728) and its call count is confirmed to
+    exactly match the real, independently-established package count
+    (11, Finding 78) -- the strongest possible cross-check available
+    without finding sub_82452728's own indirect caller. This still
+    doesn't identify what feeds *(kernelState+868) itself (the real
+    "staged next package" source sub_82452728 hands off from) or what
+    finally stops staging a 12th -- that real source is still
+    upstream, and sub_82452728's own caller (reached only indirectly)
+    remains unidentified. Concrete next step, if continuing further:
+    find the real writer of *(kernelState+868) (the staging field, one
+    level further upstream of the now-confirmed +1016 advance) using
+    the same base-confirmed-file-list technique this pass established,
+    since that's the one remaining unidentified link between "a fixed
+    real manifest of packages" and "sub_82452728 advances to each one,
+    11 times, then stops." ---
