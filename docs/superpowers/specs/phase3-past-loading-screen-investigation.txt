@@ -4980,4 +4980,69 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     own real bound is the actual "queues exactly 11, never 12" answer,
     and *(kernelState+1012) may turn out to be a constant, shared
     container that was a red herring for THIS specific question (though
-    still real and correctly understood now). ---
+    still real and correctly understood now).
+
+--- Finding 82: continued Finding 81's own next step directly, all
+    static reading this pass (no live runs). Real, useful architectural
+    progress, but it lands on a different subsystem than the one that
+    actually answers "why 11, never 12" -- and that distinction is the
+    real result of this pass.
+
+    Read sub_82460518 (private/ppc/ppc_recomp.59.cpp:21345) in full.
+    Confirmed its self param (r30) IS the same global object this whole
+    session has been calling "kernelState" (traced to the identical
+    real access pattern -- lis r11,-32143(=0x82670000); lwz
+    r3,-29808(r11) -- at its own call site, ppc_recomp.57.cpp:1733-1739).
+    So kernelState+1016 (a field 4 bytes past the already-traced +1012
+    container handle) is a real, DIFFERENT field: a pointer to a "linked
+    list" of active per-package structs (matches sub_82452DD0's own
+    self+72 state field: this function reads *(*(kernelState+1016)+72)
+    and resets +1016 to 0 when a bit at +60 of that entry is set --
+    real cleanup of a completed slot).
+
+    Found the real loop this session has been looking for, but for a
+    different subsystem than the "how many packages total" question:
+    a genuine fixed 4-ITERATION loop (r28 starts at 4, counts down,
+    stops at 0) walking a real linked list of package-tracking slots
+    at kernelState+648, stride 160, via a real "next" pointer at each
+    slot's own +68. For each live slot (r31), calls sub_82452DD0(r31)
+    -- but ONLY after a real gating check: calls sub_82125C90(0) (not
+    yet read, shape suggests "get current in-flight/active count") and
+    compares its result against *(kernelState+1004) (not yet read,
+    shape suggests a real concurrency LIMIT) -- skip this slot's
+    sub_82452DD0 call if the count isn't below the limit. This same
+    gate (sub_82125C90(0) vs kernelState+1004) repeats 3 times through
+    this function's body, strongly suggesting a real, generic "don't
+    exceed N concurrent downloads" governor wrapping multiple real
+    slot-processing branches, not something specific to any one slot.
+
+    Status: real, solid architecture, but a course correction on where
+    this maps onto the original question. This function (and the whole
+    sub_8212A298/self+76/".xen"/kernelState+1012-1016 chain traced in
+    Findings 79-82) is the real NAME-RESOLUTION AND WORKER-POOL side of
+    the download system -- it manages up to 4 concurrent in-flight
+    package resolutions/downloads and their per-slot state, gated by a
+    real concurrency budget. It is NOT the same mechanism as
+    sub_8212DE28 (Finding 78's confirmed real ENQUEUE function, which
+    fires exactly 11 times and is what actually decides how many
+    packages exist to work on in the first place). These are two
+    genuinely separate real subsystems: one decides WHAT to download
+    (confirmed: exactly 11, Finding 78, driven by whatever real data
+    feeds sub_8212DE28's caller chain) and this one decides HOW MANY AT
+    ONCE to actively work on (a real, bounded worker pool, unrelated to
+    the total-of-11 count). Chasing kernelState+1012/1016 further will
+    explain the worker pool's own mechanics but will NOT explain why
+    there are exactly 11 packages rather than 12 -- that answer already
+    lives upstream, in whatever real caller/data ultimately calls
+    sub_8212DE28 11 times (Finding 78's own still-open thread, the
+    caller chain above sub_8212E2A0, not this worker-pool subsystem).
+    Concrete next step, if continuing this specific "why 11" question:
+    go back to Finding 78's own caller chain (sub_8212E2A0's own
+    caller, not yet traced upward) rather than deeper into this
+    worker-pool code, since this pass shows the worker pool is a
+    downstream consumer, not the source, of the real package count. If
+    instead treating the loading-screen investigation as complete for
+    now, the standing diagnostic conclusion (Findings 74-76: the
+    pipeline is fully healthy end-to-end and legitimately runs out of
+    real work at a coherent boot-to-front-end content boundary, not a
+    bug) still holds and is unchanged by this pass. ---
