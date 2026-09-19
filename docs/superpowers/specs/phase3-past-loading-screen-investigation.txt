@@ -4745,3 +4745,102 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     size manifest/list with its own real count, matching Finding 75's
     "coherent front-end-only boundary" theory, but not yet confirmed at
     this level of the trace the way the enqueue mechanism itself now is. ---
+
+--- Finding 79: continued Finding 78's own next step (read sub_82452DD0
+    in full) directly, all static reading this pass (no live runs).
+    Real, useful progress, with one honest correction along the way
+    before it became a wrong lead.
+
+    Read the rest of sub_82452DD0 (private/ppc/ppc_recomp.58.cpp,
+    the part not covered by Finding 78's earlier partial read). Found a
+    real, central field: *(kernelState+1012), read repeatedly throughout
+    this function and passed directly as a real object reference to
+    both sub_8212A298 (see below) and sub_8212E2A0 (Finding 78's own
+    confirmed enqueue-chain entry point) -- this is genuinely the "which
+    package am I working on right now" reference the whole chain
+    revolves around, not a simple loop index.
+
+    Read sub_8212A298 (private/ppc/ppc_recomp.12.cpp:4556) in full: a
+    thin real wrapper that builds a formatted lookup string (real
+    sprintf-style call, format string address confirmed but its actual
+    text not yet read) using *(kernelState+1012) as one of the format
+    arguments, then calls sub_82129760 to resolve/validate it into a
+    real handle. sub_82452DD0 checks THIS call's return value for 0 --
+    if the lookup fails, it sets a real terminal flag (bit 0x08000000 at
+    self+60) and returns early, skipping the rest of the state machine
+    entirely. This is a real, concrete "is there a valid next package"
+    check.
+
+    Went looking for whatever writes *(kernelState+1012) to a NEW real
+    value (the actual "advance to next package" step) and caught a real
+    mistake before committing to it: offset+1012 alone matched a dozen
+    real stores across the codebase, but most resolve through completely
+    different, unconfirmed base objects (checked one directly --
+    private/ppc/ppc_recomp.28.cpp:1208 -- its own base register is a
+    generic caller-supplied r3 parameter, no confirmed connection to the
+    real kernelState struct at all). Correcting course rather than
+    chase an unverified lead (the same discipline Finding 73 established
+    earlier this session): only trusted a write once its own base
+    computation was checked against the confirmed real chain. Found
+    exactly one real, CONFIRMED write to this field in either of the two
+    files this session's own trace has already confirmed relevant
+    (ppc_recomp.58.cpp, containing sub_82452DD0 itself: zero hits;
+    ppc_recomp.59.cpp, containing sub_82460518, Finding 78's own
+    outermost confirmed caller: sub_82460C90, a real bulk state-reset
+    function that sets *(kernelState+1012) = 0 among a dozen other real
+    fields -- confirmed real and relevant, but a RESET, not the real
+    "here is the next package" advance this session is actually looking
+    for).
+
+    Status: real progress (the terminal-flag-on-lookup-failure mechanism
+    is now confirmed, and Finding 78's "coherent front-end boundary"
+    theory is one real step closer -- SOMETHING checks whether the next
+    package genuinely exists and cleanly stops if not, exactly matching
+    Finding 75's own conclusion, now traced one level deeper than
+    before). The specific real function that WRITES a new (non-reset,
+    non-zero) value into *(kernelState+1012) -- the actual advance step
+    -- was not found this pass; the candidates checked either weren't
+    the same real struct (ppc_recomp.28.cpp, ruled out) or were a
+    different real operation (the zero-reset, ruled out as "the advance"
+    but kept as confirmed-relevant). Concrete next step: broaden the
+    search beyond a plain offset+1012 grep -- read sub_8212A298's real
+    format string (a compile-time XEX .rodata constant, directly
+    readable without live instrumentation) to understand exactly what
+    kind of value *(kernelState+1012) needs to BE (an index? a string
+    pointer? a struct pointer?), which will make the real writer far
+    easier to recognize by its own real argument types rather than by
+    grepping a common byte offset alone.
+
+    Follow-up, same pass: read that real format string directly out of
+    the loaded guest image (guest address 0x82010DB8, computed from
+    sub_8212A298's own lis/addi pair -- a compile-time .rodata constant,
+    no live gameplay needed, one-shot dump then exit). Real content:
+    ".xen" -- a literal file-extension suffix, NOT a printf-style
+    "%d"/"%s" format specifier. This changes the real type picture:
+    sub_823EDBB0 (the function sub_8212A298 hands this string to,
+    together with *(kernelState+1012)) is far more likely building a
+    real "<name>.xen" path by REAL STRING CONCATENATION than by
+    sprintf-style formatting, which means *(kernelState+1012) is a real
+    STRING POINTER (or a struct with a name field) -- a real package
+    NAME -- not a bare integer index. (Probe reverted immediately after
+    the dump; rebuilt and re-ran the standard default-10s regression
+    check afterward -- run 2026-09-19 16:03:11-16:03:21 EDT, 47
+    NtReadFile lines, matching baseline exactly, confirming the revert
+    left no residue.)
+
+    Status: real progress, and the type-narrowing above is the useful
+    result of this pass -- it turns "grep for offset+1012" into a much
+    sharper search: the real writer must store a STRING/NAME pointer,
+    not an index, which should make it recognizable on sight against a
+    real fixed manifest/name-table rather than by offset alone. The
+    writer itself is still not found. Concrete next step: read
+    sub_823EDBB0 itself (not yet read) to confirm the real concatenation
+    hypothesis directly rather than inferring it from the format string
+    alone, then search for the real fixed name-table/manifest this
+    string pointer would plausibly come from (consistent with Finding
+    75's "coherent front-end-only boundary" theory -- a real list with
+    a real, finite length would explain both the 11-and-stop behavior
+    and the missing "advance" write in one real structure), and finish
+    reading sub_82460518 (private/ppc/ppc_recomp.59.cpp:21345, still not
+    read in full) as the next unread link in the confirmed caller
+    chain. ---
