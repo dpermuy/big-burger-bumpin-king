@@ -4675,3 +4675,73 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     async game-state transition this project has genuinely never had a
     reason to model before reaching this deep into the front-end's own
     boot sequence. ---
+
+--- Finding 78: found the real enqueue function Finding 74-77's whole
+    arc was chasing, live-confirmed it fires exactly as many times as
+    real history says, and traced its real caller chain three more
+    levels up. All live runs this finding cites used the project's
+    normal default 10-120s temporarily-extended watchdog, reverted after
+    each; real wall-clock times noted per run since the session asked
+    for them going forward.
+
+    Found via a disciplined static search (grepping for real stores to
+    array-entry offset+904, the match field Finding 73 already
+    established, instead of only reads): sub_8212DE28 (private/ppc/
+    ppc_recomp.12.cpp:13935-14173). Read it in full: a real capacity
+    check (fails immediately if the real queue count already equals 16),
+    a real mutex acquire, computes the next free array slot from the
+    SAME real count field Findings 73-77 already mapped, does real
+    string-copy work (building a real path/name into the new entry),
+    then writes a complete new entry (offset+896 through +932, including
+    +904 = the array's own current count -- confirming Finding 73's
+    "match field = insertion-order index" reading was exactly right),
+    increments the real count, and returns 1 (success) on the normal
+    path.
+
+    Live-confirmed (run started 2026-09-19 15:46:53 EDT, finished
+    15:49:00 EDT, temporarily extended 120s watchdog, reverted after):
+    sub_8212DE28 is called EXACTLY 11 times, every single call
+    succeeding (return=1), matching the long-established real historical
+    file count exactly -- then it genuinely stops being called at all,
+    for the rest of the run.
+
+    Traced its real callers via a real, temporary caller-return probe
+    (not more guessing): sub_8212DE28 has 4 real static callers in this
+    codebase; live evidence (run started 15:52:36 EDT, finished
+    15:54:41 EDT) showed the real chain actually exercised is
+    sub_8212E158 <- sub_8212E2A0 <- sub_82452DD0 (private/ppc/
+    ppc_recomp.58.cpp:8526 -- a real per-package state machine, state
+    field at self+72, state 3 = "already complete", other states build a
+    real "d:\Packages\..." path string and drive the real file-open
+    sequence this whole investigation has watched since Finding 66) <-
+    sub_82460518 (private/ppc/ppc_recomp.59.cpp:21345, not yet read in
+    full).
+
+    Also chased and closed a real false lead along the way, live rather
+    than assumed: Finding 77 found a SECOND apparent path to
+    sub_8212DE28, gated behind 3 real conditions inside sub_8212E7C8
+    (loc_8212E990) that all read "satisfied" in a spot-check. Watching
+    all 3 gates continuously (run started 15:44:11 EDT, finished
+    15:46:16 EDT) found a 4th real gate missed in the first read
+    (*(0x8265FC3C), checked immediately before the actual enqueue call)
+    -- and a follow-up run (15:49:44-15:51:49 EDT) confirmed that 4th
+    gate reads 0 for the ENTIRE run, before, during, and long after all
+    11 real enqueues. This specific path is a genuine, permanent dead
+    end for this run -- correctly ruled out with direct evidence rather
+    than left as an open, unresolved lead. sub_82129030 (Finding 77's
+    other candidate, a real small message-queue pop) was confirmed via
+    the same technique to never be called at all during any of these
+    runs -- also closed.
+
+    Status: real, decisive, live-confirmed progress (nothing to fix --
+    diagnostic). The real enqueue mechanism Finding 74 first asked about
+    is now fully identified and behaviorally confirmed exact-match to
+    the historical count. Concrete next step for continuing this same
+    session or a fresh one: read sub_82452DD0's real state machine in
+    full (only partially read so far -- states 1/2/other beyond the
+    "state==3, done" branch already seen) and sub_82460518 (not read at
+    all yet) to find the real condition that decides there's an 11th
+    package to queue but not a 12th -- likely a real loop over a fixed-
+    size manifest/list with its own real count, matching Finding 75's
+    "coherent front-end-only boundary" theory, but not yet confirmed at
+    this level of the trace the way the enqueue mechanism itself now is. ---
