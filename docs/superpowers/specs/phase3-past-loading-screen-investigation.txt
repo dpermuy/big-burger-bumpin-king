@@ -4843,4 +4843,83 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     and the missing "advance" write in one real structure), and finish
     reading sub_82460518 (private/ppc/ppc_recomp.59.cpp:21345, still not
     read in full) as the next unread link in the confirmed caller
-    chain. ---
+    chain.
+
+--- Finding 80: continued Finding 79's own next step directly, all
+    static reading this pass (no live runs -- pure disassembly, real
+    call-site argument tracing). Real, useful progress, with one
+    correction to Finding 79's own register-mapping guess along the way.
+
+    Read the real call site of sub_8212A298 inside sub_82452DD0
+    (private/ppc/ppc_recomp.58.cpp:8710-8716) directly, register by
+    register, instead of assuming argument order from the earlier read.
+    Real mapping: r3 (self) = *(kernelState+1012) itself; r4 = r28 (a
+    real name buffer/pointer, built earlier in the same function -- see
+    below); r5 = a plain constant 1. So *(kernelState+1012) is passed as
+    sub_8212A298's own SELF/this parameter (and, by the same pattern,
+    sub_82129760's self parameter too) -- a real OBJECT HANDLE, exactly
+    matching Finding 79's "object reference" language, but it is NOT the
+    value that ends up inside the ".xen"-suffixed buffer. That was a
+    real gap in Finding 79's own register bookkeeping, caught by
+    re-deriving the call site directly rather than trusting the earlier
+    paraphrase.
+
+    Read sub_823EDBB0 (private/ppc/ppc_recomp.47.cpp:27850) in full:
+    confirmed it is a real generic "build into a stack buffer via a
+    vararg-style pointer, format string, cap length 0x7FFFFFFF" utility
+    (calls sub_823F52D0, a real formatting primitive, not yet itself
+    read) -- genuinely a real snprintf-family function, not something
+    special-cased to this call site.
+
+    Read backward from the sub_8212A298 call site (ppc_recomp.58.cpp,
+    ~8600-8716) to find where r28 (the real value fed to sub_8212A298 as
+    the buffer to suffix with ".xen") actually comes from. Found a real,
+    concrete three-way branch, all gated on sub_82452DD0's OWN self
+    (r31, matching the already-known self+72 state field from Finding
+    78/79):
+      - A real flag bit at self+60, bit 0x02000000 (a DIFFERENT bit of
+        the same +60 word Finding 79 already knows holds the terminal
+        flag at bit 0x08000000 -- two independent flags sharing one
+        word). If clear: r28 = self+76 directly, the raw per-package
+        name field, no further formatting.
+      - If set: calls sub_823EE590(self+76, 92) (not yet read) to check
+        something about that same self+76 name field. If it returns 0:
+        falls through to a table-driven path (loc_82452ED8) that builds
+        a name into a stack buffer via a real array lookup (rlwinm-
+        computed index into a real table near guest address
+        0x82018xxx) plus another sub_823EDBB0 call, and uses THAT as
+        r28 instead.
+      - If nonzero: does a real byte-for-byte copy of self+76 into the
+        stack buffer first (manual strcpy loop), then ALSO runs the
+        same table-driven sub_823EDBB0 formatting on top of it before
+        using the stack buffer as r28.
+    Whichever of these three real paths runs, the result (self+76
+    directly, or a stack buffer built from it/the table) is what
+    actually gets suffixed with the real ".xen" constant via
+    sub_8212A298 -> sub_823EDBB0 -- confirming the "<name>.xen" path-
+    building hypothesis Finding 79 raised, with the real name source now
+    traced to self+76 (sub_82452DD0's own per-package struct field), not
+    to *(kernelState+1012).
+
+    Status: real progress, with an honest correction of Finding 79's own
+    register guess folded in rather than left standing. The real
+    "<name>.xen" filename is confirmed built from self+76 (this
+    PACKAGE's own state struct), while *(kernelState+1012) is confirmed
+    to be a real object HANDLE used as a "this" pointer for the lookup
+    calls -- two distinct real values, not one. This reframes the
+    original search: the "advance to next package" write this
+    investigation has been hunting for should target *(kernelState+1012)
+    still (it IS the real "which package" reference the state machine
+    checks), but the actual per-package NAME data lives at a stable
+    offset (+76) on whatever object that handle points to -- so the real
+    writer is more likely something that swaps which whole per-package
+    struct the handle points at (advancing kernelState+1012 to a
+    DIFFERENT self+76-bearing object), not something that edits a name
+    string in place. Concrete next step: read sub_823EE590 (self+76, 92)
+    (not yet read -- likely a real "is this name already resolved/
+    cached" check, given its role gating the three-way branch above) and
+    sub_82129760 (not yet read -- the real handle-resolution call both
+    the name buffer AND the *(kernelState+1012) handle feed into) to
+    pin down exactly what kind of object *(kernelState+1012) points at,
+    which should finally make the real writer recognizable by its own
+    real argument/return type instead of by a bare offset. ---
