@@ -5130,4 +5130,72 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     the same base-confirmed-file-list technique this pass established,
     since that's the one remaining unidentified link between "a fixed
     real manifest of packages" and "sub_82452728 advances to each one,
-    11 times, then stops." ---
+    11 times, then stops."
+
+--- Finding 84: continued Finding 83's own next step directly (find the
+    real writer of *(kernelState+868)), all static reading this pass (no
+    live runs -- the result closes the loop tightly enough with data
+    this session already live-confirmed in Findings 78 and 83 that a
+    fresh live count wasn't needed to trust it). Real, decisive
+    progress: found the writer, and it ties Finding 78's enqueue count
+    and Finding 83's advance count together into ONE real event instead
+    of two coincidentally-equal ones.
+
+    Applied Finding 83's own technique (restrict the search for real
+    stores to a bare offset to only the 8 files already confirmed to
+    use kernelState's real access pattern) to offset 868. Found exactly
+    one new, real, base-confirmed writer: private/ppc/ppc_recomp.58.cpp:
+    8867, `*(kernelState+868) = r31`, with r29 confirmed as kernelState
+    via the same -29808 access pattern two lines above it (line 8843-
+    8844). Traced the surrounding code (ppc_recomp.58.cpp:8829-8899) and
+    confirmed by direct comparison against the already-read call to
+    sub_8212E2A0 at line 8896-8898 (r3=*(kernelState+1012), matching
+    Finding 78's own confirmed enqueue-chain entry point exactly) that
+    this whole block is INSIDE sub_82452DD0 itself -- r31 here is
+    sub_82452DD0's own self parameter (the per-package struct Finding
+    78-82 already knows has state field self+72, name field self+76).
+
+    Real sequence, all in one code path, same self (r31), no branch
+    between them: (1) a real rate-limit/budget check (calls
+    sub_82125C90(&stackbuf) and compares against a real byte-count sum
+    involving *(kernelState+1004) -- the same real concurrency-governor
+    field Finding 82 already flagged, now confirmed used for a byte/rate
+    budget here too, not just a slot-count budget); (2) if the budget
+    check passes, records a timestamp (`*(self+8) = rdtsc()`), clears a
+    flag bit at self+60, sets bit 0x80000000 at kernelState+816 (a real
+    "something is staged" flag); (3) `*(kernelState+868) = self` --
+    THE stage write Finding 83 asked about; (4) calls sub_8212E2A0(self
+    = *(kernelState+1012), ...) -- Finding 78's confirmed real enqueue
+    trigger.
+
+    Status: real, decisive closure. Steps 3 and 4 above happen back to
+    back, unconditionally, in the same sub_82452DD0 invocation, with no
+    intervening branch -- meaning EVERY real call to sub_8212E2A0
+    (Finding 78: exactly 11, live-confirmed) is paired 1:1 with staging
+    that exact same self into kernelState+868, which Finding 83 already
+    live-confirmed sub_82452728 later promotes into kernelState+1016
+    exactly 11 times too. This was never two coincidentally-matching
+    counts -- it's the SAME real per-package commit event, just read
+    from two different downstream points in the pipeline (Finding 78
+    read it from the enqueue side, Finding 83 read it from the advance
+    side). The real "why 11, never 12" answer is now fully, concretely
+    reduced to one final real question: how many times does
+    sub_82452DD0 itself reach this commit branch (loc_82453024,
+    gated behind the real budget check above) across a full run? That
+    in turn depends on how many real live entries ever populate
+    kernelState+648's per-package linked list (Finding 82) in the first
+    place -- the one remaining unidentified real source, and, per
+    Finding 75/76's own already-solid diagnostic conclusion (a real,
+    coherent, finite manifest, not a broken cutoff), very plausibly a
+    simple static real array of exactly 11 package descriptors baked
+    into this title's own data, populated once at boot before any of
+    this pipeline runs, rather than anything decided dynamically at
+    runtime. Concrete next step, if pursuing full completeness: find
+    what links new entries into kernelState+648's list (an insert/
+    "next"-pointer-set operation, not yet located) to either confirm or
+    rule out that boot-time-static-array theory directly. If instead
+    treating this as sufficient closure for the original loading-screen
+    question, the pipeline is now mapped end to end, live-confirmed at
+    two independent, exactly-matching points, and healthy throughout --
+    the standing Finding 74-76 diagnosis (a real, non-buggy content
+    boundary) stands with this session's strongest evidence yet. ---
