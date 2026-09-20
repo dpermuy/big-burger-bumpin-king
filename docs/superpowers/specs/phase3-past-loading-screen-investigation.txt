@@ -5362,4 +5362,68 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     manifest, of which exactly 11 real entries successfully resolve and
     download every observed run -- a legitimate, coherent, non-buggy
     content boundary, exactly as Finding 74-76 originally concluded,
-    now with the actual real package names as evidence. ---
+    now with the actual real package names as evidence.
+
+--- Finding 89: per explicit user direction ("yes run the probe"), ran
+    the exact correlating probe Finding 87 flagged as its own open next
+    step. This is the real, decisive, live-confirmed closure of the
+    entire "why 11, never 12" question this investigation has pursued
+    since Finding 74.
+
+    Live probe (Finding 61's override technique: strong override on
+    sub_8212A298 itself, reading the real name buffer from its own r4
+    argument before calling through, logging the real return value
+    (Finding 79's confirmed resolve-success/failure result) after;
+    120-second extended watchdog, reverted immediately after). Run
+    2026-09-19 22:54:39-22:56:xx EDT.
+
+    Real, complete, decisive results -- 16 total resolve attempts
+    across Finding 87's 12 real package names:
+    - 3 names with no real "_fetm" variant at all (s_generic,
+      speech_generic, bk_music -- all real names WITHOUT a backslash,
+      confirmed consistent with Finding 80's own real branch: no
+      backslash means no team/localized-variant check) -- single
+      resolve each, all 3 succeed (nonzero return).
+    - 4 real names (w_apploadingscreen, xbox360online, w_saveload,
+      w_commonobjectshires -- all real names WITH a "packages\" prefix,
+      again consistent with Finding 80's backslash-gated branch) each
+      resolve TWICE -- once as "<name>_fetm", once as plain "<name>" --
+      and BOTH real attempts succeed every time. These are two genuine,
+      separate real files each, not a fallback chain: the game loads a
+      real team/localized-variant overlay AND the real base package for
+      each of these 4 content pieces. 4 x 2 = 8 successful resolves.
+    - 5 real names (w_persistentgameinfo, w_controllertcr,
+      w_hintloadingscreen, w_onlinelobby, w_frontend) each attempt only
+      the "_fetm" variant ONCE, it genuinely returns 0 (real resolve
+      failure), and -- critically -- NONE of these 5 ever retry with
+      the base name. This confirms Finding 79's own terminal-flag
+      mechanism fires for real here: a failed resolve sets the real
+      terminal bit and the per-package state machine correctly stops
+      rather than retrying or hanging. 5 real, clean, silent failures,
+      0 enqueues from any of them.
+
+    3 + 8 + 0 = 11 real successful resolves -- an EXACT match to
+    Finding 78's live-confirmed 11 enqueues and Finding 83's live-
+    confirmed 11 advances. This is not a fourth coincidence: it is the
+    same real event chain (resolve -> stage -> enqueue -> advance)
+    observed from yet another point, closing the loop completely.
+
+    Status: DEFINITIVE closure, fully live-confirmed at four
+    independent points in the real pipeline (resolve, stage, enqueue,
+    advance), all agreeing on exactly 11. The complete real answer to
+    "why 11, never 12": this boot phase's real content manifest names
+    12 real logical package identities; 5 of them (persistentgameinfo,
+    controllertcr, hintloadingscreen, onlinelobby, frontend team-
+    variant overlays) genuinely do not exist as "_fetm" files in this
+    real disc image and correctly, cleanly fail resolution with no
+    retry, while the other 7 logical identities collectively produce
+    11 real successful file resolves (3 single-file names + 4 names
+    that are really TWO real files each). Every one of those 11 real
+    successes gets enqueued, staged, and advanced exactly once, and the
+    real pipeline then correctly, healthily has no more real work --
+    this was never a stall, deadlock, or missing-content bug at any
+    layer; it is a real, fully-accounted-for, intentional content
+    boundary. This closes the loading-screen investigation's central
+    "11, never 12" question with live evidence at every real step of
+    the chain, and reconfirms Finding 74-76's original diagnosis was
+    correct from the start. ---
