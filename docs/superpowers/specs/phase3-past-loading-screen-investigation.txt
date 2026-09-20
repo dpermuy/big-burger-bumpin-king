@@ -5512,4 +5512,124 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     call sites are waiting on, and why gpuPumpThread's own real
     ScanAndTraceFrame (Finding 57/66/68) isn't advancing them, since
     that is what actually stands between this game and its next real
-    screen, not anything in the Finding 66-89 download-manifest arc. ---
+    screen, not anything in the Finding 66-89 download-manifest arc.
+
+--- Finding 91: continued Finding 90's own next step directly -- live-
+    instrumented the exact real fence/target values inside Finding 61's
+    sub_820B4EE8 override to see whether the real fence is genuinely
+    static (pump truly, permanently stuck) or just perpetually behind a
+    fast-growing target.
+
+    Live probe (temporary logging added directly into the existing,
+    already-committed override, not a new function; 150-second extended
+    watchdog; both reverted immediately after). Run 2026-09-20
+    00:09:48-00:10:48 EDT (stopped early once the pattern was clear,
+    ~60s of real data).
+
+    Real, concrete results: 6199 total calls, ALL against the exact
+    same real self=0xa0009900 / structPtr=0xb9405000 -- one single,
+    specific real fence object, retried over and over the entire run,
+    never advancing to a different one. 1081/6199 (~17%) returned
+    "success" via the real `(target-fence)&3==0` condition -- but the
+    real diff values involved are enormous (observed target-fence gaps
+    in the hundreds of thousands), not small margins, which means many
+    of these "successes" are very likely spurious: a huge diff landing
+    on a multiple of 4 by pure chance, not genuine fence satisfaction.
+    The real fence value itself was observed to jump forward in
+    occasional large bursts (e.g. 3101772810 -> 3101779058, and
+    separately -> 3102887947) but then sit completely flat for dozens
+    of consecutive real calls while target kept climbing steadily
+    (frequently by exactly +24 per call, consistent with a real ring-
+    buffer byte-offset style counter) -- confirming genuine, ongoing
+    real CPU-side activity racing far ahead of genuine, much slower
+    real GPU-side fence progress, for this one specific real resource,
+    for the entire observed run.
+
+    Status: real, decisive live confirmation that this is not a fully
+    frozen deadlock (the fence does creep forward) but a severe,
+    sustained rate mismatch on one specific, unchanging real resource --
+    strong enough, concrete evidence to justify reading the REAL
+    original disassembly Finding 61's override replaced, rather than
+    continuing to only reason about it from Finding 61's own decade-old
+    comments. ---
+
+--- Finding 92: read the real, original, unmodified disassembly Finding
+    61's override replaced (private/ppc/ppc_recomp.4.cpp:10961-11055,
+    plus its two real real helper functions, ppc_recomp.5.cpp:5984-6011
+    and 6272-6386) end to end for the first time this session -- all
+    static reading, motivated directly by Finding 91's live anomaly.
+    This is a major, real correction to Finding 61's own understanding
+    of what it replaced.
+
+    Real findings, precise and load-bearing:
+    - The real function takes THREE params (self=r3, X=r4, target=r5),
+      not two. The real INITIAL gate check (before ever entering any
+      wait) compares the fence against r5 (target) via `(r5-fence)&3`.
+      But the real WAIT LOOP's own internal recheck (after the first
+      real wait attempt) compares against r4 (a DIFFERENT parameter,
+      renamed r29 internally) instead. Finding 61's override collapsed
+      both into a single "target" value read from r4 only, silently
+      discarding r5 entirely and using the wrong parameter for what the
+      real code treats as the primary, authoritative gate condition.
+    - The real "wait" is not a blocking OS primitive at all: it's a
+      real three-call sequence -- sub_820B98A8 (real setup: snapshots
+      the current real host tick from the same kernelState-relative
+      tick field this project's own tickThread maintains, into a local
+      96-byte-ish stack structure), sub_820B9A58 (the real per-
+      iteration gate, see below), sub_820B98D8 (real cleanup, including
+      a real indirect callback invocation if one was registered).
+    - sub_820B9A58 (ppc_recomp.5.cpp:6272) is the real heart of the
+      mechanism: a tiny, genuinely bounded hardware-style spin delay
+      (8x real `db16cyc` pause hints plus a 4-iteration countdown, a
+      few dozen real cycles at most -- not a meaningful wait by itself),
+      then real bookkeeping against a cancellation flag bit at
+      self+10809, then a REAL elapsed-time check: `(currentTick -
+      self+12) >= 5000` (currentTick read from the same real, working,
+      host-provided tick field) -- if elapsed is still under the real
+      5000 (ms) bound, returns 1 ("keep waiting, call me again"); once
+      the real 5-second bound is reached, calls sub_820BA3C0(self) (the
+      real hang-notify escalation Finding 61's own comment already
+      correctly identified by name, private/ppc/ppc_recomp.4.cpp area,
+      not yet read this pass) and returns 0 (stop waiting). This IS
+      Finding 52's own previously-documented real ~5-second hardware
+      watchdog, concretely present and reachable in this exact real
+      code path -- not merely a comment referencing hardware behavior
+      in the abstract.
+    - Critically, self+12 (the real "wait started" timestamp this 5000
+      check measures elapsed time against) gets REWRITTEN to the
+      current tick under certain real conditions inside sub_820B9A58
+      itself (guarded by real checks against self+10760/self+10864 and
+      a real per-object counter comparison at self+8) -- meaning the
+      real 5-second countdown can be legitimately RESET/postponed by
+      design under specific real conditions, not just consumed
+      linearly. This is a strong, concrete real candidate for WHY
+      Finding 56's original live observation was a genuine, indefinite
+      stall despite this real 5-second escape existing in the code:
+      if those reset conditions keep re-triggering, the real elapsed-
+      time clock this watchdog depends on may never legitimately
+      accumulate to 5000, deferring the real escape indefinitely
+      exactly as Finding 56 observed -- a subtly different, more
+      precise mechanism than "the escape is simply never wired up,"
+      and one Finding 61 did not have visibility into when it wrote its
+      own replacement.
+
+    Status: major, real, load-bearing correction to this session's own
+    prior work -- not a new bug in the ORIGINAL game code, but a real,
+    now-concrete gap in Finding 61's own understanding of what it was
+    replacing. Finding 61's override is a genuine, working improvement
+    over the raw unbounded spin (it demonstrably prevents the CPU-
+    pegging symptom Finding 56 measured), but it (a) reads the wrong
+    parameter for its gate condition, (b) discards the real, correctly-
+    designed 5-second hardware-timeout-plus-hang-notify mechanism
+    entirely in favor of an ad hoc 50ms bound, and (c) per Finding 91's
+    own live evidence, may be spuriously reporting success on huge,
+    non-satisfied diffs purely via coincidental low-bit alignment.
+    Concrete next step: read sub_820BA3C0 (the real hang-notify
+    escalation, not yet read) and the real conditions gating self+12's
+    reset inside sub_820B9A58 (self+10760/self+10864/self+8, not yet
+    traced to their own real meaning) to determine whether faithfully
+    restoring the REAL wait mechanism (correctly using both r4 and r5,
+    and the real 5-second/hang-notify escape) would let the game
+    genuinely self-resolve this wait the way real hardware's own design
+    intends, rather than continuing to rely on Finding 61's narrower,
+    now-understood-to-be-imperfect 50ms substitute. ---
