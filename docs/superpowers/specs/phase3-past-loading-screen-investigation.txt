@@ -5426,4 +5426,90 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     boundary. This closes the loading-screen investigation's central
     "11, never 12" question with live evidence at every real step of
     the chain, and reconfirms Finding 74-76's original diagnosis was
-    correct from the start. ---
+    correct from the start.
+
+--- Finding 90: per explicit user direction ("ok let's continue on"),
+    stepped back from the now-fully-closed download-manifest question
+    (Findings 66-89) to re-check the ORIGINAL, higher-level question
+    this whole investigation file opened with: does the game actually
+    visibly progress past the loading screen once real downloads
+    finish, or only the download SUBSYSTEM's own internal bookkeeping
+    look healthy? This is a real, important distinction Findings 74-89
+    never directly tested -- they confirmed the download queue empties
+    cleanly, not that the game moves on afterward. Live investigation,
+    real lldb stack sampling (Finding 2's own original technique from
+    early in this file), no static reading this pass.
+
+    Live setup: temporarily extended the watchdog to 180s (reverted
+    immediately after), launched in the background (2026-09-19
+    23:42:58 EDT), waited 90s (past every prior finding's observed
+    download-completion window), then attached lldb directly (no
+    override probes needed -- plain `thread backtrace all` / `thread
+    backtrace 4`) and sampled the real, active _xstart execution thread
+    three times, a few seconds apart (23:45:35, 23:45:38, 23:45:42 EDT
+    -- all 131-164 seconds into the run). Detached (not killed) between
+    samples so the process kept running natively; let it run to its own
+    180s watchdog exit afterward and confirmed via the final run.log
+    (264 real NtReadFile lines, the last one at offset 26738688 against
+    handle 0x1045 -- consistent with Finding 87/88's own confirmed
+    real w_commonobjectshires file, whose second resolve returned
+    0x1998000 = a real ~26.8MB size, matching) that all real downloads
+    had already completed well before any of the three samples.
+
+    Real, decisive, sobering result: across all three post-download
+    samples, the real _xstart execution thread's leaf frame is ALWAYS
+    inside sub_820B4EE8 -- Finding 61's OWN host-level override,
+    the bounded (50ms max) real-hardware-fence wait this session
+    installed early on to replace an unbounded, CPU-pegging spin
+    (Finding 56). The three samples' full call chains differ in their
+    real intermediate frames (sample 1: sub_820B5EE0 -> sub_820CCA68 ->
+    sub_824A76D0 -> sub_824AAFF0; sample 2: sub_820B5890 ->
+    sub_820B6220 -> sub_820C8E58 -> sub_820CD2E0 -> sub_824A57F8 ->
+    sub_824A5AD0 -> sub_82461D28 -> sub_8244AE70; sample 3:
+    sub_820B5DF0 -> sub_820B6038 -> sub_820C8E58 -> sub_820CD2E0 -> ...)
+    -- confirming genuine, ongoing, real execution (not a frozen PC,
+    exactly Finding 2's own original observation about this same outer
+    call shape) -- but every single one of these different real call
+    sites independently ends up blocked inside the exact same
+    sub_820B4EE8 fence wait, timing out at its 50ms bound, and
+    (implicitly, since the same shape repeats every sample) getting
+    called again from a different site moments later. The outer frames
+    (sub_8244AFB0/sub_8244B040/sub_8212B130/sub_825DEC18/__xstart) are
+    identical across all three samples -- the SAME per-frame real
+    top-level shape Finding 2 originally froze on.
+
+    Also confirmed via the same attach that thread #3 (gpuPumpThread,
+    Finding 57/66's own real fence-advancing thread) is alive and
+    cycling normally (idle in its own expected 1ms sleep_for, not
+    itself hung) -- so the real GPU pump mechanism is running; the
+    real EVENT_WRITE_SHD fence it's supposed to be advancing is either
+    not advancing far enough, or the real targets these many different
+    call sites request are perpetually further ahead than whatever the
+    pump manages to produce.
+
+    Status: this is an honest, significant course correction, not a
+    contradiction of Findings 74-89 (the download subsystem itself IS
+    fully healthy, exactly as shown) -- but it means the download
+    system's completion was never actually the thing standing between
+    this game and a visible loading-screen transition. Finding 61's own
+    fix (bounding sub_820B4EE8's wait to 50ms instead of spinning
+    forever) was a real, correct improvement -- it stopped the CPU-
+    pegging busy-loop Finding 56 found -- but it did NOT resolve the
+    underlying real deadlock class Finding 56 originally diagnosed
+    ("the only thread that could ever advance the fence is the same
+    thread stuck here"); it just made each individual failure to
+    progress bounded and polite instead of an infinite spin, so the
+    game now cycles through MANY different real per-frame rendering/
+    game-logic call sites, each one in turn hitting the same real
+    stuck fence and giving up after 50ms, forever, rather than getting
+    permanently stuck on the very first one. The visible symptom (no
+    forward progress past the loading screen) is REAL and STILL
+    PRESENT, entirely independent of and unaffected by the download
+    manifest completing. Concrete next step: this is the real, still-
+    open root-cause thread for the actual stated goal of this whole
+    investigation file (visible progress past the loading screen) --
+    identify which specific real GPU/fence object(s) these varying
+    call sites are waiting on, and why gpuPumpThread's own real
+    ScanAndTraceFrame (Finding 57/66/68) isn't advancing them, since
+    that is what actually stands between this game and its next real
+    screen, not anything in the Finding 66-89 download-manifest arc. ---
