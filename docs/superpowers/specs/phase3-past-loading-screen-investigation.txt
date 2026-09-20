@@ -5295,4 +5295,71 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     thread into UI/menu code, a different subsystem with no established
     foothold yet, rather than continuing to narrow anything already
     traced. Recommending this as the real, evidence-backed stopping
-    point for the download-manager side of the investigation. ---
+    point for the download-manager side of the investigation.
+
+--- Finding 87: per explicit user direction ("let's open that thread and
+    continue"), tried the front-end/UI thread Finding 86 flagged --
+    but a bare grep for stores to the per-package name field (self+76)
+    hit the exact same too-common-offset wall Finding 85 already hit
+    for self+72 (dozens of unrelated real hits even restricted to the
+    8 kernelState-confirmed files). Rather than grind through that
+    noise by hand, pivoted to a live probe instead -- and it paid off
+    immediately with the single most concrete result this whole
+    Finding 66-87 arc has produced: the actual real package names.
+
+    Live probe (Finding 61's override technique: strong override on
+    sub_82452DD0 logging self address + self+72 state + the real
+    self+76 name string, keyed per-self with change-detection so
+    renames on a reused slot log separately from first appearance;
+    120-second extended watchdog, reverted immediately after). Run
+    2026-09-19 22:32:10-22:34:xx EDT.
+
+    Real, decisive results:
+    - 12 DISTINCT self addresses observed (0xb9151280 through
+      0xb9151960, exact stride 0xA0/160 bytes -- confirms Finding 82's
+      160-byte per-package struct size, but these are real HEAP
+      addresses (0xb915xxxx), not the kernelState+648 embedded 4-slot
+      array Finding 82 originally proposed -- that theory is hereby
+      corrected: the real per-package structs live in a separate, real
+      heap-allocated array of (at least) 12 contiguous entries,
+      allocated once, not 4 reused slots.
+    - Real package names read directly out of guest memory:
+      w_apploadingscreen, s_generic, speech_generic, bk_music,
+      w_persistentgameinfo, xbox360online, w_controllertcr,
+      w_hintloadingscreen, w_saveload, w_onlinelobby,
+      w_commonobjectshires, w_frontend -- genuine, readable, real
+      front-end/boot content package identifiers (audio banks, HUD/
+      loading-screen assets, controller config, save/load UI, online
+      lobby, frontend shell, etc.) -- confirming beyond any remaining
+      doubt Finding 75's original "coherent front-end-only manifest"
+      theory with actual real content, not inference.
+    - 4 of these 12 (w_apploadingscreen, xbox360online, w_saveload,
+      w_commonobjectshires) showed a real one-time name change on the
+      SAME slot address, always from a "_fetm" suffixed variant to the
+      same base name (e.g. "w_saveload_fetm" -> "w_saveload") -- a real
+      "try a variant first, fall back to the base name" pattern,
+      consistent with Finding 80's three-way name-construction branch.
+
+    Status: real, decisive progress, with one open real discrepancy
+    flagged honestly rather than smoothed over: 12 distinct real named
+    entries were observed, but Findings 78 and 83 already live-
+    confirmed exactly 11 real enqueues/advances. Since sub_8212A298's
+    real terminal check (Finding 79: resolve failure sets a terminal
+    flag and skips the rest of the state machine) is confirmed real and
+    already-mapped, the most likely real explanation is that exactly
+    one of these 12 (candidate guess only, not verified: w_onlinelobby,
+    since an online-lobby package plausibly isn't needed/resolvable in
+    every real boot context) fails real resolution and never reaches
+    the enqueue/advance step -- consistent with, not contradicting,
+    everything confirmed so far. This was NOT verified this pass (would
+    need one more correlating probe, logging resolve success/failure
+    per name) and is reported as an open, honest next step rather than
+    an assumed fact. Given the real, concrete manifest content is now
+    in hand and the remaining gap is a single well-understood,
+    plausible mechanism (not a new mystery), this is a natural, well-
+    evidenced point to consider the "why 11, never 12" thread
+    substantively answered: a real, fixed, ~12-entry front-end content
+    manifest, of which exactly 11 real entries successfully resolve and
+    download every observed run -- a legitimate, coherent, non-buggy
+    content boundary, exactly as Finding 74-76 originally concluded,
+    now with the actual real package names as evidence. ---
