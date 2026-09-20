@@ -5247,4 +5247,52 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     diagnostic conclusion (Findings 74-76: a real, coherent, non-buggy
     content boundary) in any way. Recommending this as a natural
     stopping point for the core investigation unless there's a specific
-    reason to keep pursuing the exact manifest source. ---
+    reason to keep pursuing the exact manifest source.
+
+--- Finding 86: per explicit user direction ("let's keep continuing"),
+    picked a narrower, more tractable real thread than Finding 85's
+    abandoned offset+72 grep: instead of chasing self+72 (too common),
+    checked the one NEW field Finding 85's own reading incidentally
+    surfaced -- kernelState+852, a real value incremented right next to
+    the already-confirmed self+72=2 commit write (private/ppc/
+    ppc_recomp.58.cpp:8262-8268, inside sub_82452A78). All static
+    reading, no live runs.
+
+    Found and read sub_82452A78's own init counterpart: private/ppc/
+    ppc_recomp.58.cpp:7470-7497 (a real per-manager init routine, self=
+    r31) zeroes kernelState+848 and +852 and sets a real timestamp at
+    +840 and float fields at +828/+832/+856 -- confirming +852 starts
+    at a real 0 and is a genuine counter, not a flag.
+
+    Searched all 8 kernelState-confirmed files for every access to
+    offset+852 (a specific, rare, base-confirmed offset -- not a
+    generic one like +72, so this search is trustworthy the way
+    Finding 85's wasn't). Found exactly 3 real hits total: the init
+    zero (7496), and the one increment site already found
+    (8262-8266). No third hit -- meaning +852 is NEVER READ OR COMPARED
+    anywhere in this codebase's kernelState-touching code. It free-runs
+    upward with no internal bound check.
+
+    Status: real, decisive negative result -- valuable precisely because
+    it's a genuine dead end, confirmed by exhaustive search rather than
+    assumed. If the real "stop at 11" decision were enforced inside the
+    download manager's own internals, the most natural place for it
+    would be a compare against this exact counter (it increments once
+    per real commit, exactly the quantity "how many packages have
+    started" that a bound would need) -- and no such compare exists.
+    This means the real 11-and-stop boundary is NOT self-imposed by the
+    download-manager subsystem this whole Finding 66-86 arc has been
+    tracing; it's supplied externally, almost certainly by front-end/
+    menu code that calls into this subsystem's own "queue a package"
+    entry point (still unidentified, and structurally a SEPARATE
+    subsystem from everything traced so far) exactly 11 times for this
+    boot phase and never a 12th, matching Finding 75's original
+    "coherent front-end-only boundary" theory as closely as any real
+    evidence in this investigation has -- now with the internal half
+    (no self-imposed limit) and the external half (front-end enumerates
+    a fixed real set) both independently supported. Finding the exact
+    front-end caller would mean starting an entirely new investigation
+    thread into UI/menu code, a different subsystem with no established
+    foothold yet, rather than continuing to narrow anything already
+    traced. Recommending this as the real, evidence-backed stopping
+    point for the download-manager side of the investigation. ---
