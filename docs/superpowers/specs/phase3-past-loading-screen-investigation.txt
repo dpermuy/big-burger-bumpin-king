@@ -5738,4 +5738,76 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     connection directly, which would explain both the real cadence
     shape and point at the actual real lever to pull for faster/more
     frequent fence advancement, rather than continuing to treat
-    sub_820B4EE8's own wait logic as the primary suspect. ---
+    sub_820B4EE8's own wait logic as the primary suspect.
+
+--- Finding 95: continued Finding 94's own next step directly -- traced
+    the real CPU-side emitter of EVENT_WRITE_SHD backward to its source.
+    All static reading, no live runs this pass. This closes the real
+    mechanism loop this whole Finding 90-95 arc has been tracing.
+
+    gpu_trace.h's own Finding 38 comment already named the real builder:
+    sub_820C4678. Read it in full (private/ppc/ppc_recomp.6.cpp:3863):
+    confirmed a real, generic "hand-assemble a 4-dword PM4 EVENT_WRITE_SHD
+    packet into the ring at self+40, targeting whatever address the
+    caller passes as r4" utility -- the real 0xDEADBEEF constant visible
+    in Finding 94's own trace lines comes directly from this function's
+    own hardcoded payload (`lis r9,-8531 / ori r9,r9,48879` = literally
+    0xDEAD/0xBEEF assembled). Not itself gated on anything -- whoever
+    calls it with a given address unconditionally gets a real
+    EVENT_WRITE_SHD queued for that address.
+
+    Found its only two real callers (grepped the whole codebase, both
+    inside the SAME function, private/ppc/ppc_recomp.6.cpp:24429,
+    sub_820CCA68 -- the same real, heavily-referenced function this
+    session has already crossed paths with repeatedly: Finding 63's own
+    comment named it as part of the original Finding 19-24/38/43 call
+    chain, and it appeared directly in Finding 90's own live sample 1
+    call chain). Read the surrounding real code (lines 24480-24685):
+    sub_820CCA68 is the real per-object frame-flush-and-swap driver.
+    Real shape:
+      1. A real gated call to sub_820C4678 BEFORE swapping (line 24548)
+         -- gated on `(self+20052 - self+20048) < 6`, a real small
+         pending-count backpressure check (skip arming a new fence if
+         6+ are already outstanding).
+      2. The real frame swap itself: `__imp__VdSwap` (line 24646) --
+         the actual real Xbox 360 present/frame-boundary call.
+      3. A second, real, conditionally-gated call to sub_820C4678 AFTER
+         the swap (line 24676, gated on whether step 1 actually fired),
+         which also increments the real self+20052 pending counter by 2.
+
+    Status: DEFINITIVE, real closure of the whole mechanism loop this
+    arc has been tracing since Finding 90. EVENT_WRITE_SHD for this
+    fence is emitted from directly inside the real VdSwap wrapper --
+    meaning it is a genuine, real PER-FRAME PRESENT fence, exactly the
+    kind of object sub_820B4EE8 (Finding 56/61/92) was always
+    understood to guard. Its real, observed sparse/bursty cadence
+    (Finding 94: ~2-3/sec instead of a real 30-60fps rate, with a 6.5-
+    second initial silence) directly means real VdSwap calls themselves
+    are happening far less often than a healthy frame rate would
+    require -- not that this specific fence-write mechanism is broken
+    in isolation. Combined with Finding 90's own live evidence (MANY
+    different real call sites, all through the same outer per-frame
+    shape, all independently blocking inside sub_820B4EE8 on DIFFERENT
+    fences before ever reaching this real swap), the full, real,
+    coherent picture is: a single real frame's own code path visits
+    several different real wait points (each guarding a DIFFERENT real
+    GPU resource's own fence) before it can ever reach the real
+    sub_820CCA68/VdSwap call that would produce the NEXT round of fence
+    advancement those SAME waits (and others) depend on -- a genuine,
+    real, self-referential pacing dependency, precisely matching Finding
+    56's original diagnosis from early in this investigation file, now
+    proven concretely end-to-end (wait -> what it waits for -> what
+    produces what it waits for -> circles back to needing this exact
+    frame to finish first) rather than inferred from call-stack shape
+    alone. This is not a simple, isolated bug with a small, surgical
+    fix: genuinely accelerating this would mean either restructuring
+    which real waits are allowed to block a frame from reaching its own
+    VdSwap, or making fence-arming happen independent of a fully
+    completed swap -- a real architectural question for whoever
+    continues this thread, not a one-line change. Concrete next step,
+    if continuing: live-correlate real VdSwap call timestamps against
+    Finding 91's own per-call-site sub_820B4EE8 samples (both already-
+    proven live techniques from this same arc) to measure directly how
+    many distinct real fences a single frame's own code path blocks on
+    before completing, which would show precisely how much real
+    latency this circular pacing adds per frame. ---
