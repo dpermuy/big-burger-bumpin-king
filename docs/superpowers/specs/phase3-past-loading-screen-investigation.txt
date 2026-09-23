@@ -5632,4 +5632,110 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     and the real 5-second/hang-notify escape) would let the game
     genuinely self-resolve this wait the way real hardware's own design
     intends, rather than continuing to rely on Finding 61's narrower,
-    now-understood-to-be-imperfect 50ms substitute. ---
+    now-understood-to-be-imperfect 50ms substitute.
+
+--- Finding 93: continued Finding 92's own next step (read sub_820BA3C0,
+    the real hang-notify escalation), plus one detour to close a lead
+    Finding 90's own thread list raised. All static reading, no live
+    runs this pass.
+
+    Read sub_820BA3C0 (private/ppc/ppc_recomp.5.cpp:7801) in full. Real,
+    striking result: when the real 5-second watchdog (Finding 92) fires
+    with no hang-notify callback registered (self+13064==0 -- Finding
+    61's own comment already confirmed this title never registers one),
+    the real code does NOT continue gracefully. It logs two real debug
+    strings (sub_820B9E18, twice, with real string-constant addresses)
+    and then executes `twi 31,r0,22` -- a real, unconditional PPC trap
+    instruction (condition field 31 = always-trap). This is a genuine,
+    deliberate real assert/crash: the original Xbox 360 devkit build's
+    intended behavior for this exact deadlock class, with no notify
+    callback registered, is a controlled crash after 5 real seconds --
+    not silent forward progress, and not an infinite hang either.
+
+    Also closed a real, separate lead Finding 90's own thread dump
+    raised: thread #11 was sampled sitting inside sub_820C8D28 via
+    KeWaitForSingleObject, which the gpu_trace.h header comments
+    (Finding 38) identify as "a dedicated worker thread... builds real
+    PM4 packets... into [the system command buffer]" -- initially
+    looked like a second real stalled thread. Read sub_820C8D28 in full
+    (private/ppc/ppc_recomp.6.cpp:14884): confirmed it is a real,
+    correctly-designed periodic event-wait loop, not stuck -- the real
+    timeout constant passed to KeWaitForSingleObject decodes (real NT
+    relative-100ns-unit convention, negative/relative) to exactly 30ms,
+    so this thread legitimately wakes on its own every 30ms regardless
+    of whether its event ever signals, to do real periodic critical-
+    section-guarded flush work (sub_820CC8E0/sub_820CCA68) before
+    waiting again. Correctly ruled out as a false lead via direct
+    reading rather than left as an open, unverified suspicion.
+
+    Status: real, decisive progress on both threads. The real hang-
+    notify path is now fully understood (confirmed: designed to crash,
+    not hang), and a second apparent stall (thread #11) is confirmed
+    healthy. Neither of these directly explains why Finding 91's fence
+    keeps timing out rather than either succeeding or reaching its own
+    5-second real crash -- prompting the next, more direct check:
+    whether real EVENT_WRITE_SHD commands targeting this exact fence
+    are being produced AT ALL. ---
+
+--- Finding 94: direct live check of Finding 91's own open question --
+    is the real fence (structPtr=0xb9405000) genuinely frozen (pump
+    stuck) or does it advance too slowly to keep up with a fast-growing
+    target? Used gpu_trace.cpp's own existing, already-built PM4 packet
+    log (gpu_trace.log) rather than writing a new probe.
+
+    Live run: 60-second extended watchdog (reverted immediately after),
+    2026-09-22 21:32:14-21:33:14 EDT, ran to its own natural completion
+    (not stopped early). Real, decisive, and genuinely surprising
+    result: EVENT_WRITE_SHD commands targeting exactly this fence
+    (0xB9405000 / 0xB9405004, matching Finding 91's structPtr precisely)
+    fire 135 times across the full 60-second run, continuing all the
+    way to within a few hundred lines of the very end of the real log
+    (last hit at output line 407339 of 413037 total) -- this is NOT a
+    frozen, fully-stuck fence. Confirmed the small counter at +0
+    (values 0x03, 0x05, 0x07... up through 0x129/297, stepping by small
+    even amounts) and the large value at +4 (0xB8D314C0, 0xB8D33B10...
+    up to 0xB8D92D0B -- all in the same ~3.1 billion range Finding 91's
+    live fence reads showed) are both being written together, real,
+    live, by real EVENT_WRITE_SHD packets -- confirming structPtr+4 (the
+    field sub_820B4EE8/Finding 61's override reads as "fence") is a
+    real, genuinely-advancing value, not a static/stuck one.
+
+    Correlated each hit against its enclosing real frame number
+    (gpu_trace.log's own "--- frame N ---" headers, ~50149 total frames
+    logged over the 60s run -- confirms the pump thread's own ~1ms
+    cadence is healthy throughout). Real, striking cadence: the FIRST
+    two hits land at frame 1 and frame 2 (near-instant), then a real,
+    total 6.5-SECOND SILENT GAP with zero hits until frame 6570, after
+    which hits arrive in real, uneven bursts (several in the same
+    frame, then gaps of hundreds to over a thousand frames) for the
+    rest of the run. This is NOT a steady per-frame (vsync-style)
+    cadence at all -- it's sparse and bursty, averaging roughly 2-3
+    real hits per second overall but wildly uneven.
+
+    Status: real, decisive reframing of Finding 91's own open question.
+    This is conclusively NOT a permanent deadlock or a stuck GPU pump --
+    real forward progress on this exact fence happens continuously
+    throughout the whole observed run. The real problem is a severe,
+    sustained THROUGHPUT/CADENCE mismatch: whatever CPU-side real code
+    produces these EVENT_WRITE_SHD commands only does so a few times a
+    second, in bursts, while sub_820B4EE8's callers (Finding 90: many
+    different, real, varying call sites) request/recompute a fresh
+    target far more often than that (Finding 91: ~100 calls/sec),
+    guaranteeing most individual wait attempts time out even though the
+    underlying real value they're waiting on is, in fact, moving
+    forward the entire time. The real 6.5-second initial silence and
+    subsequent bursty-not-steady cadence together suggest this fence is
+    tied to some other real, sparser milestone (a plausible, not yet
+    confirmed candidate: the same real per-package resource-completion
+    pipeline Findings 66-89 already mapped in detail, given the timing
+    shape -- long initial gap, then uneven bursts -- resembles that
+    pipeline's own real behavior far more than a steady per-frame
+    render cadence would) rather than genuine real frame rendering.
+    Concrete next step: identify the real CPU-side code that emits
+    these specific EVENT_WRITE_SHD packets (not yet located -- would
+    need tracing backward from the PM4 packet's real ring-buffer
+    origin) to confirm or refute the resource-completion-pipeline
+    connection directly, which would explain both the real cadence
+    shape and point at the actual real lever to pull for faster/more
+    frequent fence advancement, rather than continuing to treat
+    sub_820B4EE8's own wait logic as the primary suspect. ---
