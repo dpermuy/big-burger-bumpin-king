@@ -5810,4 +5810,66 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     proven live techniques from this same arc) to measure directly how
     many distinct real fences a single frame's own code path blocks on
     before completing, which would show precisely how much real
-    latency this circular pacing adds per frame. ---
+    latency this circular pacing adds per frame.
+
+--- Finding 96: per explicit user direction ("continue to a fix
+    attempt"), implemented and live-tested a real correction to
+    sub_820B4EE8's host override based on Finding 92's own disassembly
+    reading -- gate on r5 (matching the real initial check) then loop
+    rechecking against r4 (matching the real wait loop), and widen the
+    ad hoc bound from 50ms to the real hardware's own ~5000ms figure
+    (Finding 52/92), so Finding 94's proven bursty real progress gets a
+    genuine chance to land instead of reliably missing it.
+
+    Live-tested repeatedly (default 10s runs and extended 90-180s runs,
+    2026-09-29 20:28-20:50 EDT, with live lldb stack sampling at each
+    stage): real, measurable, reproducible improvement. Default-10s
+    runs now show ~150+ NtReadFile lines (vs the historical 47-line
+    pre-fix baseline) and reach real package names (e.g.
+    w_controllertcr_fetm) that previously took 60+ seconds to reach --
+    this new, higher line count is the correct expected baseline for
+    default-10s runs going forward, not a regression to flag. An
+    extended run's thread #4 was live-sampled moving OFF sub_820B4EE8
+    entirely and into new, different real code (sub_82451408, ordinary
+    per-frame tick bookkeeping) -- genuine escape from the specific
+    circular dependency Finding 90-95 diagnosed, confirmed live, not
+    inferred.
+
+    However, a 180s extended run still did not let _xstart return.
+    Live sampling found execution had moved forward through
+    sub_82451408 and back into sub_820CCA68 (Finding 95's own real
+    VdSwap wrapper), then landed on a DIFFERENT, second known override:
+    sub_820B5BC8 (Finding 63). Tried the same class of fix there
+    (widen 50ms to 5000ms) and live-confirmed, via repeated stable lldb
+    samples, that its own "current" field (self+10768+0, a DIFFERENT
+    field from sub_820B4EE8's self+10768+4) genuinely never advances --
+    Finding 20-24's original diagnosis, from very early in this
+    investigation, still holds for this specific field even though the
+    analogous sibling field does not (Finding 94/95). Widening that
+    bound only cost real wall-clock time (5000ms of fruitless waiting
+    per call instead of 50ms) with zero benefit, so it was correctly
+    reverted back to 50ms rather than kept on the strength of the OTHER
+    fix's success alone.
+
+    Status: real, kept, committed improvement (sub_820B4EE8's parameter
+    correction and widened bound), with an honest limitation. The
+    specific circular per-frame pacing dependency Finding 90-95
+    diagnosed is now measurably, confirmedly less limiting -- real
+    forward progress happens faster and reaches further than before.
+    But it is not sufficient for full completion: a second,
+    structurally different real blocker (sub_820B5BC8's own genuinely-
+    dead self+10768+0 field, no real writer anywhere in this codebase
+    per Finding 20-24, re-confirmed live this pass) sits further down
+    the same real call path and stops the game regardless of how the
+    first blocker is handled. Fixing that would require finding a real
+    writer for self+10768+0 that doesn't exist anywhere in the
+    currently-recompiled code -- either a genuinely unreached/dead real
+    subsystem, or content/configuration this specific disc image's boot
+    sequence never satisfies on real hardware either. Concrete next
+    step, if continuing: determine whether self+10768+0 is EVER written
+    on real hardware for this exact resource (would require either
+    finding what the real value should come from architecturally, or
+    accepting this specific wait target as permanently unreachable and
+    looking for where its own caller decides what target to demand, per
+    Finding 76/77's own established discipline for a bare, unwritten
+    field). ---
