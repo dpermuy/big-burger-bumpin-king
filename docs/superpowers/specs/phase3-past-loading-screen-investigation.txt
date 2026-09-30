@@ -5984,4 +5984,71 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     wait function's own bound, since both are now already correctly
     bounded to the real hardware figure and the remaining gap is
     upstream of them. This is a natural, well-evidenced stopping point
-    for the wait-tuning side of this investigation. ---
+    for the wait-tuning side of this investigation.
+
+--- Finding 99: continued Finding 98's own next step directly -- traced
+    self+10780's ("expectation") real growth to its source, resolving
+    the "does real GPU work genuinely run out, or does something keep
+    demanding more than was ever produced" question definitively. All
+    static reading plus one decisive live probe.
+
+    Grepped the whole codebase for real stores to self+10780 (a rare,
+    trustworthy offset -- only 2 hits). One (private/ppc/ppc_recomp.4.
+    cpp:12847, inside sub_820B5A28) is the real one reached from this
+    call path. Read the function in full: it reads its OWN self+10780
+    at entry (r7 = *(self+10780)), and unconditionally writes
+    *(self+10780) = r7+2 at the end -- expectation increments by
+    exactly +2 on EVERY call, regardless of two real gate conditions
+    (self+19956 -- a real "currently bound resource" pointer -- and a
+    flag bit at self+10809) that separately control whether this same
+    function ALSO does a real DIRECT write to structPtr+0/+4 (the same
+    fence Finding 90-98 has been tracing) as a fallback path for when
+    no resource is bound.
+
+    Live probe (Finding 61's technique: strong override logging
+    self+19956/self+10809-bit/expectation before+after on every real
+    call, 60s window, reverted immediately after). Run 2026-09-29
+    22:32:28-22:33:28 EDT. Real, decisive result: 1505 calls in 60
+    real seconds (~25 calls/sec) -- resourcePtr=0x0 and flagBit2=0 on
+    EVERY single call, meaning the direct-write fallback never once
+    fired in this run (field0's real climb, confirmed by Finding 98's
+    own probe, comes entirely from the separate PM4 EVENT_WRITE_SHD
+    execution path, Finding 37 -- these are two independent, non-
+    competing producers for the same fence, and only one was ever
+    active here). Expectation climbed by exactly +2 every single call,
+    all 1505 times, with zero exceptions.
+
+    Status: DEFINITIVE closure of the "does real GPU work run out"
+    question -- it does not. sub_820B5A28 (or whatever calls it)
+    unconditionally demands +2 more real fence progress roughly 25
+    times per real second, ~50/sec in real target growth -- a real,
+    fixed, unconditional demand rate with no dependency on actual GPU
+    completion. Finding 94's own live measurement already established
+    the real PM4 EVENT_WRITE_SHD producer (the only active producer,
+    per this pass) fires in bursts averaging only ~2-3 times per real
+    second. 50 vs 2-3 is a genuine ~20-30x real throughput mismatch,
+    not a logic bug and not something either wait function's own bound
+    can fix (both are now already correctly matching the real ~5000ms
+    hardware figure, Finding 96-98) -- the CPU-side demand is simply,
+    structurally faster than this host's own software GPU pipeline can
+    ever satisfy, guaranteeing current() eventually falls behind target
+    permanently regardless of patience, exactly matching Finding 98's
+    own observed hard ceiling. This reframes the entire remaining
+    thread: it is not a wait-bound problem, not a missing real writer,
+    and not a finite/exhausted real content boundary (unlike the
+    download-manifest side, Findings 74-89) -- it is a genuine
+    real-time performance gap in this project's own GPU command
+    emulation throughput (why does real EVENT_WRITE_SHD only fire a
+    few times/sec instead of tens-to-hundreds of times/sec, matching
+    what real hardware and this CPU-side demand rate would need).
+    Concrete next step, if continuing: profile/trace why gpuPumpThread's
+    own real ScanAndTraceFrame (or whatever upstream mechanism fills
+    the ring/system command buffers with new real PM4 content in the
+    first place) only produces a handful of real EVENT_WRITE_SHD
+    completions per second rather than the tens-per-second this CPU-
+    side demand rate implies real hardware would need -- a genuine
+    GPU-pipeline-throughput investigation, not a wait-logic one. This
+    is the real, well-evidenced, final stopping point for the wait-
+    tuning arc of this investigation (Findings 90-99): both known wait
+    functions are now faithful to real hardware semantics, and the
+    remaining gap is squarely a GPU emulation throughput question. ---
