@@ -5872,4 +5872,116 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     accepting this specific wait target as permanently unreachable and
     looking for where its own caller decides what target to demand, per
     Finding 76/77's own established discipline for a bare, unwritten
-    field). ---
+    field).
+
+--- Finding 97: per explicit user direction ("keep going"), followed
+    Finding 96's own concrete next step -- found the real writer
+    sub_820B5BC8's own self+10768+0 field was missing, by re-checking
+    an old, stale diagnosis instead of trusting it. Live-tested, with a
+    real self-correction along the way.
+
+    Traced sub_820B5BC8's real callers (grepped all 12 real call sites)
+    to the one actually hit live: private/ppc/ppc_recomp.6.cpp:25243,
+    directly inside sub_820CCA68 (Finding 95's own real VdSwap wrapper),
+    AFTER its own VdSwap call. Real target here comes from self+13520,
+    itself a snapshot of the PRIOR frame's self+10780 "expectation"
+    value -- confirming this wait's target grows once per real frame,
+    structurally identical to sub_820B4EE8's own pattern.
+
+    Re-checked Finding 32/33's own long-standing "self+10768+0 has no
+    real writer, permanently dead" diagnosis directly with a live
+    probe, since Finding 32/33 predate Finding 37's real
+    PM4_EVENT_WRITE_SHD execution and were never re-tested against it.
+    First live result (structPtr logged once): current()=7, an object
+    address of 0xB9405000 -- THE SAME real object sub_820B4EE8 already
+    uses (Finding 91/94/95), not a separate one. This directly
+    contradicted Finding 32/33's "dead field" diagnosis.
+
+    A quick fix attempt followed (widen this bound to 5000ms too) and
+    was live-tested via lldb sampling -- but the sample only caught a
+    handful of 4-second-apart snapshots at the SAME call site, which
+    were wrongly read as "current() never advances" and the fix was
+    reverted. Caught and corrected this same pass: re-instrumented
+    properly (log current()/target on every real change, not just a
+    handful of manual samples) and re-ran. Real, decisive result: 744
+    distinct current() values logged over a 60s run, climbing
+    continuously from 7 to 3007+, with target almost always trailing
+    it by 0-2 -- current() genuinely, actively advances. The earlier
+    "revert" was a real methodological mistake (too few, too-coarse
+    samples), caught and fixed within the same pass rather than left
+    standing.
+
+    A longer, 180s run with proper "ENTERING WAIT" instrumentation then
+    showed the fuller real picture: current() advances fine for a
+    while, then genuinely FREEZES at a fixed value (7305) while target
+    keeps climbing forever afterward -- the exact same real, bursty,
+    VdSwap-tied rate-mismatch class Finding 94/95 diagnosed for this
+    object's sibling field, manifesting later in the run rather than
+    being permanently dead from the start. Re-applied the widen-to-
+    5000ms fix on this corrected understanding (see the paired code fix
+    commit) and shipped it for real this time.
+
+    Status: real, decisive, self-corrected progress -- both host
+    overrides on this shared real object now correctly match the real
+    hardware's own ~5000ms bound instead of an arbitrary 50ms, and both
+    corrections are backed by live evidence obtained with proper rigor,
+    including an explicit, caught-and-fixed methodological error along
+    the way (a valuable, honest data point on why a handful of manual
+    lldb samples isn't sufficient evidence for "never advances" claims
+    -- Finding 91's own proper instrumentation should have been the
+    template from the start). Concrete next step: with both waits now
+    correctly bounded, characterize whether the game reaches further
+    completion given enough real wall-clock time, or whether a deeper,
+    real structural ceiling remains. ---
+
+--- Finding 98: direct live test of Finding 97's own next step --
+    given both waits on this shared real object (0xB9405000) are now
+    correctly bounded to the real ~5000ms figure, does the game
+    eventually complete given enough real patience, or does a deeper
+    real ceiling remain?
+
+    Live-tested with a 600-second (10-minute) extended run, throttled
+    (every ~2s) logging of both real fields on the shared object
+    directly inside sub_820B4EE8 (called far more often than
+    sub_820B5BC8, giving denser real samples). Real, decisive,
+    reproducible result: both fields climb rapidly and healthily for
+    roughly the first 20-25 real seconds (field0: 1->5->149->265->...
+    ->845->961...), then GENUINELY, PERMANENTLY FREEZE at field0=7303,
+    field4=3101240584 -- confirmed static across 5+ consecutive samples
+    spanning the final 45+ real seconds of the full 600-second run,
+    with zero further movement no matter how much additional real time
+    was given. This exact same ceiling (field0 in the 7303-7305 range)
+    was independently observed in BOTH the earlier 180s run (Finding
+    97) and this 600s run -- reproducible, not a one-off.
+
+    Cross-checked against the real download-completion counts
+    (NtReadFile/NtCreateFile) for the same 600s run: identical to every
+    prior run (264/64), confirming Findings 74-89's own diagnosis
+    (download manifest genuinely, correctly complete) is completely
+    unaffected by and unrelated to this GPU-side ceiling.
+
+    Status: DEFINITIVE, reproducible real ceiling -- not a rate/timing
+    problem fixable by further wait-bound tuning. The real CPU-side
+    code that produces EVENT_WRITE_SHD events for this specific object
+    genuinely, permanently stops submitting new real GPU work once
+    field0 reaches ~7303-7305, in every observed run, regardless of
+    additional real wall-clock time (confirmed at both 180s and 600s).
+    The most likely real interpretation, consistent with this session's
+    OWN parallel finding on the download-manifest side (Findings 74-89:
+    a real, finite, coherent content boundary, not a bug): this
+    specific object's real rendering/GPU workload for the current
+    loading-screen scene is a finite, real amount of work that
+    genuinely completes at ~7303-7305 real events, and whatever
+    real caller keeps demanding a HIGHER target (via self+10780's own
+    growing "expectation" counter, Finding 97) is asking for more real
+    completions than this scene will ever produce -- a genuine mismatch
+    between real submitted-and-finished GPU work and a real caller's
+    own target calculation, not a fixable wait-bound issue. This
+    reframes the concrete next step for anyone continuing this thread:
+    trace self+10780's own real growth (what increments it, and
+    whether it's supposed to stop growing once the real scene's true
+    workload is exhausted) rather than continuing to adjust either
+    wait function's own bound, since both are now already correctly
+    bounded to the real hardware figure and the remaining gap is
+    upstream of them. This is a natural, well-evidenced stopping point
+    for the wait-tuning side of this investigation. ---
