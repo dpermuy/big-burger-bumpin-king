@@ -115,21 +115,22 @@ PPC_EXTERN_FUNC(sub_820B6220);
 // Real contract (private/ppc/ppc_recomp.4.cpp:12980-13101, confirmed against
 // Finding 43/44's own live captures of this exact function): given self (r3) and a
 // target (r4), wait until current -- *(*(self+10768)+0), a DIFFERENT field of the
-// same 96-byte fence block sub_820B4EE8 also uses (that one reads offset+4) --
-// reaches target. Finding 20-24 (early in this investigation, well before any of
-// this session's fixes) already established current's real nature: it's a
-// dispatcher-object-style signal count that's set once at creation and never
-// incremented again by anything this project implements -- no code path (vblank
-// ISR, PM4_INTERRUPT ISR, or otherwise) ever writes self+10768+0. That diagnosis
-// still holds; every fix since then (Findings 51-62, and this session's own
-// sub_820B4EE8 fix) addressed other fields of the same pipeline, none of which touch
-// this one. A later fix-attempt pass tried widening this bound to the same ~5000ms
-// figure sub_820B4EE8 uses (reasoning that the sibling field DOES genuinely advance
-// per Finding 94/95) and confirmed LIVE, via repeated lldb sampling, that this
-// specific field still never satisfies within that window -- the original "never
-// advances" diagnosis holds for THIS field even though it doesn't for its sibling.
-// Widening only cost real time here (each failed wait now ate a full 5s instead of
-// 50ms) with zero benefit, so the bound stays tight.
+// SAME 96-byte fence block sub_820B4EE8 also uses (that one reads offset+4) --
+// reaches target. Finding 20-24 (early in this investigation) diagnosed current as
+// permanently dead (no code path ever writes it) -- but that predates Finding 37's
+// real PM4_EVENT_WRITE_SHD execution. Re-tested twice, live, with proper rigor
+// (rather than trusting either the old diagnosis or a short sample): a first,
+// short (60s) run showed current() genuinely advancing throughout, in lockstep
+// with the sibling field sub_820B4EE8 uses -- confirmed it's the SAME real object
+// (structPtr=0xB9405000 both times), so Finding 20-24's diagnosis is stale, not
+// current. A second, longer (180s) run then showed current() genuinely FREEZE at a
+// fixed value (7305) while target kept climbing -- the exact same real, bursty,
+// VdSwap-tied rate mismatch Finding 94/95 already diagnosed for this object's
+// sibling field, not a permanently dead one. sub_820CCA68 calls this function AFTER
+// its own frame's VdSwap (Finding 95), so a failed wait here blocks THIS frame's
+// own completion, which blocks the NEXT frame's VdSwap, which is what would produce
+// the NEXT real EVENT_WRITE_SHD burst this wait needs -- the identical circular
+// pacing dependency, one call further down the same real path.
 //
 // The real function has a genuine producer side effect worth preserving: when the
 // target being waited for is exactly the current self+10780 expectation value and
@@ -139,10 +140,10 @@ PPC_EXTERN_FUNC(sub_820B6220);
 // directly (a normal extern PPC call, not touching any shared state ourselves) --
 // its own effects go through the already-safe, already-overridden pipeline
 // (including sub_820B4EE8's own override further down that call chain).
-// Bounded the same way Finding 61 originally was: short, reliable, host-timed escape
-// instead of the guest's own watchdog chain, since current is confirmed (live,
-// repeatedly) to never legitimately advance on its own regardless of how long
-// anything waits.
+// Bound widened from an original, tighter 50ms to the real hardware's own ~5000ms
+// figure (Finding 52/92), matching sub_820B4EE8's own fix, so genuine bursty real
+// progress on this object gets the same chance to land instead of reliably missing
+// it after 50ms.
 void sub_820B5BC8(PPCContext& __restrict ctx, uint8_t* base)
 {
     uint32_t self = static_cast<uint32_t>(ctx.r3.u64);
@@ -178,7 +179,7 @@ void sub_820B5BC8(PPCContext& __restrict ctx, uint8_t* base)
         return;
     }
 
-    constexpr auto kMaxWait = std::chrono::milliseconds(50);
+    constexpr auto kMaxWait = std::chrono::milliseconds(5000);
     const auto start = std::chrono::steady_clock::now();
     while (target > current())
     {
