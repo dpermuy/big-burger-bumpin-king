@@ -502,7 +502,31 @@ PPC_FUNC(__imp__KeQuerySystemTime)
 
 PPC_FUNC(__imp__KeQueryPerformanceFrequency)
 {
+    // Finding 75: this must report the REAL frequency __rdtsc() (mftb) actually
+    // ticks at on THIS host, not real Xbox 360 hardware's own documented 50MHz --
+    // confirmed live, this was a genuine, measurable mismatch (this host's own
+    // __rdtsc() is CNTVCT_EL0, confirmed 24,000,000 Hz via CNTFRQ_EL0 on this real
+    // Apple Silicon Mac, not 50,000,000). Any real game code computing a wait
+    // duration from "elapsed ticks vs this frequency" silently waited far longer
+    // than intended wall-clock time -- root cause of a confirmed-live stall
+    // (docs/superpowers/specs/phase3-past-loading-screen-investigation.txt,
+    // Findings 74-75) well past all prior loading-screen fixes.
+    //
+    // Queried live via CNTFRQ_EL0 (not hardcoded) since this exact register is
+    // what this host's own __rdtsc() (ppc_context.h) reads -- always correct by
+    // construction on any AArch64 host, never a second hardcoded guess to drift
+    // out of sync with the first.
+#if defined(__aarch64__) || defined(_M_ARM64)
+    uint64_t freq;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    ctx.r3.u64 = freq;
+#else
+    // x86_64's __rdtsc() is the real RDTSC instruction (CPU-model-specific GHz-
+    // range rate, not a fixed architectural constant like CNTFRQ_EL0) -- this
+    // host's own target is AArch64 only, so this platform's own equivalent
+    // mismatch is flagged, not guessed at, here.
     ctx.r3.u64 = 50000000ULL; // Xbox 360's documented hardware timebase frequency
+#endif
 }
 
 PPC_FUNC(__imp__KeEnableFpuExceptions)

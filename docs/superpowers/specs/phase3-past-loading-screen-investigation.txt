@@ -4279,3 +4279,81 @@ and the temporary 120s watchdog in host/main.cpp) fully reverted; `git
 diff --stat` confirmed empty before and after rebuild, 10s-window result
 reproduced exactly (153 NtReadFile, exit 2, same tail) matching the
 committed baseline.
+
+--- Finding 75: root cause of Finding 74 -- KeQueryPerformanceFrequency
+    hardcoded real Xbox 360 hardware's 50MHz, but this host's own __rdtsc()
+    actually ticks at 24MHz. Real, confirmed, fixed. ---
+
+Traced Finding 74's non-converging ratio (sub_823F1740([base+9960]) /
+sub_823F1740(r30)) to its real source: grepped the entire codebase for
+writers of offset+9960 from the same base -- exactly ONE site
+(sub_8212D9A8, private/ppc/ppc_recomp.12.cpp:13248), a one-time boot
+initialization (not a continuously-advancing counter, contrary to this
+investigation's own initial hypothesis) that stores the result of
+sub_820AA058 (private/ppc/ppc_recomp.2.cpp:4814), which itself is a thin
+wrapper calling the REAL kernel API KeQueryPerformanceFrequency and
+storing its return value. [base+9960] is the real, one-time-cached
+"performance counter frequency" this title uses for all its own real
+elapsed-time-vs-threshold calculations -- the denominator side
+(sub_82451408's own r30) is the genuinely advancing part, a real
+mftb/__rdtsc()-delta computed fresh each loop pass.
+
+This host's own KeQueryPerformanceFrequency (host/kernel_impl.cpp)
+hardcoded 50,000,000 -- real Xbox 360 hardware's documented timebase
+frequency. But this host's own __rdtsc() (private/ppc/ppc_context.h,
+confirmed read before this fix) is a raw passthrough of AArch64's
+CNTVCT_EL0 register, whose real rate is reported by CNTFRQ_EL0 --
+confirmed live via a standalone C program on this real Apple Silicon Mac:
+exactly 24,000,000 Hz, not 50,000,000. Every real elapsed-tick
+measurement this title makes via mftb was silently running at roughly
+24/50 of the rate the title's own code assumed when converting ticks to
+a target duration -- a genuine, measurable timebase-frequency mismatch,
+the exact class of bug hypothesized from the very first spin loop this
+whole investigation ever found (which reads this SAME [base+9960]
+field).
+
+Fixed (host/kernel_impl.cpp): KeQueryPerformanceFrequency now queries
+CNTFRQ_EL0 live via inline asm on AArch64 (the exact real register this
+host's own __rdtsc() already reads from -- always correct by
+construction, never a second hardcoded constant that could drift out of
+sync with the first) instead of hardcoding Xbox 360's own real hardware
+value. x86_64 is flagged in a comment as having the same class of
+mismatch (real RDTSC ticks at a CPU-model-specific GHz rate, not a fixed
+architectural constant) but left as the prior hardcoded 50MHz value,
+since this project's own real target is AArch64 (confirmed via this
+session's own lldb architecture report, "arm64-apple-macosx") -- not
+guessed at for a platform not actually being tested.
+
+Live-confirmed, dramatic, real improvement: the SAME 264-NtReadFile
+plateau Finding 74 needed the full 120s diagnostic window to reach is
+now reached in UNDER the real 10-second watchdog window -- over a 12x
+real-wall-clock speedup for this specific span. Extended windows (60s,
+180s, both reverted, not part of this commit) confirm the read sequence
+itself completes cleanly (26,738,688 + 98,304 = 26,836,992 bytes total,
+ending in a smaller final chunk -- a normal end-of-file read pattern, not
+a stall) and progress continues into further per-frame processing.
+
+What's next (not yet fixed, a real decision point rather than a mystery):
+live-sampled the MAIN thread twice, 10s apart, past this point -- both
+times caught inside sub_820B4EE8's own already-bounded 1ms sleep
+(Finding 71/72's own fix), via the exact same real call chain Findings
+68-71 already fully mapped (sub_8244AE70 -> sub_82461D28 ->
+sub_824998B8 -> sub_820CD7D8 -> sub_820C8F30 -> sub_820B55C8 ->
+sub_820B53C0 -> sub_820B4EE8). This is the SAME confirmed-permanent fence
+deadlock Findings 56-71 already diagnosed and bounded, not a new
+mechanism -- but it is STILL the dominant real cost blocking further
+progress at this deeper point in the pipeline, even at 1ms/hit, implying
+either a far larger hit-count is needed here than earlier, or 1ms is
+still not tight enough relative to how often it's hit. Finding 71's own
+originally-deferred second fix direction (detect the confirmed-permanent
+precondition up front and skip the wait loop entirely, rather than
+bounding its duration) may now be worth revisiting given this new,
+concrete evidence that the bounded-wait tax remains the dominant cost
+much later in the pipeline too -- flagged for the controller/user to
+decide, not applied unilaterally here since it reverses an earlier
+explicit choice.
+
+All diagnostic instrumentation (temporary watchdog bumps to 60s/180s,
+reverted) confirmed via empty `git diff --stat` on host/main.cpp before
+this commit; only host/kernel_impl.cpp's real KeQueryPerformanceFrequency
+fix is part of this commit.
