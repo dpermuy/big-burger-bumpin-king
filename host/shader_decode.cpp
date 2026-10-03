@@ -31,6 +31,7 @@ VertexFetchInstructionFields DecodeVertexFetchInstruction(uint32_t word0, uint32
     // Sign-extend the real 23-bit signed offset field.
     if (rawOffset & 0x400000) rawOffset |= 0xFF800000;
     fields.offset = static_cast<int32_t>(rawOffset);
+    fields.isMiniFetch = ((word1 >> 30) & 0x1) != 0;
     return fields;
 }
 
@@ -40,8 +41,18 @@ DecodedShaderProgram DecodeShaderMicrocode(const uint32_t* dwords, uint32_t dwor
     char line[256];
     const char* shaderTag = (shaderType == 1) ? "PS" : "VS";
 
-    uint32_t cfPairCount = dwordCount / 3;
-    for (uint32_t i = 0; i < cfPairCount; i++)
+    // Final review finding I1: the naive dwordCount/3 bound only limits
+    // how far the scan COULD go -- the real control-flow program ends
+    // at the first EXEC-family instruction's own address (that's where
+    // ALU/fetch instruction data starts, confirmed live: real address=3
+    // for this project's own vertex shader, and slots 0-2 are exactly
+    // its real 1-pair CF program). cfEndDword shrinks as each
+    // EXEC-family instruction is found; the loop condition re-checks it
+    // every iteration, so once it shrinks below the next pair's own
+    // position, that pair (real ALU/fetch data) is never misread as
+    // control flow.
+    uint32_t cfEndDword = (dwordCount / 3) * 3;
+    for (uint32_t i = 0; i * 3 < cfEndDword; i++)
     {
         ControlFlowInstruction a, b;
         UnpackControlFlowPair(dwords[i * 3], dwords[i * 3 + 1], dwords[i * 3 + 2], a, b);
@@ -50,6 +61,14 @@ DecodedShaderProgram DecodeShaderMicrocode(const uint32_t* dwords, uint32_t dwor
         for (int which = 0; which < 2; which++)
         {
             const ControlFlowInstruction& cf = pairInstrs[which];
+            if (IsExecFamily(cf.opcode))
+            {
+                uint32_t candidateEnd = cf.address * 3;
+                if (candidateEnd < cfEndDword)
+                {
+                    cfEndDword = candidateEnd;
+                }
+            }
             const char* opcodeName = "UNKNOWN";
             switch (cf.opcode)
             {
@@ -98,9 +117,24 @@ DecodedShaderProgram DecodeShaderMicrocode(const uint32_t* dwords, uint32_t dwor
 
                 if (isFetch)
                 {
-                    VertexFetchInstructionFields vf = DecodeVertexFetchInstruction(iw0, iw1, iw2);
-                    snprintf(line, sizeof(line), "[%s]   instr %u: FETCH fetchConstantIndex=%u destReg=%u srcReg=%u format=%u stride=%u offset=%d",
-                        shaderTag, j, vf.fetchConstantIndex, vf.destReg, vf.srcReg, vf.format, vf.stride, vf.offset);
+                    // Final review finding I2: the real fetch opcode
+                    // (word0 bits 0-4) distinguishes a vertex fetch
+                    // (kVertexFetch=0) from a texture fetch -- a texture
+                    // fetch's const_index field means something
+                    // different, so it must not go through
+                    // DecodeVertexFetchInstruction's formula.
+                    uint32_t fetchOpcode = iw0 & 0x1F;
+                    if (fetchOpcode != 0)
+                    {
+                        snprintf(line, sizeof(line), "[%s]   instr %u: TFETCH opcode=%u (not decoded -- texture sampling out of scope)",
+                            shaderTag, j, fetchOpcode);
+                    }
+                    else
+                    {
+                        VertexFetchInstructionFields vf = DecodeVertexFetchInstruction(iw0, iw1, iw2);
+                        snprintf(line, sizeof(line), "[%s]   instr %u: FETCH fetchConstantIndex=%u destReg=%u srcReg=%u format=%u stride=%u offset=%d isMiniFetch=%d",
+                            shaderTag, j, vf.fetchConstantIndex, vf.destReg, vf.srcReg, vf.format, vf.stride, vf.offset, vf.isMiniFetch ? 1 : 0);
+                    }
                 }
                 else
                 {

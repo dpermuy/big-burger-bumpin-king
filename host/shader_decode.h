@@ -34,6 +34,11 @@ struct VertexFetchInstructionFields
     uint32_t format;             // 6 bits (real xenos::VertexFormat value)
     uint32_t stride;             // 8 bits, in dwords
     int32_t offset;              // 23 bits, signed, in dwords
+    // Real word1 bit 30. A mini-fetch reuses the preceding full fetch's
+    // real stride and fetch constant -- this instruction's own `stride`
+    // field is NOT the real per-element stride when this is true (final
+    // review finding I3).
+    bool isMiniFetch;
 };
 VertexFetchInstructionFields DecodeVertexFetchInstruction(uint32_t word0, uint32_t word1, uint32_t word2);
 
