@@ -34,7 +34,17 @@ public:
     bool HasRingBuffer();
     uint32_t GraphicsInterruptCallback();
     uint32_t GraphicsInterruptContext();
-    const GpuRegisterState& RegisterState() const { return gpuState_; }
+    // Returns a snapshot (a copy), not a live reference -- gpuState_ is
+    // written from the GPU pump thread under mutex_ (see the note on
+    // mutex_ below), so a caller on another thread (e.g. sub-project 2's
+    // renderer, reading this from the main thread) must not read through
+    // an unlocked reference while a write is in progress. Final review
+    // finding I3.
+    GpuRegisterState RegisterState()
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        return gpuState_;
+    }
 
 private:
     // Findings 55/56/57: ring-space wait loops (sub_820B4EE8) deadlocked because

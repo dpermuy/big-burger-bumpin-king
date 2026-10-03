@@ -149,6 +149,8 @@ namespace
     constexpr uint32_t kOpcodeInterrupt = 0x54;      // PM4_INTERRUPT
     constexpr uint32_t kOpcodeEventWriteShd = 0x58;  // PM4_EVENT_WRITE_SHD
     constexpr uint32_t kOpcodeSetConstant = 0x2D;    // PM4_SET_CONSTANT
+    constexpr uint32_t kOpcodeDrawIndx = 0x22;       // PM4_DRAW_INDX
+    constexpr uint32_t kOpcodeDrawIndx2 = 0x36;      // PM4_DRAW_INDX_2
 }
 
 uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth)
@@ -192,10 +194,18 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 break; // count runs past the buffer -- not a real packet, stop here
             }
             if (logFile_) fprintf(logFile_, "%sTYPE0 reg=0x%04X count=%u\n", indent, baseIndex, count);
+            // Real semantics (Xenia's ExecutePacketType0): header bit 15
+            // ("write one register") means every payload dword targets
+            // baseIndex itself, not baseIndex+i -- not observed live in
+            // this project yet, but a header that does set it would
+            // otherwise corrupt neighboring registers. Final review
+            // finding M4.
+            bool writeOneReg = (header & 0x8000) != 0;
             for (uint32_t i = 0; i < count; i++)
             {
                 uint32_t value = LoadU32(base, bufferAddr + offsetBytes + 4 + i * 4);
-                gpuState_.WriteRegister(baseIndex + i, value);
+                uint32_t targetIndex = writeOneReg ? baseIndex : (baseIndex + i);
+                gpuState_.WriteRegister(targetIndex, value);
             }
             offsetBytes += 4 + payloadBytes;
             packetsParsed++;
@@ -331,6 +341,30 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 {
                     fprintf(logFile_, "%s-> SET_CONSTANT: undefined subType=%u, skipped\n", indent, subType);
                 }
+            }
+
+            if (opcode == kOpcodeDrawIndx2 && count >= 1)
+            {
+                // Real semantics (Xenia's ExecutePacketType3Draw): the
+                // draw initiator travels inside the draw packet itself,
+                // not as a pre-set register -- real hardware mirrors it
+                // into the register file as a side effect of executing
+                // the draw, which is what this write reproduces. DRAW_INDX_2
+                // has no leading viz-query dword, so the initiator is the
+                // packet's first payload dword. Final review finding I1
+                // (this project's own prior assumption that TYPE0 writes
+                // alone would populate this register was wrong -- live
+                // data showed 49 real DRAW_INDX_2 packets and zero TYPE0
+                // writes to this register).
+                uint32_t drawInitiatorValue = LoadU32(base, bufferAddr + offsetBytes + 4);
+                gpuState_.WriteRegister(GpuRegisterState::kDrawInitiatorRegister, drawInitiatorValue);
+            }
+            else if (opcode == kOpcodeDrawIndx && count >= 2)
+            {
+                // DRAW_INDX has a leading viz-query-condition dword before
+                // the draw initiator (Xenia's ExecutePacketType3_DRAW_INDX).
+                uint32_t drawInitiatorValue = LoadU32(base, bufferAddr + offsetBytes + 8);
+                gpuState_.WriteRegister(GpuRegisterState::kDrawInitiatorRegister, drawInitiatorValue);
             }
 
             offsetBytes += 4 + payloadBytes;

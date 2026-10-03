@@ -29,10 +29,13 @@ struct VertexFetchConstant
 class GpuRegisterState
 {
 public:
-    // Covers every real sub-bank confirmed in Xenia's own source with
-    // margin: REGISTERS (0x2000+), ALU (0x4000+), FETCH (0x4800+, 96
-    // slots x 2 dwords = 192 dwords), BOOL (0x4900+), LOOP (0x4908+).
-    static constexpr uint32_t kRegisterCount = 0x5000;
+    // Exact real Xenia register file size: the highest real named
+    // register is 0x5002 (SHADER_CONSTANT_FLUSH_FETCH_2), confirmed
+    // against Xenia's register_table.inc. 0x5000 undercounted this by
+    // three real registers (SHADER_CONSTANT_FLUSH_FETCH_0-2), which were
+    // observed being silently dropped in a live run -- fixed per final
+    // review finding I2.
+    static constexpr uint32_t kRegisterCount = 0x5003;
 
     // Out-of-range index: logged once (rate-limited) and ignored. A game
     // writing beyond this project's current margin is a real, informative
