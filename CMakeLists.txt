@@ -25,7 +25,7 @@ if(BIGBUMPIN_PPC_SOURCES)
     target_link_libraries(BigBumpinPPC PRIVATE XenonUtils)
     target_compile_options(BigBumpinPPC PRIVATE -Wno-unused-label -Wno-unused-variable)
 
-    add_executable(BigBumpinHost host/main.cpp host/kernel_stubs.cpp host/kernel_impl.cpp host/xdvdfs.cpp host/gpu_trace.cpp host/gpu_state.cpp host/gpu_draw_list.cpp host/game_overrides.cpp host/renderer_metal.mm)
+    add_executable(BigBumpinHost host/main.cpp host/kernel_stubs.cpp host/kernel_impl.cpp host/xdvdfs.cpp host/gpu_trace.cpp host/gpu_state.cpp host/gpu_draw_list.cpp host/shader_decode.cpp host/game_overrides.cpp host/renderer_metal.mm)
     target_include_directories(BigBumpinHost PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private/ppc")
     target_link_libraries(BigBumpinHost PRIVATE BigBumpinPPC XenonUtils fmt::fmt "-framework Metal" "-framework MetalKit" "-framework Cocoa" "-framework QuartzCore")
     set_source_files_properties(host/renderer_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
