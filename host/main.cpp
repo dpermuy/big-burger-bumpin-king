@@ -5,15 +5,19 @@
 #include <image.h>
 #include "gpu_trace.h"
 #include "xdvdfs.h"
+#include "renderer_metal.h"
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <string>
 #include <sys/mman.h>
 #include <thread>
+#include <vector>
 
 PPC_EXTERN_FUNC(_xstart);
 
@@ -112,9 +116,41 @@ int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
-    const char* isoPath = argc > 2 ? argv[2] : "Big Bumpin' (USA).iso";
+    // --window can appear anywhere on the command line; remaining
+    // arguments stay positional (xexPath, isoPath) in their original
+    // relative order.
+    bool windowMode = false;
+    std::vector<const char*> positionalArgs;
+    for (int i = 1; i < argc; i++)
+    {
+        if (std::string(argv[i]) == "--window")
+        {
+            windowMode = true;
+        }
+        else
+        {
+            positionalArgs.push_back(argv[i]);
+        }
+    }
+
+    const char* xexPath = positionalArgs.size() > 0 ? positionalArgs[0] : "private/default.xex";
+    const char* isoPath = positionalArgs.size() > 1 ? positionalArgs[1] : "Big Bumpin' (USA).iso";
     uint8_t* base = SetupMemoryImage(xexPath);
+
+    if (windowMode)
+    {
+        // Fixed at 1280x720 for this milestone, matching the real
+        // AVIVO_D1MODE_VIEWPORT_SIZE value already seeded in
+        // SetupMemoryImage above -- keep these two in sync by eye; not
+        // worth a shared constant for one hardcoded milestone value.
+        constexpr int kWindowWidth = 1280;
+        constexpr int kWindowHeight = 720;
+        if (!Renderer_Init(kWindowWidth, kWindowHeight))
+        {
+            fmt::println("Failed to initialize Metal renderer (no GPU device available?) -- exiting.");
+            std::_Exit(1);
+        }
+    }
 
     if (!g_xdvdfsImage.Open(isoPath))
     {
@@ -191,14 +227,49 @@ int main(int argc, char** argv)
         _xstart(ctx, base);
     });
 
-    auto status = future.wait_for(std::chrono::seconds(10));
-    if (status == std::future_status::timeout)
+    if (!windowMode)
     {
-        fmt::println("_xstart did not return within 10 seconds (watchdog timeout) -- "
-            "this is an expected, informative outcome for Phase 2A, not a crash.");
-        std::_Exit(2);
+        // Existing behavior, byte-for-byte unchanged.
+        auto status = future.wait_for(std::chrono::seconds(10));
+        if (status == std::future_status::timeout)
+        {
+            fmt::println("_xstart did not return within 10 seconds (watchdog timeout) -- "
+                "this is an expected, informative outcome for Phase 2A, not a crash.");
+            std::_Exit(2);
+        }
+
+        fmt::println("_xstart returned normally.");
+        return 0;
     }
 
-    fmt::println("_xstart returned normally.");
+    // --window mode: the main thread must run the real AppKit event loop
+    // instead of blocking directly on future.wait_for (windows only
+    // function on the main thread, a hard Cocoa requirement). A separate
+    // watchdog thread mirrors the exact same wait_for logic and timeout
+    // message as headless mode, then signals the AppKit loop to stop.
+    std::atomic<int> watchdogResult{-1}; // set to 0 (returned normally) or 2 (timeout) below
+    std::thread watchdogThread([&]() {
+        auto status = future.wait_for(std::chrono::seconds(10));
+        if (status == std::future_status::timeout)
+        {
+            fmt::println("_xstart did not return within 10 seconds (watchdog timeout) -- "
+                "this is an expected, informative outcome for Phase 2A, not a crash.");
+            watchdogResult.store(2);
+        }
+        else
+        {
+            fmt::println("_xstart returned normally.");
+            watchdogResult.store(0);
+        }
+        Renderer_RequestShutdown();
+    });
+
+    Renderer_RunEventLoop(); // blocks main thread until shutdown is requested
+    watchdogThread.join();
+
+    if (watchdogResult.load() == 2)
+    {
+        std::_Exit(2);
+    }
     return 0;
 }
