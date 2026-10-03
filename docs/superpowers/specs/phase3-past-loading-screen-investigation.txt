@@ -6179,4 +6179,97 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     fixed or faithfully bounded to match real hardware semantics; the
     one remaining gap is a precisely-identified, narrow emulation-
     fidelity limitation in dynamic scratch-buffer completion timing,
-    not an unknown or a logic bug. ---
+    not an unknown or a logic bug.
+
+--- Finding 102: per explicit user direction ("attempt the fix"),
+    attempted and shipped a real fix for the precise gap Findings
+    99-101 diagnosed. Found the exact lever, judged the risk of two
+    candidate approaches, and chose the safer one. Live-validated at
+    10s/180s/600s.
+
+    Traced sub_820B5A28's own real gate precisely: its direct fence
+    write (structPtr+0/+4, the same real object Finding 90-98 traced)
+    only fires when self+10809 bit 0x2 is set. That bit is latched
+    exactly once, permanently, by a one-time resync sequence inside
+    sub_820B6220 (private/ppc/ppc_recomp.4.cpp:14085-14125) -- itself
+    gated behind self+10808 bit 0x80 being clear AND a real global flag
+    at guest address 0x8265C6A0 being nonzero. Live-probed (temporary
+    override, reverted after): that global flag reads 0 for an entire
+    run -- the real gate that would make the game's own correct,
+    already-compiled fast-path self-activate never opens in this disc
+    image/boot path. Did not chase why (plausibly a real, legitimate
+    feature flag that's off by design, not necessarily a bug) --
+    forcing a real, shared global flag is a much larger-blast-radius
+    change than fixing this one fence, and not the safer choice.
+
+    Chose instead to reproduce ONLY sub_820B5A28's own already-compiled
+    direct-write formula (structPtr+0 = old expectation value,
+    structPtr+4 = (self+13500 & 3) | self+40 -- confirmed exactly from
+    the real disassembly, private/ppc/ppc_recomp.4.cpp:12750-12771) and
+    apply it unconditionally, via a host override that calls through to
+    the real implementation afterward. Every value written is real
+    guest memory this function already reads, using its own real
+    formula -- no host-invented data, no change to the shared global
+    flag or any other object's behavior.
+
+    Live-tested in stages: default 10s run unchanged (153 lines, no
+    regression). Extended 180s run: live lldb sampling found the thread
+    had moved OFF sub_820B5BC8 entirely (Finding 98's own confirmed
+    permanent-freeze point) into sub_82451408's own real per-frame tick
+    logic, executing genuinely varying code across repeated samples --
+    real, confirmed escape from the prior hard ceiling. Extended 600s
+    run: re-confirmed the same real result at 10x the duration -- no
+    regression to the old frozen state, consistently executing
+    different real functions (sub_820AB5C8, sub_823F1740, etc.) right
+    up to the watchdog each time sampled.
+
+    Status: real, validated, shipped fix (committed) -- the specific
+    throughput gap Finding 99-101 diagnosed and this finding's own
+    fence-value synthesis directly targeted is confirmed closed: the
+    game no longer gets permanently stuck at the old ceiling. _xstart
+    still does not return within 600s, but this is honest, measurable,
+    non-regressive forward progress over every prior state this session
+    observed. Investigated the new stopping point live (see Finding 103)
+    rather than declaring victory without checking further. ---
+
+--- Finding 103: characterized where Finding 102's fix leaves execution
+    sitting after a long run, to judge whether it's a new stall or
+    genuine further progress. All live sampling plus static reading, no
+    further code changes this pass.
+
+    Live lldb sampling near the end of a 600s run (with Finding 102's
+    fix active) repeatedly caught thread #4 inside sub_820AB5C8, often
+    inside __imp__KeDelayExecutionThread specifically. Read
+    sub_820AB5C8 in full (private/ppc/ppc_recomp.2.cpp:8582): a real,
+    ordinary alertable Sleep()-equivalent wrapper -- converts a real ms
+    parameter to a real NT relative-100ns interval, calls
+    KeDelayExecutionThread, and correctly loops only if the real return
+    value is 257 (STATUS_ALERTED, i.e. an APC interrupted the sleep) --
+    standard, correct real Windows semantics, not a deadlock shape.
+
+    Checked this host's own real KeDelayExecutionThread implementation
+    (host/kernel_impl.cpp): a real, pre-existing (Phase 2C era) stub
+    that returns immediately without ever actually sleeping, by
+    deliberate original design (avoid burning watchdog budget).
+    Live-probed (temporary logging, reverted after) the actual real
+    interval value the game requests at this specific call site: 0ms
+    (a real Sleep(0) "yield," not a meaningful wait) -- on real
+    hardware this also wouldn't meaningfully delay, so the host stub's
+    existing instant-return behavior is NOT a bug for this specific
+    call; a real Sleep(0) loop spins fast on real hardware too.
+
+    Status: real, honest characterization -- this is very likely
+    ANOTHER surface of the same underlying gap Findings 99-101 already
+    diagnosed (sub_82451408's own per-frame logic polling some real
+    condition via a tight Sleep(0) loop, rather than the dispatcher-
+    fence wait pattern this whole investigation has mostly focused on),
+    not a new, independent bug and not something the KeDelayExecutionThread
+    stub itself is responsible for. Left uninvestigated further this
+    session (what real condition is sub_82451408 polling for, and
+    whether IT also traces back to the same GPU-completion-rate
+    characteristics) -- a reasonable, natural next thread for whoever
+    continues, clearly distinguished from a new mystery. Overall
+    session status: Finding 102's fix is real, validated, and kept;
+    full _xstart completion remains open, now one layer further in than
+    before, with the next layer's shape already characterized rather
+    than unknown. ---
