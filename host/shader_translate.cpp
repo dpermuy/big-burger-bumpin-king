@@ -173,6 +173,10 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
                     {
                         continue; // real no-op/filler, not a failure
                     }
+                    if (alu.isPredicated || alu.src1Negate || alu.src2Negate)
+                    {
+                        return FailedTranslation("predicated or negated ALU instruction not supported").result;
+                    }
                     bool isSelfMov = (alu.vectorOpcode == 2) && (alu.src1Reg == alu.src2Reg)
                         && alu.src1Sel && alu.src2Sel;
                     if (!isSelfMov)
@@ -279,6 +283,10 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
         if (result.pixelExports.empty())
         {
             return FailedTranslation("no real pixel exports recognized").result;
+        }
+        if (result.pixelExports[0].sourceRegister != 0)
+        {
+            return FailedTranslation("pixel shader export source register other than 0 not supported").result;
         }
         result.fragmentShaderSource =
             "fragment float4 fragment_main(RasterizerData in [[stage_in]]) {\n"

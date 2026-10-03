@@ -25,6 +25,10 @@ struct AluInstructionFields
     uint32_t src1Swizzle;    // 8 bits, raw (component-relative -- see ResolveAluSwizzleComponent)
     uint32_t src2Swizzle;
     uint32_t src3Swizzle;
+    bool src1Negate;         // word1 bit 26
+    bool src2Negate;         // word1 bit 25
+    bool src3Negate;         // word1 bit 24
+    bool isPredicated;       // word1 bit 28
 };
 AluInstructionFields DecodeAluInstruction(uint32_t word0, uint32_t word1, uint32_t word2);
 

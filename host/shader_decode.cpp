@@ -19,6 +19,10 @@ AluInstructionFields DecodeAluInstruction(uint32_t word0, uint32_t word1, uint32
     fields.src1Swizzle = (word1 >> 16) & 0xFF;
     fields.src2Swizzle = (word1 >> 8) & 0xFF;
     fields.src3Swizzle = word1 & 0xFF;
+    fields.src3Negate = ((word1 >> 24) & 0x1) != 0;
+    fields.src2Negate = ((word1 >> 25) & 0x1) != 0;
+    fields.src1Negate = ((word1 >> 26) & 0x1) != 0;
+    fields.isPredicated = ((word1 >> 28) & 0x1) != 0;
     return fields;
 }
 
