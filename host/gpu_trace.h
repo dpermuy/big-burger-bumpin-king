@@ -6,6 +6,7 @@
 
 #include "gpu_state.h"
 #include "gpu_draw_list.h"
+#include "shader_translate.h"
 
 struct PPCContext;
 
@@ -47,6 +48,7 @@ public:
         return gpuState_;
     }
     FrameDrawList& DrawList() { return frameDrawList_; }
+    ShaderTranslationCache& ShaderTranslation() { return shaderTranslationCache_; }
 
 private:
     // Findings 55/56/57: ring-space wait loops (sub_820B4EE8) deadlocked because
@@ -75,6 +77,7 @@ private:
 
     GpuRegisterState gpuState_;
     FrameDrawList frameDrawList_;
+    ShaderTranslationCache shaderTranslationCache_;
     uint32_t ringBufferBase_ = 0;
     uint32_t ringBufferSize_ = 0;
     uint32_t rptrWriteBackAddr_ = 0;

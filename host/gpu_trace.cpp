@@ -502,7 +502,17 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             cmd.vertexData[i + 2] = (floatBits >> 16) & 0xFF;
                             cmd.vertexData[i + 3] = (floatBits >> 24) & 0xFF;
                         }
-                        uint32_t bufferVertexCapacity = vertexByteSize / 12;
+                        // Use the real translated vertex shader's own
+                        // decoded stride once translation has succeeded
+                        // -- the hardcoded 12 (float3-only) was always a
+                        // documented placeholder assumption (sub-project
+                        // 2's own spec), and this project's real vertex
+                        // shader actually interleaves a second, float4
+                        // attribute at stride 28, not 12.
+                        TranslationResult currentVs = shaderTranslationCache_.CurrentVertexShader();
+                        uint32_t realStride = (currentVs.success && currentVs.vertexStrideBytes != 0)
+                            ? currentVs.vertexStrideBytes : 12;
+                        uint32_t bufferVertexCapacity = vertexByteSize / realStride;
 
                         if (isIndexed)
                         {
@@ -587,6 +597,30 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                         for (const std::string& disasmLine : program.disassemblyLines)
                         {
                             fprintf(logFile_, "%s  %s\n", indent, disasmLine.c_str());
+                        }
+                    }
+                    uint32_t microcodeHash = Fnv1aHash(
+                        reinterpret_cast<const uint8_t*>(microcodeDwords.data()),
+                        microcodeDwords.size() * sizeof(uint32_t));
+                    uint32_t cachedHash = (shaderTypeValue == 0)
+                        ? shaderTranslationCache_.CurrentVertexShaderHash()
+                        : shaderTranslationCache_.CurrentPixelShaderHash();
+                    if (microcodeHash != cachedHash)
+                    {
+                        TranslationResult translation = TranslateShader(microcodeDwords.data(), sizeDwords, (int)shaderTypeValue);
+                        if (logFile_)
+                        {
+                            fprintf(logFile_, "%s-> IM_LOAD_IMMEDIATE: translation %s%s\n",
+                                indent, translation.success ? "succeeded" : "FAILED",
+                                translation.success ? "" : (" (" + translation.failureReason + ")").c_str());
+                        }
+                        if (shaderTypeValue == 0)
+                        {
+                            shaderTranslationCache_.UpdateVertexShader(microcodeHash, translation);
+                        }
+                        else
+                        {
+                            shaderTranslationCache_.UpdatePixelShader(microcodeHash, translation);
                         }
                     }
                 }
