@@ -1,5 +1,6 @@
 #include "renderer_metal.h"
 #include "gpu_trace.h"
+#include "shader_translate.h"
 
 #import <Cocoa/Cocoa.h>
 #import <MetalKit/MetalKit.h>
@@ -7,6 +8,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace {
@@ -42,6 +44,7 @@ fragment float4 fragment_main() {
 )";
 
 id<MTLRenderPipelineState> g_drawPipelineState = nil;
+uint64_t g_lastCompiledRealShaderHashPair = 0; // 0 = nothing real compiled yet; combines vertex+pixel hashes
 // Final review finding I2: TakeReady() drains and clears every tick, so
 // a real draw batch (often just one, observed live as a single early
 // burst of PM4 traffic) would otherwise flash for one display-link tick
@@ -74,6 +77,70 @@ void StopApplication() {
                                            data1:0
                                            data2:0];
     [NSApp postEvent:wake atStart:YES];
+}
+
+void TryUpdateRealPipeline(id<MTLDevice> device)
+{
+    uint32_t vsHash = g_gpuTracer.ShaderTranslation().CurrentVertexShaderHash();
+    uint32_t psHash = g_gpuTracer.ShaderTranslation().CurrentPixelShaderHash();
+    TranslationResult vs = g_gpuTracer.ShaderTranslation().CurrentVertexShader();
+    TranslationResult ps = g_gpuTracer.ShaderTranslation().CurrentPixelShader();
+
+    if (!vs.success || !ps.success)
+    {
+        return; // keep whatever pipeline is already running
+    }
+
+    uint64_t combinedHash = (uint64_t(vsHash) << 32) | uint64_t(psHash);
+    if (combinedHash == g_lastCompiledRealShaderHashPair)
+    {
+        return; // already compiled this exact pair
+    }
+
+    std::string fullSource = "#include <metal_stdlib>\nusing namespace metal;\n";
+    fullSource += vs.vertexShaderSource;
+    fullSource += ps.fragmentShaderSource;
+
+    NSError *libraryError = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:@(fullSource.c_str())
+                                                    options:nil
+                                                      error:&libraryError];
+    if (!library)
+    {
+        fprintf(stderr, "[renderer] real shader compile failed: %s\n",
+            libraryError.localizedDescription.UTF8String);
+        return; // keep whatever pipeline is already running
+    }
+
+    MTLVertexDescriptor *vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+    for (size_t i = 0; i < vs.attributes.size(); i++)
+    {
+        const TranslatedAttribute &attr = vs.attributes[i];
+        vertexDescriptor.attributes[i].format = (attr.format == TranslatedVertexFormat::Float3)
+            ? MTLVertexFormatFloat3 : MTLVertexFormatFloat4;
+        vertexDescriptor.attributes[i].offset = attr.byteOffset;
+        vertexDescriptor.attributes[i].bufferIndex = 0;
+    }
+    vertexDescriptor.layouts[0].stride = vs.vertexStrideBytes;
+
+    MTLRenderPipelineDescriptor *pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    pipelineDescriptor.vertexFunction = [library newFunctionWithName:@"vertex_main"];
+    pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"];
+    pipelineDescriptor.vertexDescriptor = vertexDescriptor;
+    pipelineDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+    NSError *pipelineError = nil;
+    id<MTLRenderPipelineState> newPipeline = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&pipelineError];
+    if (!newPipeline)
+    {
+        fprintf(stderr, "[renderer] real pipeline state creation failed: %s\n",
+            pipelineError.localizedDescription.UTF8String);
+        return; // keep whatever pipeline is already running
+    }
+
+    g_drawPipelineState = newPipeline;
+    g_lastCompiledRealShaderHashPair = combinedHash;
+    fprintf(stderr, "[renderer] now using real translated shader (vsHash=0x%X psHash=0x%X)\n", vsHash, psHash);
 }
 } // namespace
 
@@ -114,6 +181,7 @@ void StopApplication() {
     if (!newDrawCommands.empty()) {
         g_lastDrawCommands = std::move(newDrawCommands);
     }
+    TryUpdateRealPipeline(self.commandQueue.device);
     [encoder setRenderPipelineState:g_drawPipelineState];
     for (const DrawCommand &cmd : g_lastDrawCommands) {
         if (cmd.vertexData.empty()) {
