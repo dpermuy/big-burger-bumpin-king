@@ -19,6 +19,15 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
     TranslationResult result;
     result.success = true;
 
+    // Tracks the most recent real full (non-mini) vertex fetch's real
+    // fetchConstantIndex, so a following real mini-fetch can inherit it
+    // (real Xenos semantics -- see host/shader_decode.h's own comment on
+    // VertexFetchInstructionFields::isMiniFetch: a mini-fetch reuses the
+    // preceding full fetch's real stride AND fetch constant, not its own
+    // raw const_index/const_index_sel bits).
+    bool sawFullFetch = false;
+    uint32_t lastFullFetchConstantIndex = 0;
+
     // Same real EXEC-family-bound-shrinking walk 3a's own
     // DecodeShaderMicrocode uses (confirmed exact, including 3a's own
     // final-review fix for where the real control-flow program ends).
@@ -32,18 +41,42 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
         for (int which = 0; which < 2; which++)
         {
             const ControlFlowInstruction& cf = pairInstrs[which];
-            if (IsExecFamily(cf.opcode))
+            bool isExecFamily = IsExecFamily(cf.opcode);
+            bool isUnconditionalExec = (cf.opcode == ControlFlowOpcode::kExec) || (cf.opcode == ControlFlowOpcode::kExecEnd);
+
+            if (isExecFamily && !isUnconditionalExec)
             {
-                uint32_t candidateEnd = cf.address * 3;
-                if (candidateEnd < cfEndDword)
-                {
-                    cfEndDword = candidateEnd;
-                }
+                // Real conditional variants (kCondExec, kCondExecEnd,
+                // kCondExecPred, kCondExecPredEnd, kCondExecPredClean,
+                // kCondExecPredCleanEnd) have a real condition this
+                // translator does not evaluate -- walking their block
+                // as if unconditional would be wrong, so fail closed
+                // for the whole shader instead.
+                return FailedTranslation("conditional control flow not supported").result;
             }
 
-            if (!IsExecFamily(cf.opcode))
+            if (!isExecFamily)
             {
+                // Only a real no-op (kNop) or a real allocation
+                // directive with no ALU/fetch block of its own (kAlloc)
+                // are safe to silently skip. Anything else (kLoopStart,
+                // kLoopEnd, kCondCall, kReturn, kCondJmp) is real
+                // control flow this translator does not resolve --
+                // silently skipping it could lose real semantics while
+                // still reporting overall success, so fail closed
+                // instead.
+                if (cf.opcode != ControlFlowOpcode::kNop && cf.opcode != ControlFlowOpcode::kAlloc)
+                {
+                    return FailedTranslation("unsupported control-flow opcode").result;
+                }
                 continue;
+            }
+
+            // isUnconditionalExec is true here (kExec/kExecEnd only).
+            uint32_t candidateEnd = cf.address * 3;
+            if (candidateEnd < cfEndDword)
+            {
+                cfEndDword = candidateEnd;
             }
 
             for (uint32_t j = 0; j < cf.count; j++)
@@ -73,21 +106,52 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
                     else if (vf.format == 38) translatedFormat = TranslatedVertexFormat::Float4;
                     else return FailedTranslation("unrecognized real vertex-fetch format").result;
 
+                    for (uint32_t comp = 0; comp < 4; comp++)
+                    {
+                        if (GetFetchSwizzleComponent(vf.destSwizzle, comp) != comp)
+                        {
+                            return FailedTranslation("non-identity fetch swizzle not supported").result;
+                        }
+                    }
+
+                    uint32_t effectiveFetchConstantIndex;
+                    if (vf.isMiniFetch)
+                    {
+                        // Real Xenos semantics (host/shader_decode.h):
+                        // a mini-fetch reuses the preceding full fetch's
+                        // real stride AND fetch constant -- its own raw
+                        // const_index/const_index_sel bits are not the
+                        // real fetch constant to use.
+                        if (!sawFullFetch)
+                        {
+                            return FailedTranslation("mini-fetch with no preceding full fetch").result;
+                        }
+                        effectiveFetchConstantIndex = lastFullFetchConstantIndex;
+                    }
+                    else
+                    {
+                        effectiveFetchConstantIndex = vf.fetchConstantIndex;
+                        sawFullFetch = true;
+                        lastFullFetchConstantIndex = vf.fetchConstantIndex;
+                        result.vertexStrideBytes = vf.stride * 4;
+                    }
+
                     TranslatedAttribute attr;
-                    attr.fetchConstantIndex = vf.fetchConstantIndex;
+                    attr.fetchConstantIndex = effectiveFetchConstantIndex;
                     attr.destReg = vf.destReg;
                     attr.format = translatedFormat;
                     attr.byteOffset = static_cast<uint32_t>(vf.offset) * 4;
                     result.attributes.push_back(attr);
-
-                    if (!vf.isMiniFetch)
-                    {
-                        result.vertexStrideBytes = vf.stride * 4;
-                    }
                 }
                 else
                 {
                     AluInstructionFields alu = DecodeAluInstruction(iw0, iw1, iw2);
+
+                    if (alu.scalarWriteMask != 0 && alu.scalarOpcode != 50 /*kRetainPrev*/)
+                    {
+                        return FailedTranslation("scalar ALU op not recognized").result;
+                    }
+
                     if (alu.vectorWriteMask == 0)
                     {
                         continue; // real no-op/filler, not a failure
@@ -97,6 +161,46 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
                     if (!isSelfMov)
                     {
                         return FailedTranslation("a real ALU instruction outside the recognized export-via-self-mov pattern").result;
+                    }
+
+                    if (shaderType == 0)
+                    {
+                        // Only interpolator0 (0) and position (62) are
+                        // recognized real vertex export registers.
+                        if (alu.vectorDest != 0 && alu.vectorDest != 62)
+                        {
+                            return FailedTranslation("unrecognized vertex export register").result;
+                        }
+                        bool sourceWasFetched = false;
+                        for (const TranslatedAttribute& fetchedAttr : result.attributes)
+                        {
+                            if (fetchedAttr.destReg == alu.src1Reg)
+                            {
+                                sourceWasFetched = true;
+                                break;
+                            }
+                        }
+                        if (!sourceWasFetched)
+                        {
+                            return FailedTranslation("export source register was never fetched").result;
+                        }
+                    }
+                    else
+                    {
+                        // Only color0 (0) is a recognized real pixel
+                        // export register.
+                        if (alu.vectorDest != 0)
+                        {
+                            return FailedTranslation("unrecognized pixel export register").result;
+                        }
+                    }
+
+                    for (uint32_t comp = 0; comp < 4; comp++)
+                    {
+                        if (ResolveAluSwizzleComponent(alu.src1Swizzle, comp) != comp)
+                        {
+                            return FailedTranslation("non-identity ALU swizzle not supported").result;
+                        }
                     }
 
                     TranslatedExport exp;
