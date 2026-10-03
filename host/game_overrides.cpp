@@ -104,6 +104,48 @@ void sub_820B4EE8(PPCContext& __restrict ctx, uint8_t* base)
 
 PPC_EXTERN_FUNC(sub_820B6220);
 
+// Finding 102: fix attempt for the real emulation-fidelity gap Findings 90-101
+// precisely diagnosed (not a logic bug in the game, not a wait-bound issue --
+// both already fixed/correct, Finding 96-98). sub_820B5A28 (real contract,
+// private/ppc/ppc_recomp.4.cpp:12733-12851) has its own real, already-compiled
+// DIRECT write to this fence (structPtr+0 = old expectation, structPtr+4 =
+// (self+13500 & 3) | self+40), which would track real demand 1:1 and make the
+// slow, game-emitted EVENT_WRITE_SHD mechanism (Finding 37/94/95, only ~1
+// completion per 5-7 real frames, Finding 100) unnecessary for this object --
+// but it only fires when self+10808 bit 0x80 is clear AND a real global flag
+// (0x8265C6A0) is nonzero AND self+10809 bit 0x2 isn't already latched
+// (sub_820B6220's own one-time resync sequence, private/ppc/ppc_recomp.4.cpp:
+// 14085-14125). Live-confirmed (temporary probe, since reverted) that global
+// flag reads 0 for an entire run -- this real gate never opens in this disc
+// image/boot path, for reasons not yet understood (plausibly a real, legitimate
+// feature flag that's off by design, not necessarily a bug).
+//
+// Rather than guess why that flag is 0 or force it (touching a real, shared
+// global flag's value is a much bigger blast-radius change than this specific
+// fence), this override reproduces ONLY sub_820B5A28's own already-compiled
+// direct-write values -- the exact real numbers the game's own code already
+// computes and would write if that one gate were open -- and applies them
+// unconditionally. This is not host-invented data: every value written here is
+// read from the same real guest memory the original function already reads,
+// using the same real formula. Calls through to the real implementation
+// afterward, which still does its own unconditional expectation+=2 and its own
+// (still-closed) gated check -- harmless, no double-write, since real gate
+// stays shut.
+extern "C" PPC_EXTERN_FUNC(__imp__sub_820B5A28);
+void sub_820B5A28(PPCContext& __restrict ctx, uint8_t* base)
+{
+    uint32_t self = static_cast<uint32_t>(ctx.r3.u64);
+    uint32_t structPtr = PPC_LOAD_U32(self + 10768);
+    if (structPtr != 0)
+    {
+        uint32_t oldExpectation = PPC_LOAD_U32(self + 10780);
+        uint32_t cursorFlags = (PPC_LOAD_U32(self + 13500) & 0x3u) | PPC_LOAD_U32(self + 40);
+        PPC_STORE_U32(structPtr + 0, oldExpectation);
+        PPC_STORE_U32(structPtr + 4, cursorFlags);
+    }
+    __imp__sub_820B5A28(ctx, base);
+}
+
 // Finding 63: a second, independent instance of the exact same class of problem
 // Finding 61 fixed, on a completely different call chain -- confirmed live via lldb
 // thread backtrace (two samples, 30s apart, same tight loop both times) that the
