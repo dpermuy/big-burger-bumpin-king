@@ -1606,6 +1606,14 @@ PPC_FUNC(__imp__VdSwap)
     {
         Renderer_PostPresentSignal();
     }
+    // Sub-project 2: move this frame's accumulated real draw commands to
+    // the "ready" list for the render thread to pick up at the next
+    // present. Called unconditionally (matches the existing
+    // PPC_STORE_U32 reset just above this block) -- SwapReady() is cheap
+    // (two vector moves under a short-held mutex) even when nothing was
+    // added, so there's no headless-mode cost concern here the way
+    // Renderer_PostPresentSignal has with Renderer_IsActive().
+    g_gpuTracer.DrawList().SwapReady();
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
