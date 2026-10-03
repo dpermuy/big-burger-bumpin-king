@@ -1,6 +1,9 @@
 #include "gpu_trace.h"
 #include "ppc_config.h"
+#include "shader_decode.h"
 #include <ppc_context.h>
+#include <string>
+#include <vector>
 
 GpuCommandTracer g_gpuTracer;
 
@@ -151,6 +154,7 @@ namespace
     constexpr uint32_t kOpcodeSetConstant = 0x2D;    // PM4_SET_CONSTANT
     constexpr uint32_t kOpcodeDrawIndx = 0x22;       // PM4_DRAW_INDX
     constexpr uint32_t kOpcodeDrawIndx2 = 0x36;      // PM4_DRAW_INDX_2
+    constexpr uint32_t kOpcodeImLoadImmediate = 0x2B;  // PM4_IM_LOAD_IMMEDIATE
 }
 
 uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth)
@@ -224,7 +228,8 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
 
             const char* name = (opcode == kOpcodeMeInit) ? " (ME_INIT)"
                 : (opcode == kOpcodeIndirectBuffer) ? " (INDIRECT_BUFFER)"
-                : (opcode == kOpcodeSetConstant) ? " (SET_CONSTANT)" : "";
+                : (opcode == kOpcodeSetConstant) ? " (SET_CONSTANT)"
+                : (opcode == kOpcodeImLoadImmediate) ? " (IM_LOAD_IMMEDIATE)" : "";
             if (logFile_) fprintf(logFile_, "%sTYPE3 opcode=0x%02X count=%u%s\n", indent, opcode, count, name);
 
             if (opcode == kOpcodeIndirectBuffer && count == 2 && depth < kMaxIndirectDepth)
@@ -540,6 +545,51 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 // the draw initiator (Xenia's ExecutePacketType3_DRAW_INDX).
                 uint32_t drawInitiatorValue = LoadU32(base, bufferAddr + offsetBytes + 8);
                 gpuState_.WriteRegister(GpuRegisterState::kDrawInitiatorRegister, drawInitiatorValue);
+            }
+            else if (opcode == kOpcodeImLoadImmediate && count >= 2)
+            {
+                // Real semantics (Xenia's ExecutePacketType3_IM_LOAD_IMMEDIATE):
+                // payload dword 0 is the shader type (0=vertex, 1=pixel),
+                // dword 1 is start_size (bits 16-31 = start, expected 0;
+                // bits 0-15 = size_dwords), followed by size_dwords raw
+                // big-endian microcode dwords embedded directly in the
+                // packet -- byte-swapped here the same way every other PM4
+                // dword in this file already is.
+                uint32_t shaderTypeValue = LoadU32(base, bufferAddr + offsetBytes + 4);
+                uint32_t startSizeValue = LoadU32(base, bufferAddr + offsetBytes + 8);
+                uint32_t start = startSizeValue >> 16;
+                uint32_t sizeDwords = startSizeValue & 0xFFFF;
+
+                if (start != 0)
+                {
+                    if (logFile_) fprintf(logFile_, "%s-> IM_LOAD_IMMEDIATE: non-zero start=%u, skipped\n", indent, start);
+                }
+                else if (count - 2 < sizeDwords)
+                {
+                    if (logFile_) fprintf(logFile_, "%s-> IM_LOAD_IMMEDIATE: packet too short for sizeDwords=%u (count=%u), skipped\n", indent, sizeDwords, count);
+                }
+                else if (shaderTypeValue != 0 && shaderTypeValue != 1)
+                {
+                    if (logFile_) fprintf(logFile_, "%s-> IM_LOAD_IMMEDIATE: unrecognized shaderType=%u, skipped\n", indent, shaderTypeValue);
+                }
+                else
+                {
+                    std::vector<uint32_t> microcodeDwords(sizeDwords);
+                    for (uint32_t i = 0; i < sizeDwords; i++)
+                    {
+                        microcodeDwords[i] = LoadU32(base, bufferAddr + offsetBytes + 12 + i * 4);
+                    }
+                    DecodedShaderProgram program = DecodeShaderMicrocode(microcodeDwords.data(), sizeDwords, (int)shaderTypeValue);
+                    if (logFile_)
+                    {
+                        fprintf(logFile_, "%s-> IM_LOAD_IMMEDIATE: shaderType=%u sizeDwords=%u, %zu disassembly lines:\n",
+                            indent, shaderTypeValue, sizeDwords, program.disassemblyLines.size());
+                        for (const std::string& disasmLine : program.disassemblyLines)
+                        {
+                            fprintf(logFile_, "%s  %s\n", indent, disasmLine.c_str());
+                        }
+                    }
+                }
             }
 
             offsetBytes += 4 + payloadBytes;
