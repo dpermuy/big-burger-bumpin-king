@@ -358,6 +358,112 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 // writes to this register).
                 uint32_t drawInitiatorValue = LoadU32(base, bufferAddr + offsetBytes + 4);
                 gpuState_.WriteRegister(GpuRegisterState::kDrawInitiatorRegister, drawInitiatorValue);
+
+                DrawInitiator di = gpuState_.GetDrawInitiator();
+
+                // Only real Xenos primitive types with a direct Metal
+                // equivalent produce a DrawCommand (confirmed real values
+                // against Xenia's xenos::PrimitiveType). Notably
+                // kTriangleFan (5) has no modern Metal equivalent, and
+                // kRectangleList (8) is confirmed real and common in this
+                // project's own captured trace but also unsupported here.
+                bool havePrimType = true;
+                DrawPrimitiveType mappedPrimType = DrawPrimitiveType::Point;
+                switch (di.primType)
+                {
+                    case 1: mappedPrimType = DrawPrimitiveType::Point; break;
+                    case 2: mappedPrimType = DrawPrimitiveType::Line; break;
+                    case 3: mappedPrimType = DrawPrimitiveType::LineStrip; break;
+                    case 4: mappedPrimType = DrawPrimitiveType::Triangle; break;
+                    case 6: mappedPrimType = DrawPrimitiveType::TriangleStrip; break;
+                    default: havePrimType = false; break;
+                }
+
+                if (!havePrimType)
+                {
+                    if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: unsupported primType=%u, skipped\n", indent, di.primType);
+                }
+                else if (di.sourceSelect == 1)
+                {
+                    // kImmediate: unsupported even by Xenia itself.
+                    if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: kImmediate source select unsupported, skipped\n", indent);
+                }
+                else
+                {
+                    VertexFetchConstant vfc = gpuState_.GetVertexFetchConstant(0);
+                    uint32_t vertexByteAddr = (vfc.address << 2) | 0xA0000000u;
+                    uint32_t vertexByteSize = vfc.size * 4;
+                    constexpr uint32_t kMaxVertexBufferBytes = 16u * 1024u * 1024u;
+
+                    if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
+                    {
+                        if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: vertex buffer size %u bytes out of sane range, skipped\n", indent, vertexByteSize);
+                    }
+                    else
+                    {
+                        DrawCommand cmd;
+                        cmd.primitiveType = mappedPrimType;
+                        cmd.vertexData.resize(vertexByteSize);
+                        for (uint32_t i = 0; i < vertexByteSize; i += 4)
+                        {
+                            uint32_t floatBits = LoadU32(base, vertexByteAddr + i);
+                            cmd.vertexData[i + 0] = (floatBits >> 0) & 0xFF;
+                            cmd.vertexData[i + 1] = (floatBits >> 8) & 0xFF;
+                            cmd.vertexData[i + 2] = (floatBits >> 16) & 0xFF;
+                            cmd.vertexData[i + 3] = (floatBits >> 24) & 0xFF;
+                        }
+                        cmd.vertexCount = vertexByteSize / 12;
+                        cmd.indexCount = di.numIndices;
+                        cmd.indexIs32Bit = (di.indexSize == 1);
+
+                        if (di.sourceSelect == 0 && count >= 3)
+                        {
+                            // kDMA: real index buffer base/size travel in
+                            // this same packet's next two payload dwords
+                            // (Xenia's ExecutePacketType3Draw). VGT_DMA_BASE
+                            // is already a byte address (unlike the fetch
+                            // constant's dword-granular address field).
+                            uint32_t dmaBase = LoadU32(base, bufferAddr + offsetBytes + 8);
+                            uint32_t dmaSizeValue = LoadU32(base, bufferAddr + offsetBytes + 12);
+                            uint32_t numWords = dmaSizeValue & 0xFFFFFF;
+                            uint32_t indexWidthBytes = cmd.indexIs32Bit ? 4 : 2;
+                            uint32_t indexByteAddr = dmaBase | 0xA0000000u;
+                            uint32_t indexByteSize = numWords * indexWidthBytes;
+
+                            if (indexByteSize > 0 && indexByteSize <= kMaxVertexBufferBytes)
+                            {
+                                cmd.indexData.resize(indexByteSize);
+                                if (cmd.indexIs32Bit)
+                                {
+                                    for (uint32_t i = 0; i + 4 <= indexByteSize; i += 4)
+                                    {
+                                        uint32_t v = LoadU32(base, indexByteAddr + i);
+                                        cmd.indexData[i + 0] = (v >> 0) & 0xFF;
+                                        cmd.indexData[i + 1] = (v >> 8) & 0xFF;
+                                        cmd.indexData[i + 2] = (v >> 16) & 0xFF;
+                                        cmd.indexData[i + 3] = (v >> 24) & 0xFF;
+                                    }
+                                }
+                                else
+                                {
+                                    for (uint32_t i = 0; i + 2 <= indexByteSize; i += 2)
+                                    {
+                                        uint16_t v = __builtin_bswap16(*reinterpret_cast<volatile uint16_t*>(base + indexByteAddr + i));
+                                        cmd.indexData[i + 0] = v & 0xFF;
+                                        cmd.indexData[i + 1] = (v >> 8) & 0xFF;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (logFile_)
+                        {
+                            fprintf(logFile_, "%s-> DRAW_INDX_2: primType=%u vertexCount=%u indexCount=%u (indexed=%s)\n",
+                                indent, di.primType, cmd.vertexCount, cmd.indexCount, cmd.indexData.empty() ? "no" : "yes");
+                        }
+                        frameDrawList_.AddDrawCommand(std::move(cmd));
+                    }
+                }
             }
             else if (opcode == kOpcodeDrawIndx && count >= 2)
             {
