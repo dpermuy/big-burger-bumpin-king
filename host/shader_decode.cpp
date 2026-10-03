@@ -3,7 +3,6 @@
 
 AluInstructionFields DecodeAluInstruction(uint32_t word0, uint32_t word1, uint32_t word2)
 {
-    (void)word1; // swizzle/predication/negate fields not decoded in this pass
     AluInstructionFields fields;
     fields.vectorDest = word0 & 0x3F;
     fields.scalarDest = (word0 >> 8) & 0x3F;
@@ -14,6 +13,12 @@ AluInstructionFields DecodeAluInstruction(uint32_t word0, uint32_t word1, uint32
     fields.src2Reg = (word2 >> 8) & 0xFF;
     fields.src3Reg = word2 & 0xFF;
     fields.vectorOpcode = (word2 >> 24) & 0x1F;
+    fields.src1Sel = ((word2 >> 31) & 0x1) != 0;
+    fields.src2Sel = ((word2 >> 30) & 0x1) != 0;
+    fields.src3Sel = ((word2 >> 29) & 0x1) != 0;
+    fields.src1Swizzle = (word1 >> 16) & 0xFF;
+    fields.src2Swizzle = (word1 >> 8) & 0xFF;
+    fields.src3Swizzle = word1 & 0xFF;
     return fields;
 }
 
@@ -32,6 +37,7 @@ VertexFetchInstructionFields DecodeVertexFetchInstruction(uint32_t word0, uint32
     if (rawOffset & 0x400000) rawOffset |= 0xFF800000;
     fields.offset = static_cast<int32_t>(rawOffset);
     fields.isMiniFetch = ((word1 >> 30) & 0x1) != 0;
+    fields.destSwizzle = word1 & 0xFFF;
     return fields;
 }
 
@@ -191,4 +197,14 @@ void UnpackControlFlowPair(uint32_t d0, uint32_t d1, uint32_t d2,
 
     outA = DecodeOneControlFlowInstruction(aWord0, aWord1);
     outB = DecodeOneControlFlowInstruction(bWord0, bWord1);
+}
+
+uint32_t ResolveAluSwizzleComponent(uint32_t rawSwizzle, uint32_t destComponent)
+{
+    return ((rawSwizzle >> (2 * destComponent)) + destComponent) & 0x3;
+}
+
+uint32_t GetFetchSwizzleComponent(uint32_t rawSwizzle, uint32_t component)
+{
+    return (rawSwizzle >> (3 * component)) & 0x7;
 }

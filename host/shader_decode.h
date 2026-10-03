@@ -19,6 +19,12 @@ struct AluInstructionFields
     uint32_t src1Reg;        // 8 bits
     uint32_t src2Reg;        // 8 bits
     uint32_t src3Reg;        // 8 bits
+    bool src1Sel;            // true = real TEMP register, false = real CONSTANT register
+    bool src2Sel;
+    bool src3Sel;
+    uint32_t src1Swizzle;    // 8 bits, raw (component-relative -- see ResolveAluSwizzleComponent)
+    uint32_t src2Swizzle;
+    uint32_t src3Swizzle;
 };
 AluInstructionFields DecodeAluInstruction(uint32_t word0, uint32_t word1, uint32_t word2);
 
@@ -39,8 +45,20 @@ struct VertexFetchInstructionFields
     // field is NOT the real per-element stride when this is true (final
     // review finding I3).
     bool isMiniFetch;
+    uint32_t destSwizzle;    // 12 bits, raw (absolute per-component -- see GetFetchSwizzleComponent)
 };
 VertexFetchInstructionFields DecodeVertexFetchInstruction(uint32_t word0, uint32_t word1, uint32_t word2);
+
+// Real component-relative swizzle resolve (confirmed exact against
+// Xenia's GetSwizzledComponentIndex): returns which source component
+// (0=x,1=y,2=z,3=w) feeds a given destination component (0-3).
+uint32_t ResolveAluSwizzleComponent(uint32_t rawSwizzle, uint32_t destComponent);
+
+// Real absolute per-component fetch-destination swizzle resolve
+// (confirmed exact against Xenia's GetFetchDestinationComponentSwizzle):
+// returns a real FetchDestinationSwizzle value for the given component
+// (0-3): 0=X,1=Y,2=Z,3=W,4=const-0,5=const-1,7=keep-current.
+uint32_t GetFetchSwizzleComponent(uint32_t rawSwizzle, uint32_t component);
 
 // Real, human-readable disassembly of a decoded shader microcode
 // program -- one text line per instruction. No MSL generation, no
