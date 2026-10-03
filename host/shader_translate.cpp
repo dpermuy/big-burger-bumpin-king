@@ -108,7 +108,24 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
 
                     for (uint32_t comp = 0; comp < 4; comp++)
                     {
-                        if (GetFetchSwizzleComponent(vf.destSwizzle, comp) != comp)
+                        uint32_t swizzleComponent = GetFetchSwizzleComponent(vf.destSwizzle, comp);
+                        if (swizzleComponent == comp)
+                        {
+                            continue; // literal identity -- always fine
+                        }
+                        // A Float3 source has no real 4th component to
+                        // read, so a real compiler always fills
+                        // destination component 3 with a constant --
+                        // k0 (4) or k1 (5), most commonly 1.0 for a
+                        // position's implicit w. This is the real,
+                        // standard encoding for any Float3 fetch, not a
+                        // genuine remap, so it's not a failure. This
+                        // leniency does not apply to Float4 (component
+                        // index 3 there is a real 4th source component,
+                        // not a fill slot) or to any other component.
+                        bool isRealFloat3ConstantFill = (translatedFormat == TranslatedVertexFormat::Float3)
+                            && (comp == 3) && (swizzleComponent == 4 || swizzleComponent == 5);
+                        if (!isRealFloat3ConstantFill)
                         {
                             return FailedTranslation("non-identity fetch swizzle not supported").result;
                         }
