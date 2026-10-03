@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "gpu_state.h"
+#include "gpu_draw_list.h"
 
 struct PPCContext;
 
@@ -45,6 +46,7 @@ public:
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         return gpuState_;
     }
+    FrameDrawList& DrawList() { return frameDrawList_; }
 
 private:
     // Findings 55/56/57: ring-space wait loops (sub_820B4EE8) deadlocked because
@@ -72,6 +74,7 @@ private:
     uint32_t ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth);
 
     GpuRegisterState gpuState_;
+    FrameDrawList frameDrawList_;
     uint32_t ringBufferBase_ = 0;
     uint32_t ringBufferSize_ = 0;
     uint32_t rptrWriteBackAddr_ = 0;
