@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
 
 // A plain, Metal-free representation of a real vertex attribute format
 // this translator recognizes. The Objective-C++ renderer maps this to
@@ -60,3 +61,38 @@ struct TranslationResult
 // translator for exactly the passthrough pattern this project has ever
 // observed, not a general Xenos-to-MSL compiler.
 TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, int shaderType);
+
+// Real, standard FNV-1a 32-bit hash (offset basis 2166136261, prime
+// 16777619) over raw bytes -- used to detect when this project's real
+// repeated shader reloads (confirmed: identical microcode every frame)
+// describe unchanged content, so translation/compilation isn't redone
+// every single frame.
+uint32_t Fnv1aHash(const uint8_t* data, size_t len);
+
+// Carries the latest translation ATTEMPT (success or not) from the GPU
+// pump thread (where PM4_IM_LOAD_IMMEDIATE is parsed) to the Metal
+// render thread. This cache never tries to preserve a prior success
+// internally -- a failed UpdateX overwrites the previous (possibly
+// successful) result. The renderer owns its own separate memory of the
+// last successfully COMPILED Metal pipeline, and decides for itself
+// whether to replace it based on what CurrentVertexShader/
+// CurrentPixelShader return.
+class ShaderTranslationCache
+{
+public:
+    void UpdateVertexShader(uint32_t hash, TranslationResult result);
+    void UpdatePixelShader(uint32_t hash, TranslationResult result);
+    uint32_t CurrentVertexShaderHash();
+    uint32_t CurrentPixelShaderHash();
+    TranslationResult CurrentVertexShader();
+    TranslationResult CurrentPixelShader();
+
+private:
+    std::mutex vertexMutex_;
+    uint32_t vertexHash_ = 0;
+    TranslationResult vertexResult_;
+
+    std::mutex pixelMutex_;
+    uint32_t pixelHash_ = 0;
+    TranslationResult pixelResult_;
+};

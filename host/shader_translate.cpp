@@ -271,3 +271,52 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
 
     return result;
 }
+
+uint32_t Fnv1aHash(const uint8_t* data, size_t len)
+{
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++)
+    {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+void ShaderTranslationCache::UpdateVertexShader(uint32_t hash, TranslationResult result)
+{
+    std::lock_guard<std::mutex> lock(vertexMutex_);
+    vertexHash_ = hash;
+    vertexResult_ = std::move(result);
+}
+
+void ShaderTranslationCache::UpdatePixelShader(uint32_t hash, TranslationResult result)
+{
+    std::lock_guard<std::mutex> lock(pixelMutex_);
+    pixelHash_ = hash;
+    pixelResult_ = std::move(result);
+}
+
+uint32_t ShaderTranslationCache::CurrentVertexShaderHash()
+{
+    std::lock_guard<std::mutex> lock(vertexMutex_);
+    return vertexHash_;
+}
+
+uint32_t ShaderTranslationCache::CurrentPixelShaderHash()
+{
+    std::lock_guard<std::mutex> lock(pixelMutex_);
+    return pixelHash_;
+}
+
+TranslationResult ShaderTranslationCache::CurrentVertexShader()
+{
+    std::lock_guard<std::mutex> lock(vertexMutex_);
+    return vertexResult_;
+}
+
+TranslationResult ShaderTranslationCache::CurrentPixelShader()
+{
+    std::lock_guard<std::mutex> lock(pixelMutex_);
+    return pixelResult_;
+}
