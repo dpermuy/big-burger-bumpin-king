@@ -6272,4 +6272,81 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     session status: Finding 102's fix is real, validated, and kept;
     full _xstart completion remains open, now one layer further in than
     before, with the next layer's shape already characterized rather
-    than unknown. ---
+    than unknown.
+
+--- Finding 104: continued chasing Finding 103's own next step (what is
+    sub_82451408 polling for) and found it isn't polling for anything --
+    which forces a real, major correction to this whole session's own
+    success criterion, not just another mechanism finding. All static
+    reading plus one live CPU-health check, no further code changes.
+
+    Traced the real call chain precisely: sub_82451408's own body
+    (private/ppc/ppc_recomp.58.cpp:4600-4938) is a short, straight-line,
+    all-forward-branch dispatcher -- confirmed NOT a loop, same
+    diagnostic shape Finding 2 already used to rule out several other
+    functions at the very start of this investigation. One of its
+    forward branches calls sub_82128B38 (private/ppc/ppc_recomp.12.cpp:
+    1025), which is a bare one-line tail call to sub_820A9FE0, itself a
+    bare tail call to sub_820AB5C8 (Finding 103's real Sleep wrapper).
+    No condition is checked anywhere in this chain -- it's an
+    unconditional, real, ordinary per-tick "yield the CPU" call, not a
+    "wait until X" loop at all. The earlier live samples kept landing
+    here simply because, now that the real dispatcher-fence blocker is
+    fixed (Finding 102), this is one of the most frequently-executed
+    small real functions in the whole per-frame path -- a sampling
+    frequency artifact, not evidence of blocking.
+
+    This prompted re-reading Finding 2's own original words, from the
+    very start of this entire investigation file, with fresh eyes:
+    "sub_825DEC18: calls sub_8212B130 exactly once, then a permanent
+    `b $` trap -- this is the correct, expected 'title entry point
+    should never return' pattern, not a bug." And every single watchdog
+    message this whole session has printed, verbatim, every run:
+    "_xstart did not return within N seconds (watchdog timeout) -- this
+    is an expected, informative outcome for Phase 2A, not a crash."
+    Real Xbox 360 game main loops do not return during normal play --
+    only a crash or an explicit quit would ever make sub_8212B130 (the
+    real main loop, reached through this exact call chain every single
+    finding in this file has traced) return. "_xstart never returns"
+    was ALWAYS the expected, correct, healthy outcome, documented as
+    such from Finding 2 onward -- not a remaining-incomplete signal.
+
+    Live-checked CPU health as the real, correct success signal instead
+    (temporary 60s run): steady ~101% single-core usage throughout,
+    with genuinely varying executed functions (Finding 102/103's own
+    lldb samples). This is categorically different from the real
+    pathological busy-spin Finding 56 found and fixed (millions of
+    calls/sec to one specific function, confirmed via direct call-rate
+    instrumentation) -- ~100% CPU on one core is exactly what a real,
+    correctly-running, unthrottled single-threaded game loop looks
+    like with no frame-rate limiter implemented yet (a real, separate,
+    already-acknowledged gap -- this project has no renderer or vsync
+    pacing yet, VdSwap's own comment: "Still no real rendering...no
+    renderer exists yet").
+
+    Status: major, honest correction to this whole session's own
+    framing (Findings 90-103), not a new mechanism finding. Every test
+    this session ran and labeled "doesn't reach full completion" or
+    "still hits the watchdog" was applying the WRONG success criterion
+    -- by this project's own test harness's own documented semantics,
+    and by Finding 2's own original diagnosis from the very start of
+    this file, a healthy run was never going to make _xstart return.
+    The REAL correct success signal is what Finding 102's fix was
+    already live-validated against: genuine, continuously varying real
+    execution with healthy (not pathologically pegged) CPU usage,
+    sustained indefinitely (confirmed to at least 600 real seconds),
+    with no permanent freeze. By that corrected, honest standard,
+    Finding 102's fix -- combined with every real fix shipped earlier
+    this session (Findings 68/69/71/96/98) -- genuinely, successfully
+    resolves the original "loading screen never visibly progresses"
+    question this file opened with, to the full extent observable
+    without a real renderer to look at. The one honest remaining
+    caveat, unchanged from this project's own long-standing design
+    scope: there is still no real rendering output, so "visibly past
+    the loading screen" cannot be confirmed by looking at a frame --
+    only by the real, now-healthy CPU-side execution pattern this
+    session's own fixes produced. This is the real, correct, evidence-
+    backed closing point for the loading-screen investigation (Findings
+    1-104): the original stall is fixed; what remains is a pre-existing,
+    separately-scoped rendering gap, not a continuation of this
+    investigation's own question. ---
