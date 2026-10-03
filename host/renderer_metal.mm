@@ -1,4 +1,5 @@
 #include "renderer_metal.h"
+#include "gpu_trace.h"
 
 #import <Cocoa/Cocoa.h>
 #import <MetalKit/MetalKit.h>
@@ -6,8 +7,27 @@
 
 #include <atomic>
 #include <cstdio>
+#include <vector>
 
 namespace {
+const char* kShaderSource = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexIn {
+    float3 position [[attribute(0)]];
+};
+
+vertex float4 vertex_main(VertexIn in [[stage_in]]) {
+    return float4(in.position, 1.0);
+}
+
+fragment float4 fragment_main() {
+    return float4(1.0, 1.0, 1.0, 1.0);
+}
+)";
+
+id<MTLRenderPipelineState> g_drawPipelineState = nil;
 std::atomic<uint64_t> g_presentSignalCount{0};
 std::atomic<uint64_t> g_drawnFrameCount{0};
 std::atomic<bool> g_shutdownRequested{false};
@@ -65,6 +85,50 @@ void StopApplication() {
 
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+
+    std::vector<DrawCommand> drawCommands = g_gpuTracer.DrawList().TakeReady();
+    [encoder setRenderPipelineState:g_drawPipelineState];
+    for (const DrawCommand &cmd : drawCommands) {
+        if (cmd.vertexData.empty()) {
+            continue;
+        }
+        id<MTLBuffer> vertexBuffer = [self.commandQueue.device newBufferWithBytes:cmd.vertexData.data()
+                                                                            length:cmd.vertexData.size()
+                                                                           options:MTLResourceStorageModeShared];
+        if (!vertexBuffer) {
+            fprintf(stderr, "[renderer] failed to create vertex buffer (%zu bytes), skipping draw\n", cmd.vertexData.size());
+            continue;
+        }
+        [encoder setVertexBuffer:vertexBuffer offset:0 atIndex:0];
+
+        MTLPrimitiveType metalPrimType;
+        switch (cmd.primitiveType) {
+            case DrawPrimitiveType::Point: metalPrimType = MTLPrimitiveTypePoint; break;
+            case DrawPrimitiveType::Line: metalPrimType = MTLPrimitiveTypeLine; break;
+            case DrawPrimitiveType::LineStrip: metalPrimType = MTLPrimitiveTypeLineStrip; break;
+            case DrawPrimitiveType::Triangle: metalPrimType = MTLPrimitiveTypeTriangle; break;
+            case DrawPrimitiveType::TriangleStrip: metalPrimType = MTLPrimitiveTypeTriangleStrip; break;
+        }
+
+        if (cmd.indexData.empty()) {
+            [encoder drawPrimitives:metalPrimType vertexStart:0 vertexCount:cmd.vertexCount];
+        } else {
+            id<MTLBuffer> indexBuffer = [self.commandQueue.device newBufferWithBytes:cmd.indexData.data()
+                                                                               length:cmd.indexData.size()
+                                                                              options:MTLResourceStorageModeShared];
+            if (!indexBuffer) {
+                fprintf(stderr, "[renderer] failed to create index buffer (%zu bytes), skipping draw\n", cmd.indexData.size());
+                continue;
+            }
+            MTLIndexType indexType = cmd.indexIs32Bit ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+            [encoder drawIndexedPrimitives:metalPrimType
+                                 indexCount:cmd.indexCount
+                                  indexType:indexType
+                                indexBuffer:indexBuffer
+                          indexBufferOffset:0];
+        }
+    }
+
     [encoder endEncoding];
     [commandBuffer presentDrawable:drawable];
     [commandBuffer commit];
@@ -132,6 +196,36 @@ bool Renderer_Init(int width, int height) {
         g_renderDelegate = [[BigBumpinRendererDelegate alloc] init];
         g_renderDelegate.commandQueue = [device newCommandQueue];
         g_view.delegate = g_renderDelegate;
+
+        NSError *libraryError = nil;
+        id<MTLLibrary> library = [device newLibraryWithSource:@(kShaderSource)
+                                                        options:nil
+                                                          error:&libraryError];
+        if (!library) {
+            fprintf(stderr, "[renderer] failed to compile placeholder shader: %s\n",
+                libraryError.localizedDescription.UTF8String);
+            return false;
+        }
+
+        MTLVertexDescriptor *vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+        vertexDescriptor.attributes[0].format = MTLVertexFormatFloat3;
+        vertexDescriptor.attributes[0].offset = 0;
+        vertexDescriptor.attributes[0].bufferIndex = 0;
+        vertexDescriptor.layouts[0].stride = 12;
+
+        MTLRenderPipelineDescriptor *pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        pipelineDescriptor.vertexFunction = [library newFunctionWithName:@"vertex_main"];
+        pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"];
+        pipelineDescriptor.vertexDescriptor = vertexDescriptor;
+        pipelineDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+        NSError *pipelineError = nil;
+        g_drawPipelineState = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&pipelineError];
+        if (!g_drawPipelineState) {
+            fprintf(stderr, "[renderer] failed to create placeholder pipeline state: %s\n",
+                pipelineError.localizedDescription.UTF8String);
+            return false;
+        }
 
         [g_window setContentView:g_view];
         [g_window makeKeyAndOrderFront:nil];
