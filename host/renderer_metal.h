@@ -30,9 +30,19 @@ void Renderer_PostPresentSignal();
 bool Renderer_IsActive();
 
 // Thread-safe. Requests that the event loop started by
-// Renderer_RunEventLoop() stop. It returns once AppKit processes the
-// request (on the next display-link tick, or immediately if the window
-// was already closed).
+// Renderer_RunEventLoop() stop. Dispatches the actual stop onto the main
+// queue directly (not dependent on the display link still ticking, which
+// can pause independent of window state), so it reliably terminates the
+// run loop even if the window is minimized, occluded, or the display is
+// asleep.
 void Renderer_RequestShutdown();
+
+// Thread-safe. Returns whether the user closed the window themselves
+// (rather than the event loop stopping via Renderer_RequestShutdown()).
+// Only meaningful after Renderer_RunEventLoop() has returned. Callers
+// (main.cpp) use this to end the process immediately on a user close,
+// rather than waiting for the PPC execution thread's own separate
+// watchdog bound to also elapse.
+bool Renderer_WasClosedByUser();
 
 } // extern "C"

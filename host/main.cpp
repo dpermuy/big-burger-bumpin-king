@@ -265,6 +265,22 @@ int main(int argc, char** argv)
     });
 
     Renderer_RunEventLoop(); // blocks main thread until shutdown is requested
+
+    if (Renderer_WasClosedByUser())
+    {
+        // Real, expected behavior: a reasonable person who closes the
+        // window expects the program to end right away, not keep running
+        // invisibly for up to the PPC thread's own remaining watchdog
+        // bound (which could still be most of 10s, or most of an
+        // extended validation run's much longer bound). std::_Exit
+        // terminates the whole process unconditionally -- the still-
+        // running watchdog thread and PPC execution thread do not need
+        // to be joined or cleaned up first, matching every other exit
+        // path in this program (both the no-GPU-device and watchdog-
+        // timeout paths also use std::_Exit rather than a clean join).
+        std::_Exit(3); // distinct from 1 (no GPU device) and 2 (watchdog timeout)
+    }
+
     watchdogThread.join();
 
     if (watchdogResult.load() == 2)
