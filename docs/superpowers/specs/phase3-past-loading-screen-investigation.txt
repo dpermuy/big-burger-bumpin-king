@@ -4192,3 +4192,90 @@ Committed: host/kernel_impl.cpp, host/kernel_stubs.cpp only. host/main.cpp
 watchdog unchanged in the commit (confirmed via git diff --stat before
 committing, same discipline as Finding 72) -- the 60s bump was
 diagnostic-only, never landed.
+
+--- Finding 74: new plateau past asset loading -- a real progress-ratio
+    wait that never converges, same shared counter as the very first
+    timing loop this investigation ever found. Diagnosis only, no fix
+    applied. ---
+
+With Findings 71-73 applied, confirmed a 120s diagnostic run (watchdog
+temporarily raised, reverted before commit, confirmed clean rebuild +
+identical 10s-window result after reverting) genuinely plateaus: 264
+NtReadFile calls / 630 lines, IDENTICAL at 60s and 120s wall time (unlike
+every prior plateau this investigation found, more wall-clock time
+produces zero additional real progress here -- confirmed via `time`,
+real 120.13s elapsed). 244% average CPU across the run indicates active
+spinning, not an idle block.
+
+Live-sampled MAIN thread (same lldb technique as every prior finding):
+stuck in a real call chain __xstart -> sub_825DEC18 -> sub_8212B130 ->
+sub_8244B040 -> sub_8244AFB0 -> sub_82451408 (NOT through sub_8244AE70
+this time -- a different, previously-unexplored sibling path through
+sub_8244B040's own dispatch, only reachable now that Findings 71-73
+unblocked everything upstream of it).
+
+Read sub_82451408's real body (private/ppc/ppc_recomp.58.cpp:4600-4825+):
+a real loop at loc_824514C8 compares f1 against a fixed threshold
+f31=30.0, looping (calling sub_82128B38(0) each pass) while f1 > f31. f1
+is recomputed every iteration (loc_8245150C) as a real ratio:
+sub_823F1740(valueAt[r29+9960]) / sub_823F1740(r30) -- sub_823F1740 is
+confirmed (private/ppc/ppc_recomp.48.cpp:11783) to be a plain real
+uint64-to-double software conversion helper, not time-specific itself.
+
+**[base+9960] is the exact same offset, same base register
+(-2107179008), as the VERY FIRST timing loop this whole investigation
+ever found** (sub_82128110, root-caused independently near the start of
+this session's own work, before this worktree's history existed) -- both
+read this field as a real shared counter. This strongly suggests a single
+underlying counter that multiple independent parts of the game's own
+timing machinery all depend on, and that this host's own GPU/display
+pipeline doesn't advance correctly -- consistent with, and possibly the
+same root defect as, the progress-fence problem Findings 56-71 already
+extensively diagnosed in two OTHER call chains (self+10768's own
++0/+4 fields, a DIFFERENT structure than this one -- not yet confirmed
+whether [base+9960] and self+10768 are related or entirely separate real
+kernel structures).
+
+Live-measured f1 with a temporary diagnostic (added then fully reverted,
+confirmed via empty `git diff` and clean rebuild): starts around 1947 on
+entry, decreases roughly log-like/non-linearly, reaching only ~1559 by
+loop iteration 7500 of an eventual 11.37 MILLION real iterations in 120
+real seconds -- nowhere close to reaching the 30.0 threshold; naive linear
+extrapolation from the early rate would predict convergence in well under
+1 real second, meaning the real rate of decrease sharply slows as the run
+continues (not constant), consistent with [base+9960] advancing slower
+and slower relative to whatever r30's own divisor represents, or not
+advancing at all once some other real precondition stops holding.
+
+Traced sub_82128B38(0) itself (private/ppc/ppc_recomp.12.cpp:1025,
+ppc_recomp.2.cpp:4650/8582): a thin trampoline chain
+(sub_82128B38 -> sub_820A9FE0(r4=0) -> sub_820AB5C8(r3=0,r4=0)) that
+bottoms out in a REAL, already-implemented host kernel API,
+KeDelayExecutionThread, called with r3=1 (alertable) and a requested
+delay computed as `incomingR3 * -10000` (real NT 100ns-unit relative
+timeout convention) -- with incomingR3=0 here, the real requested delay
+is ZERO, i.e. this is a near-instant yield-only sleep, not a meaningfully
+paced real wait. This is consistent with the observed ~10.5
+microseconds/iteration average rate (11.37M iterations / 120s) and
+explains why the loop can spin millions of times without the "wait until
+f1 drops below 30" condition ever meaningfully progressing via real
+elapsed wall-clock time alone -- whatever SHOULD be advancing
+[base+9960] isn't a function of wall-clock time at all, it must be a
+function of real GPU/display progress (frames presented, vblanks, or
+similar) that this host's own pipeline isn't driving fast enough or at
+all in this specific code path.
+
+**Not yet found:** what writes [base+9960], and why it doesn't advance
+fast enough once this is the active path. This is a fresh root-cause
+chase of the same class and difficulty as Findings 1-71 together, not a
+quick fix -- flagged as the concrete starting point for a future pass:
+grep real writers of this exact offset (same base, +9960) across all
+private/ppc/*.cpp, matching the methodology Findings 19-55 already used
+to trace the sibling self+10768 structure's own real writers.
+
+No fix applied this pass -- diagnosis only. All instrumentation (the
+printf diagnostic in ppc_recomp.58.cpp, the #include <cstdio> it needed,
+and the temporary 120s watchdog in host/main.cpp) fully reverted; `git
+diff --stat` confirmed empty before and after rebuild, 10s-window result
+reproduced exactly (153 NtReadFile, exit 2, same tail) matching the
+committed baseline.
