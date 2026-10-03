@@ -6051,4 +6051,58 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     is the real, well-evidenced, final stopping point for the wait-
     tuning arc of this investigation (Findings 90-99): both known wait
     functions are now faithful to real hardware semantics, and the
-    remaining gap is squarely a GPU emulation throughput question. ---
+    remaining gap is squarely a GPU emulation throughput question.
+
+--- Finding 100: started the GPU-pipeline-throughput investigation
+    Finding 99 called for. Read host/gpu_trace.cpp's ScanAndTraceFrame
+    and host/kernel_impl.cpp's VdSwap in full (static), then measured
+    the real VdSwap call rate directly, live, rather than assuming the
+    pump thread or per-frame completion rate was the bottleneck.
+
+    Static reading first: ScanAndTraceFrame only CONSUMES ring content
+    the CPU already wrote (fast, real, 1kHz pump cadence, confirmed
+    healthy throughout this whole investigation) -- it cannot be the
+    throughput bottleneck itself, since it has nothing to do until new
+    content exists. VdSwap is the real per-frame boundary that produces
+    new ring content (via sub_820CCA68/sub_820C4678, Finding 95) and
+    also unconditionally resets a real "in-flight-swap counter"
+    (self+10868) every call -- confirming VdSwap's own call rate is the
+    thing to measure, not the pump thread's.
+
+    Live probe (temporary counter inside __imp__VdSwap, 60s window,
+    reverted immediately after). Run 2026-10-02 19:58:10-19:59:10 EDT.
+    Real, clarifying, partially CORRECTIVE result: VdSwap fires 746
+    times in the 60s run -- NOT ~2-3/sec as Finding 94's own EVENT_
+    WRITE_SHD measurement had implicitly suggested was the frame rate.
+    After one real 8.3-second initial gap (call #1 at t=0, call #2 at
+    t=8346ms -- plausibly real first-frame setup/initialization work),
+    the remaining 744 calls land every ~69-70ms, a healthy, sustained
+    real rate of ~14.3 VdSwap calls per second.
+
+    Status: real, important correction to Finding 99's own framing. The
+    CPU-side frame-completion rate is NOT slow (~14fps is a reasonable,
+    healthy software-rendering rate, not a stall) -- the pump thread is
+    not slow either (1kHz, long-confirmed). The real mismatch is
+    narrower and more specific than "GPU throughput" broadly: THIS
+    SPECIFIC fence object (0xB9405000) only receives a real
+    EVENT_WRITE_SHD hit roughly once every 5-7 real VdSwap calls (~2-3
+    real hits/sec against a ~14/sec real frame rate), while Finding 99's
+    own sub_820B5A28 demands +2 progress on it roughly 1.75 times PER
+    VdSwap (~25 calls/sec) -- a genuine ~10x mismatch isolated to this
+    one fence's own update frequency relative to its own demand, not a
+    general rendering-speed problem. This reframes the remaining
+    question precisely: either (a) this specific fence is, by real
+    design, only SUPPOSED to update periodically (e.g. once every few
+    frames, for a resource type that doesn't need per-frame
+    signaling), and sub_820B5A28's own demand calculation has a real
+    bug asking for per-fraction-of-a-frame progress on a resource that
+    was never meant to deliver it that often, or (b) something real
+    should be emitting EVENT_WRITE_SHD for this object on every VdSwap
+    (or far more often than every 5-7) and currently doesn't. Concrete
+    next step: find what PM4 command sequence a real VdSwap call
+    SHOULD be emitting for this specific fence (cross-reference against
+    Xenia's own real per-swap PM4 emission, the same technique Finding
+    35/36 already used successfully) to determine whether this fence
+    is supposed to update every frame or only periodically -- that
+    answer decides whether the real fix belongs in the GPU command
+    emission path or in sub_820B5A28's own demand-rate logic. ---
