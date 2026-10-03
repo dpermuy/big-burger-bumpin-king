@@ -29,6 +29,18 @@
 static std::mutex g_stateMutex;
 static thread_local uint32_t g_currentThreadHandle = 0; // this thread's own ExCreateThread handle, 0 if not a guest-spawned thread
 
+// Real per-listener notification queue (XamNotifyCreateListener/XNotifyGetNext),
+// confirmed against Xenia's own XNotifyListener (src/xenia/kernel/xnotifylistener.h/.cc):
+// a plain FIFO of (id, data) pairs, no cap. g_stateMutex guards this too -- same
+// coarse-lock posture as every other piece of shared kernel state in this file.
+struct NotifyListener
+{
+    uint64_t mask;
+    std::deque<std::pair<uint32_t, uint32_t>> queue;
+};
+static std::unordered_map<uint32_t, NotifyListener> g_notifyListeners;
+static bool g_notifiedStartup = false; // real Xenia: only the first mask&1 listener, ever, gets the startup push
+
 PPC_FUNC(__imp__KeBugCheck)
 {
     fmt::println("[kernel] KeBugCheck: code=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
@@ -944,7 +956,92 @@ PPC_FUNC(__imp__XamNotifyCreateListener)
     std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t handle = g_nextHandle++;
     g_handleTable[handle] = HandleObject{ HandleObjectType::Generic, false };
+
+    uint64_t mask = ctx.r3.u64;
+    g_notifyListeners[handle] = NotifyListener{ mask, {} };
+
+    // Real Xenia behavior (src/xenia/kernel/kernel_state.cc,
+    // RegisterNotifyListener): the first-ever listener whose mask has bit 0
+    // set gets these 8 real startup notifications queued once -- confirmed
+    // real retail titles (e.g. Resident Evil 5) depend on receiving them.
+    // One ungated block: all 8 fire together, or none do.
+    if (!g_notifiedStartup && (mask & 0x1) != 0)
+    {
+        g_notifiedStartup = true;
+        auto& queue = g_notifyListeners[handle].queue;
+        queue.push_back({ 0x00000009, 1 }); // XN_SYS_UI on
+        queue.push_back({ 0x00000009, 0 }); // XN_SYS_UI off
+        queue.push_back({ 0x0000000A, 1 }); // XN_SYS_SIGNINCHANGED
+        queue.push_back({ 0x0000000A, 1 }); // XN_SYS_SIGNINCHANGED
+        queue.push_back({ 0x00000012, 0 }); // XN_SYS_INPUTDEVICESCHANGED
+        queue.push_back({ 0x00000012, 0 }); // XN_SYS_INPUTDEVICESCHANGED
+        queue.push_back({ 0x00000013, 0 }); // XN_SYS_INPUTDEVICECONFIGCHANGED
+        queue.push_back({ 0x00000013, 0 }); // XN_SYS_INPUTDEVICECONFIGCHANGED
+    }
+
     ctx.r3.u64 = handle;
+}
+
+PPC_FUNC(__imp__XNotifyGetNext)
+{
+    uint32_t handle = static_cast<uint32_t>(ctx.r3.u64);
+    uint32_t matchId = static_cast<uint32_t>(ctx.r4.u64);
+    uint32_t idPtr = static_cast<uint32_t>(ctx.r5.u64);
+    uint32_t paramPtr = static_cast<uint32_t>(ctx.r6.u64);
+
+    if (paramPtr != 0) PPC_STORE_U32(paramPtr, 0);
+    if (idPtr == 0)
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
+    PPC_STORE_U32(idPtr, 0);
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_notifyListeners.find(handle);
+    if (it == g_notifyListeners.end())
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
+
+    auto& queue = it->second.queue;
+    bool dequeued = false;
+    uint32_t id = 0;
+    uint32_t data = 0;
+
+    // Real Xenia semantics (XNotifyListener::DequeueNotification, both
+    // overloads): matchId==0 dequeues the oldest queued notification
+    // (FIFO); a nonzero matchId does a linear scan for the first queued
+    // entry with that exact id and dequeues only that one.
+    if (matchId != 0)
+    {
+        for (auto queueIt = queue.begin(); queueIt != queue.end(); ++queueIt)
+        {
+            if (queueIt->first == matchId)
+            {
+                id = matchId;
+                data = queueIt->second;
+                queue.erase(queueIt);
+                dequeued = true;
+                break;
+            }
+        }
+    }
+    else if (!queue.empty())
+    {
+        id = queue.front().first;
+        data = queue.front().second;
+        queue.pop_front();
+        dequeued = true;
+    }
+
+    if (dequeued)
+    {
+        PPC_STORE_U32(idPtr, id);
+        if (paramPtr != 0) PPC_STORE_U32(paramPtr, data);
+    }
+    ctx.r3.u64 = dequeued ? 1 : 0;
 }
 
 PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)

@@ -4133,3 +4133,62 @@ Committed: host/game_overrides.cpp only (comments + the two kMaxWait
 constants). host/main.cpp's watchdog is unchanged in the commit (confirmed
 via git diff --stat before committing) -- the 60s bump was diagnostic-only,
 never landed.
+
+--- Finding 73: real XamNotifyCreateListener/XNotifyGetNext implemented --
+    the new plateau was a real missing kernel subsystem, not a timing bug;
+    confirmed live, unlocks real asset loading ---
+
+Finding 72's new plateau (a tight XNotifyGetNext poll against two handles,
+0x1012/0x103D) was diagnosed by cross-referencing real Xenia source
+(xenia-project/xenia): XamNotifyCreateListener_entry(qword_t mask,
+dword_t max_version) creates a real per-listener FIFO notification queue;
+RegisterNotifyListener (kernel_state.cc) pushes 8 real startup
+notifications (XN_SYS_UI on/off, XN_SYS_SIGNINCHANGED x2,
+XN_SYS_INPUTDEVICESCHANGED x2, XN_SYS_INPUTDEVICECONFIGCHANGED x2 -- ids
+0x9/0xA/0x12/0x13) to the first-ever listener whose mask has bit 0 set,
+citing a real forum report that Resident Evil 5 depends on receiving
+these. This host's prior XamNotifyCreateListener stub allocated a handle
+but discarded the mask and tracked nothing; XNotifyGetNext unconditionally
+returned 0 -- no listener could ever receive anything, so the poll never
+resolved.
+
+Verified the real ABI empirically before implementing (prior research
+guessed mask might split across r3:r4; a temporary diagnostic print in
+this project's own XamNotifyCreateListener showed the real captured call
+is r3=0x1 (mask, single 64-bit register, bit 0 set) r4=0x0 (max_version)
+-- confirming the real convention and that this project's own listener
+is exactly the one Xenia's mask&1 condition targets).
+
+Implemented in host/kernel_impl.cpp (host/kernel_stubs.cpp's old
+XNotifyGetNext stub removed): a NotifyListener{mask, queue} map keyed by
+handle; XamNotifyCreateListener captures the real mask and pushes the 8
+real startup notifications to the first mask&1 listener (g_notifiedStartup
+guard, matching Xenia's has_notified_startup_ exactly); XNotifyGetNext
+dequeues FIFO (matchId==0) or by exact id match (matchId!=0), matching
+Xenia's XNotifyListener::DequeueNotification both overloads exactly.
+
+Live A/B, same stashed-diff technique as Finding 72:
+  - 10s window: 153 NtReadFile calls, 370 lines -- matches Finding 72's
+    own post-kMaxWait-fix baseline exactly (the notification poll lives
+    further out than 10s reaches either way).
+  - 60s window (diagnostic watchdog bump, reverted before commit, confirmed
+    clean rebuild + identical 10s result after reverting): 264 NtReadFile
+    calls but only 630 total lines (vs Finding 72's 2081 lines at the same
+    264-read count) -- the XNotifyGetNext tight-poll spam is GONE, replaced
+    by real further progress: NtCreateFile opens w_saveload.xen (x4) and
+    w_commonobjectshires.xen (x4), followed by real sequential reads up to
+    26.7MB+ on the new w_commonobjectshires.xen handle (0x1045) when the
+    60s window ran out -- real game ASSET loading, past all online/signin
+    setup entirely. XamUserGetSigninState also now gets called with real
+    per-port args (r3=0..3), consistent with real post-notification
+    sign-in-state polling across 4 controller ports.
+
+This is the first time this investigation has reached real game-asset
+loading, not just system/online bootstrap. The next natural plateau (not
+yet investigated) is wherever w_commonobjectshires.xen's own read sequence
+or the next dependent system stalls -- a future pass's starting point.
+
+Committed: host/kernel_impl.cpp, host/kernel_stubs.cpp only. host/main.cpp
+watchdog unchanged in the commit (confirmed via git diff --stat before
+committing, same discipline as Finding 72) -- the 60s bump was
+diagnostic-only, never landed.
