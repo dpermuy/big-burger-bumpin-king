@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <mutex>
 
+#include "gpu_state.h"
+
 struct PPCContext;
 
 class GpuCommandTracer
@@ -32,6 +34,7 @@ public:
     bool HasRingBuffer();
     uint32_t GraphicsInterruptCallback();
     uint32_t GraphicsInterruptContext();
+    const GpuRegisterState& RegisterState() const { return gpuState_; }
 
 private:
     // Findings 55/56/57: ring-space wait loops (sub_820B4EE8) deadlocked because
@@ -58,6 +61,7 @@ private:
     // vblank firing.
     uint32_t ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth);
 
+    GpuRegisterState gpuState_;
     uint32_t ringBufferBase_ = 0;
     uint32_t ringBufferSize_ = 0;
     uint32_t rptrWriteBackAddr_ = 0;

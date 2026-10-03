@@ -148,6 +148,7 @@ namespace
     // observed in a real run now has a confirmed real identity, not a guess.
     constexpr uint32_t kOpcodeInterrupt = 0x54;      // PM4_INTERRUPT
     constexpr uint32_t kOpcodeEventWriteShd = 0x58;  // PM4_EVENT_WRITE_SHD
+    constexpr uint32_t kOpcodeSetConstant = 0x2D;    // PM4_SET_CONSTANT
 }
 
 uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t bufferAddr, uint32_t startOffsetBytes, uint32_t sizeBytes, int depth)
@@ -191,6 +192,11 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 break; // count runs past the buffer -- not a real packet, stop here
             }
             if (logFile_) fprintf(logFile_, "%sTYPE0 reg=0x%04X count=%u\n", indent, baseIndex, count);
+            for (uint32_t i = 0; i < count; i++)
+            {
+                uint32_t value = LoadU32(base, bufferAddr + offsetBytes + 4 + i * 4);
+                gpuState_.WriteRegister(baseIndex + i, value);
+            }
             offsetBytes += 4 + payloadBytes;
             packetsParsed++;
             continue;
@@ -207,7 +213,8 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
             }
 
             const char* name = (opcode == kOpcodeMeInit) ? " (ME_INIT)"
-                : (opcode == kOpcodeIndirectBuffer) ? " (INDIRECT_BUFFER)" : "";
+                : (opcode == kOpcodeIndirectBuffer) ? " (INDIRECT_BUFFER)"
+                : (opcode == kOpcodeSetConstant) ? " (SET_CONSTANT)" : "";
             if (logFile_) fprintf(logFile_, "%sTYPE3 opcode=0x%02X count=%u%s\n", indent, opcode, count, name);
 
             if (opcode == kOpcodeIndirectBuffer && count == 2 && depth < kMaxIndirectDepth)
@@ -281,6 +288,48 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                     ctx.r3.u64 = 1; // source
                     ctx.r4.u64 = graphicsInterruptContext_;
                     PPC_CALL_INDIRECT_FUNC(graphicsInterruptCallback_);
+                }
+            }
+
+            if (opcode == kOpcodeSetConstant && count >= 1)
+            {
+                // Real semantics (Xenia's ExecutePacketType3_SET_CONSTANT):
+                // first payload dword's low 11 bits are the sub-bank index,
+                // bits 16-23 select which real register sub-bank it's
+                // relative to. An undefined type (anything but the 5 real
+                // cases) is skipped entirely rather than guessed at --
+                // matches this project's established posture toward
+                // unparsed data.
+                uint32_t offsetType = LoadU32(base, bufferAddr + offsetBytes + 4);
+                uint32_t subIndex = offsetType & 0x7FF;
+                uint32_t subType = (offsetType >> 16) & 0xFF;
+                uint32_t baseRegister = 0;
+                bool validType = true;
+                switch (subType)
+                {
+                    case 0: baseRegister = subIndex + 0x4000; break; // ALU
+                    case 1: baseRegister = subIndex + 0x4800; break; // FETCH
+                    case 2: baseRegister = subIndex + 0x4900; break; // BOOL
+                    case 3: baseRegister = subIndex + 0x4908; break; // LOOP
+                    case 4: baseRegister = subIndex + 0x2000; break; // REGISTERS
+                    default: validType = false; break;
+                }
+                if (validType)
+                {
+                    for (uint32_t i = 0; i < count - 1; i++)
+                    {
+                        uint32_t value = LoadU32(base, bufferAddr + offsetBytes + 8 + i * 4);
+                        gpuState_.WriteRegister(baseRegister + i, value);
+                    }
+                    if (logFile_)
+                    {
+                        fprintf(logFile_, "%s-> SET_CONSTANT: subType=%u subIndex=0x%X -> base=0x%X, %u dwords\n",
+                            indent, subType, subIndex, baseRegister, count - 1);
+                    }
+                }
+                else if (logFile_)
+                {
+                    fprintf(logFile_, "%s-> SET_CONSTANT: undefined subType=%u, skipped\n", indent, subType);
                 }
             }
 
