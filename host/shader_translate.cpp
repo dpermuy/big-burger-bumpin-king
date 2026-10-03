@@ -197,7 +197,8 @@ TranslationResult TranslateShader(const uint32_t* dwords, uint32_t dwordCount, i
 
                     for (uint32_t comp = 0; comp < 4; comp++)
                     {
-                        if (ResolveAluSwizzleComponent(alu.src1Swizzle, comp) != comp)
+                        if (ResolveAluSwizzleComponent(alu.src1Swizzle, comp) != comp
+                            || ResolveAluSwizzleComponent(alu.src2Swizzle, comp) != comp)
                         {
                             return FailedTranslation("non-identity ALU swizzle not supported").result;
                         }
