@@ -3,6 +3,7 @@
 #include <fmt/core.h>
 #include "xdvdfs.h"
 #include "gpu_trace.h"
+#include "renderer_metal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1595,6 +1596,16 @@ PPC_FUNC(__imp__VdSwap)
                                                       // large game-heap request (Finding
                                                       // 51) that shifts later addresses.
     PPC_STORE_U32(kGpuManagerSelf + 10868, 0);
+
+    // Milestone 1 (Metal renderer): record that a real frame was
+    // presented. Renderer_IsActive() is false in headless mode (the
+    // default, and this project's entire existing regression-testing
+    // methodology), making this a true zero-cost no-op there -- no
+    // renderer-module code runs at all unless --window was passed.
+    if (Renderer_IsActive())
+    {
+        Renderer_PostPresentSignal();
+    }
 }
 
 PPC_FUNC(__imp__VdGetCurrentDisplayGamma)
