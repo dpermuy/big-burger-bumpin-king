@@ -388,6 +388,14 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                     // kImmediate: unsupported even by Xenia itself.
                     if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: kImmediate source select unsupported, skipped\n", indent);
                 }
+                else if (di.sourceSelect != 0 && di.sourceSelect != 2)
+                {
+                    // Final review finding I4 (part 2): sourceSelect only
+                    // defines 0 (kDMA), 1 (kImmediate), 2 (kAutoIndex) --
+                    // value 3 is undefined/reserved and must not be
+                    // silently treated as kAutoIndex.
+                    if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: undefined sourceSelect=%u, skipped\n", indent, di.sourceSelect);
+                }
                 else
                 {
                     VertexFetchConstant vfc = gpuState_.GetVertexFetchConstant(0);
@@ -395,9 +403,86 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                     uint32_t vertexByteSize = vfc.size * 4;
                     constexpr uint32_t kMaxVertexBufferBytes = 16u * 1024u * 1024u;
 
+                    // Final review finding I4 (part 1): resolve the kDMA
+                    // index buffer BEFORE deciding whether to build a
+                    // DrawCommand at all -- a kDMA draw whose index buffer
+                    // can't be resolved (truncated packet, zero/oversized
+                    // NUM_WORDS) must be skipped entirely, not silently
+                    // drawn as if it were non-indexed over the whole
+                    // vertex buffer.
+                    bool isIndexed = (di.sourceSelect == 0);
+                    bool indexResolutionFailed = false;
+                    std::vector<uint8_t> resolvedIndexData;
+                    uint32_t resolvedIndexCount = 0;
+                    bool indexIs32Bit = (di.indexSize == 1);
+
+                    if (isIndexed)
+                    {
+                        if (count < 3)
+                        {
+                            indexResolutionFailed = true;
+                        }
+                        else
+                        {
+                            // kDMA: real index buffer base/size travel in
+                            // this same packet's next two payload dwords
+                            // (Xenia's ExecutePacketType3Draw). VGT_DMA_BASE
+                            // is already a byte address (unlike the fetch
+                            // constant's dword-granular address field).
+                            uint32_t dmaBase = LoadU32(base, bufferAddr + offsetBytes + 8);
+                            uint32_t dmaSizeValue = LoadU32(base, bufferAddr + offsetBytes + 12);
+                            uint32_t numWords = dmaSizeValue & 0xFFFFFF;
+                            uint32_t indexWidthBytes = indexIs32Bit ? 4 : 2;
+                            uint32_t indexByteAddr = dmaBase | 0xA0000000u;
+                            uint32_t indexByteSize = numWords * indexWidthBytes;
+
+                            if (indexByteSize == 0 || indexByteSize > kMaxVertexBufferBytes)
+                            {
+                                indexResolutionFailed = true;
+                            }
+                            else
+                            {
+                                resolvedIndexData.resize(indexByteSize);
+                                if (indexIs32Bit)
+                                {
+                                    for (uint32_t i = 0; i + 4 <= indexByteSize; i += 4)
+                                    {
+                                        uint32_t v = LoadU32(base, indexByteAddr + i);
+                                        resolvedIndexData[i + 0] = (v >> 0) & 0xFF;
+                                        resolvedIndexData[i + 1] = (v >> 8) & 0xFF;
+                                        resolvedIndexData[i + 2] = (v >> 16) & 0xFF;
+                                        resolvedIndexData[i + 3] = (v >> 24) & 0xFF;
+                                    }
+                                }
+                                else
+                                {
+                                    for (uint32_t i = 0; i + 2 <= indexByteSize; i += 2)
+                                    {
+                                        uint16_t v = __builtin_bswap16(*reinterpret_cast<volatile uint16_t*>(base + indexByteAddr + i));
+                                        resolvedIndexData[i + 0] = v & 0xFF;
+                                        resolvedIndexData[i + 1] = (v >> 8) & 0xFF;
+                                    }
+                                }
+                                // Final review finding I5: the real resolved
+                                // index buffer can hold fewer indices than
+                                // the draw initiator's own numIndices claims
+                                // (a truncated/mismatched NUM_WORDS) --
+                                // clamp what gets passed to Metal to what
+                                // the buffer actually holds, never read past
+                                // its end.
+                                resolvedIndexCount = (indexByteSize / indexWidthBytes < di.numIndices)
+                                    ? (indexByteSize / indexWidthBytes) : di.numIndices;
+                            }
+                        }
+                    }
+
                     if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
                     {
                         if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: vertex buffer size %u bytes out of sane range, skipped\n", indent, vertexByteSize);
+                    }
+                    else if (isIndexed && indexResolutionFailed)
+                    {
+                        if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: kDMA index buffer could not be resolved, skipped\n", indent);
                     }
                     else
                     {
@@ -412,48 +497,32 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             cmd.vertexData[i + 2] = (floatBits >> 16) & 0xFF;
                             cmd.vertexData[i + 3] = (floatBits >> 24) & 0xFF;
                         }
-                        cmd.vertexCount = vertexByteSize / 12;
-                        cmd.indexCount = di.numIndices;
-                        cmd.indexIs32Bit = (di.indexSize == 1);
+                        uint32_t bufferVertexCapacity = vertexByteSize / 12;
 
-                        if (di.sourceSelect == 0 && count >= 3)
+                        if (isIndexed)
                         {
-                            // kDMA: real index buffer base/size travel in
-                            // this same packet's next two payload dwords
-                            // (Xenia's ExecutePacketType3Draw). VGT_DMA_BASE
-                            // is already a byte address (unlike the fetch
-                            // constant's dword-granular address field).
-                            uint32_t dmaBase = LoadU32(base, bufferAddr + offsetBytes + 8);
-                            uint32_t dmaSizeValue = LoadU32(base, bufferAddr + offsetBytes + 12);
-                            uint32_t numWords = dmaSizeValue & 0xFFFFFF;
-                            uint32_t indexWidthBytes = cmd.indexIs32Bit ? 4 : 2;
-                            uint32_t indexByteAddr = dmaBase | 0xA0000000u;
-                            uint32_t indexByteSize = numWords * indexWidthBytes;
-
-                            if (indexByteSize > 0 && indexByteSize <= kMaxVertexBufferBytes)
-                            {
-                                cmd.indexData.resize(indexByteSize);
-                                if (cmd.indexIs32Bit)
-                                {
-                                    for (uint32_t i = 0; i + 4 <= indexByteSize; i += 4)
-                                    {
-                                        uint32_t v = LoadU32(base, indexByteAddr + i);
-                                        cmd.indexData[i + 0] = (v >> 0) & 0xFF;
-                                        cmd.indexData[i + 1] = (v >> 8) & 0xFF;
-                                        cmd.indexData[i + 2] = (v >> 16) & 0xFF;
-                                        cmd.indexData[i + 3] = (v >> 24) & 0xFF;
-                                    }
-                                }
-                                else
-                                {
-                                    for (uint32_t i = 0; i + 2 <= indexByteSize; i += 2)
-                                    {
-                                        uint16_t v = __builtin_bswap16(*reinterpret_cast<volatile uint16_t*>(base + indexByteAddr + i));
-                                        cmd.indexData[i + 0] = v & 0xFF;
-                                        cmd.indexData[i + 1] = (v >> 8) & 0xFF;
-                                    }
-                                }
-                            }
+                            // Final review finding I1 (indexed side): vertexCount
+                            // isn't consumed by drawIndexedPrimitives (Metal
+                            // reads it from the index buffer), but keep it
+                            // descriptive of the real buffer capacity.
+                            cmd.vertexCount = bufferVertexCapacity;
+                            cmd.indexData = std::move(resolvedIndexData);
+                            cmd.indexCount = resolvedIndexCount;
+                            cmd.indexIs32Bit = indexIs32Bit;
+                        }
+                        else
+                        {
+                            // Final review finding I1 (non-indexed side): the
+                            // real draw count is the game's own numIndices
+                            // (vertex indices 0..numIndices-1 for kAutoIndex),
+                            // not however many vertices happen to fit in the
+                            // declared buffer -- that size is only a safety
+                            // cap, never the real draw count. A shared vertex
+                            // buffer drawn by many small draws would otherwise
+                            // redraw the whole buffer on every single call.
+                            cmd.vertexCount = (bufferVertexCapacity < di.numIndices) ? bufferVertexCapacity : di.numIndices;
+                            cmd.indexCount = 0;
+                            cmd.indexIs32Bit = false;
                         }
 
                         if (logFile_)

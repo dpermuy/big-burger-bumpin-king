@@ -18,8 +18,22 @@ struct VertexIn {
     float3 position [[attribute(0)]];
 };
 
-vertex float4 vertex_main(VertexIn in [[stage_in]]) {
-    return float4(in.position, 1.0);
+struct RasterizerData {
+    float4 position [[position]];
+    float pointSize [[point_size]];
+};
+
+vertex RasterizerData vertex_main(VertexIn in [[stage_in]]) {
+    RasterizerData out;
+    out.position = float4(in.position, 1.0);
+    // Final review finding I3: Metal leaves point size undefined without
+    // an explicit [[point_size]] output. This placeholder shader draws
+    // point lists (this project's own observed real primitive type),
+    // so a fixed, visible size matters for the "is anything on screen"
+    // milestone goal -- real point-size state (if any) is untranslated
+    // until shader translation exists.
+    out.pointSize = 8.0;
+    return out;
 }
 
 fragment float4 fragment_main() {
@@ -28,6 +42,15 @@ fragment float4 fragment_main() {
 )";
 
 id<MTLRenderPipelineState> g_drawPipelineState = nil;
+// Final review finding I2: TakeReady() drains and clears every tick, so
+// a real draw batch (often just one, observed live as a single early
+// burst of PM4 traffic) would otherwise flash for one display-link tick
+// (~16ms) and then vanish on every later tick that has nothing new.
+// Cache the last non-empty batch and keep redrawing it until a newer one
+// replaces it -- this does not fabricate geometry, it only makes a real,
+// already-decoded batch observable for longer than one tick, matching
+// the milestone's own "visible and stable" testing goal.
+std::vector<DrawCommand> g_lastDrawCommands;
 std::atomic<uint64_t> g_presentSignalCount{0};
 std::atomic<uint64_t> g_drawnFrameCount{0};
 std::atomic<bool> g_shutdownRequested{false};
@@ -78,7 +101,8 @@ void StopApplication() {
 
     // Fixed debug clear color (cornflower blue, a standard graphics-
     // programming convention for "pipeline works, nothing drawn yet").
-    // Milestone 1 does not execute any real PM4 draw content.
+    // Sub-project 2 (untextured geometry draw path) now executes real
+    // PM4_DRAW_INDX_2 draws with a placeholder shader -- see below.
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.392, 0.584, 0.929, 1.0);
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -86,9 +110,12 @@ void StopApplication() {
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
     id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
 
-    std::vector<DrawCommand> drawCommands = g_gpuTracer.DrawList().TakeReady();
+    std::vector<DrawCommand> newDrawCommands = g_gpuTracer.DrawList().TakeReady();
+    if (!newDrawCommands.empty()) {
+        g_lastDrawCommands = std::move(newDrawCommands);
+    }
     [encoder setRenderPipelineState:g_drawPipelineState];
-    for (const DrawCommand &cmd : drawCommands) {
+    for (const DrawCommand &cmd : g_lastDrawCommands) {
         if (cmd.vertexData.empty()) {
             continue;
         }

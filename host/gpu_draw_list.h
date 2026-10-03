@@ -47,9 +47,21 @@ public:
     // Pump thread, while parsing a frame's PM4 traffic.
     void AddDrawCommand(DrawCommand&& cmd);
 
-    // Pump thread, once per VdSwap -- moves the accumulated commands to
-    // the ready list for the render thread, and starts a fresh building
-    // list for the next frame.
+    // Called from the guest CPU thread inside VdSwap (not the GPU pump
+    // thread -- final review finding I6, correcting this comment's prior
+    // claim) -- moves the accumulated commands to the ready list for the
+    // render thread, and starts a fresh building list for the next
+    // frame. Because VdSwap only enqueues the swap into the ring (the
+    // pump thread parses PM4 content later, asynchronously), this is an
+    // approximate frame boundary, not a packet-accurate one: a frame's
+    // worth of draws can in principle split across two swaps. An empty
+    // building_ (nothing new since the last swap) leaves ready_
+    // untouched rather than overwriting it -- VdSwap's own call rate and
+    // the render thread's TakeReady rate are independent, and live
+    // testing during the final review fix pass confirmed multiple
+    // SwapReady calls routinely happen before a single TakeReady: an
+    // unconditional overwrite destroyed every real draw this project
+    // produced, every run, before the render thread ever saw them.
     void SwapReady();
 
     // Render thread, once per present -- returns and clears the ready

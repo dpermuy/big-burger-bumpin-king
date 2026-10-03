@@ -9,7 +9,23 @@ void FrameDrawList::AddDrawCommand(DrawCommand&& cmd)
 void FrameDrawList::SwapReady()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    ready_ = std::move(building_);
+    // Found live during final-review fix verification (beyond what the
+    // review itself flagged): VdSwap can call SwapReady many times
+    // between two render-thread TakeReady calls (the guest CPU thread's
+    // VdSwap rate and the display link's render rate are independent).
+    // Live-observed every run: a real, non-empty batch gets built, one
+    // SwapReady moves it into ready_, and a SECOND SwapReady -- with
+    // nothing new since -- fires before the render thread ever calls
+    // TakeReady, unconditionally overwriting ready_ with an empty list
+    // and permanently destroying the only real content this whole
+    // sub-project exists to show. Only replace ready_ when there is
+    // something new to show; an empty building_ means "nothing new
+    // happened," not "show nothing" -- the render thread's own TakeReady
+    // is what decides a batch has been consumed.
+    if (!building_.empty())
+    {
+        ready_ = std::move(building_);
+    }
     building_.clear();
 }
 
