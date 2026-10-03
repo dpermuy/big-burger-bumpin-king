@@ -52,7 +52,14 @@ void sub_820B4EE8(PPCContext& __restrict ctx, uint8_t* base)
     // nothing to gain by spinning anywhere near that long once we know this specific
     // deadlock class exists, and every real (non-stuck) case resolves within this
     // wait almost immediately since the fence tracks real EVENT_WRITE_SHD execution.
-    constexpr auto kMaxWait = std::chrono::milliseconds(50);
+    //
+    // Finding 71: this wait is hit constantly (many times per MAIN-thread frame
+    // iteration, not the rare edge case assumed when 50ms was chosen) and the fence
+    // has never once been observed to advance before timing out -- the 50ms bound
+    // was effectively the dominant cost of the whole post-loading-screen frame loop.
+    // Shrunk to 1ms: still gives the "resolves almost immediately" real case 10 full
+    // 100us polls to succeed, while cutting the confirmed-dead case's tax ~50x.
+    constexpr auto kMaxWait = std::chrono::milliseconds(1);
     const auto start = std::chrono::steady_clock::now();
 
     while (true)
@@ -143,7 +150,9 @@ void sub_820B5BC8(PPCContext& __restrict ctx, uint8_t* base)
         return;
     }
 
-    constexpr auto kMaxWait = std::chrono::milliseconds(50);
+    // Finding 71: shrunk from 50ms -- see sub_820B4EE8's own comment above for the
+    // full reasoning (same confirmed-permanent-deadlock class, same fix).
+    constexpr auto kMaxWait = std::chrono::milliseconds(1);
     const auto start = std::chrono::steady_clock::now();
     while (target > current())
     {

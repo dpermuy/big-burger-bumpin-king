@@ -4086,3 +4086,50 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     capture; host/main.cpp watchdog reset to the committed baseline (10s);
     confirmed clean rebuild, single harmless -Wasm-operand-widths warning
     only, no new warnings/errors.
+
+--- Finding 72: Finding 71's fix applied -- kMaxWait 50ms -> 1ms, confirmed live
+    (A/B measured, both overrides, new plateau found beyond this fix) ---
+
+Applied Finding 71's "shrink kMaxWait" direction (the lower-risk of the two
+candidates it proposed) to both sub_820B4EE8 and sub_820B5BC8
+(host/game_overrides.cpp): 50ms -> 1ms at both sites. Chosen over the
+"detect the precondition and skip the wait" alternative because it keeps a
+real window (10 full 100us polls) for the "resolves almost immediately" real
+case to still succeed, rather than trusting a precondition-match that could
+silently skip a case this investigation hasn't observed yet.
+
+A/B measured live, same stashed-diff technique, same fixed 10s headless
+window, both builds confirmed clean (single pre-existing -Wasm-operand-widths
+warning only):
+  - Pre-fix (50ms, stashed): 241 total log lines, 47 NtReadFile calls.
+  - Post-fix (1ms): 395 total log lines, 153 NtReadFile calls -- matches
+    this project's OTHER (sub-project-1-3b) branch's own 153-NtReadFile
+    headless baseline exactly, meaning both lines of work reach the same
+    real "d:\packages\xbox360online_fetm.xen" read boundary, just via very
+    different paths (that branch has none of this phase's game_overrides.cpp
+    work; this fix makes THIS branch reach the same point ~3x faster within
+    the same fixed window).
+
+Temporarily raised the watchdog to 60s (reverted before commit, confirmed
+clean rebuild + identical 10s-window result after reverting, matching this
+investigation's own established practice) to see how much further the fix
+unlocks: 2081 total lines, 264 NtReadFile calls -- real new progress well
+past the old 153-read/10s plateau.
+
+New plateau found at the 60s mark: a tight, steadily-repeating two-call
+alternation between XNotifyGetNext(r3=0x1012, ...) and
+XNotifyGetNext(r3=0x103D, ...), both going through the plain catch-all
+[stub] path (host/kernel_stubs.cpp) that unconditionally returns r3=0 on
+every call. If the real game expects a specific "no notification pending"
+status distinct from 0, or expects this call to eventually deliver a real
+notification it's polling for, an always-0 stub return could make this a
+second, different busy-poll stall -- NOT yet diagnosed, flagged for a
+future pass. Unlike Findings 56-71's deadlock (confirmed permanent, fence
+never advances), this one hasn't been live-instrumented at all yet; it may
+turn out to be a normal, bounded polling idiom that simply hasn't been
+given enough wall-clock time to exit on its own.
+
+Committed: host/game_overrides.cpp only (comments + the two kMaxWait
+constants). host/main.cpp's watchdog is unchanged in the commit (confirmed
+via git diff --stat before committing) -- the 60s bump was diagnostic-only,
+never landed.
