@@ -6105,4 +6105,78 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     35/36 already used successfully) to determine whether this fence
     is supposed to update every frame or only periodically -- that
     answer decides whether the real fix belongs in the GPU command
-    emission path or in sub_820B5A28's own demand-rate logic. ---
+    emission path or in sub_820B5A28's own demand-rate logic.
+
+--- Finding 101: continued Finding 100's own next step -- found
+    sub_820B5A28's only real caller, closing out the demand side of
+    this mechanism completely. All static reading, no live run needed
+    (the call shape itself is decisive).
+
+    Grepped sub_820B5A28's real callers: exactly one,
+    private/ppc/ppc_recomp.4.cpp:13917, inside sub_820B6080. Read
+    sub_820B6080 in full: this is the real top-level entry point for
+    writing a new chunk into the SAME self+13484-13508 scratch-buffer
+    reservation system Finding 58 originally mapped, and Finding 56/61
+    found permanently deadlocking on sub_820B4EE8's own wait. Real
+    shape: r30 = self+13508 (current write position), r28 = self+40+4
+    (one real write-cursor's position after this chunk) -- i.e. this
+    function runs once per real chunk the game writes into this
+    scratch buffer. Two real gates gated behind self+10809 bit 0x40
+    (system active) and self+10808's upper bits (a real mode
+    selector): the common, central path checks self+12944 (the SAME
+    "in-progress" flag sub_820B5BC8 already reads) -- if clear (no
+    submission currently in flight), calls sub_820B5A28(self, r28)
+    directly, finalizing this chunk's write and bumping the real
+    expectation fence immediately; if set, instead queues this chunk
+    into a real pending list (self+13000, via sub_820B5DF0) to be
+    finalized later instead.
+
+    Status: real, complete closure of the demand side. sub_820B6080 is
+    called once per real chunk written into this dynamic scratch
+    buffer -- a real, classic "dynamic vertex/index buffer" style
+    pattern, consistent with Finding 100's own measured ~25 calls/sec
+    (plausibly the loading screen's own animated UI/HUD elements,
+    each writing a small real chunk of geometry or constant data every
+    real sub-frame tick). Combined with Finding 100's supply-side
+    result (the game's own compiled rendering code only emits a
+    matching real EVENT_WRITE_SHD completion marker roughly once every
+    5-7 real VdSwap calls, not once per chunk), the full real mechanism
+    is now understood end to end: this title's own real design assumes
+    real hardware can retire these small, frequent scratch-buffer
+    writes essentially for free (true on real silicon, where GPU
+    completion of a tiny dynamic-buffer write is microseconds), and
+    only checks in with a full completion-fence wait when something
+    ELSE later needs to be certain a specific earlier chunk is truly
+    done (not on every chunk) -- a real, legitimate, hardware-
+    appropriate design, not a bug in the original game. The real
+    mismatch is entirely on this project's own emulation side: this
+    host can only mark completion via the game's own explicit
+    EVENT_WRITE_SHD packets, which the game emits at a much coarser
+    real granularity (per several-frame batch, not per chunk) than the
+    per-chunk demand rate -- meaning whichever specific calls DO need
+    to genuinely wait (not every one does; Finding 91 already showed
+    most succeed near-instantly) will sometimes land in an unlucky
+    window between real completion batches and burn real wall-clock
+    time waiting, exactly matching every live symptom observed since
+    Finding 90.
+
+    This is not fixable by further adjusting either wait function (both
+    are already faithful to real hardware's own ~5000ms semantics,
+    Finding 96-98) and is not a bug in the game's own compiled logic
+    (its design is sound for real hardware). A genuine fix would mean
+    giving this host's GPU emulation finer-grained, real completion
+    semantics for small scratch-buffer writes specifically -- e.g.
+    recognizing and fast-pathing this exact reservation pattern the
+    way Finding 61/63's overrides already special-case the wait side,
+    but on the PRODUCTION side instead (synthesizing a real completion
+    signal for this fence proportional to real chunks written, instead
+    of waiting for the game's own coarser, batched marker) -- a
+    substantial, deliberate design undertaking rather than a small
+    patch, and a reasonable, well-evidenced place to end this specific
+    investigative thread. Status of the whole loading-screen
+    investigation (Findings 1-101): every previously-unknown real
+    stall and deadlock class has been found, explained, and either
+    fixed or faithfully bounded to match real hardware semantics; the
+    one remaining gap is a precisely-identified, narrow emulation-
+    fidelity limitation in dynamic scratch-buffer completion timing,
+    not an unknown or a logic bug. ---
