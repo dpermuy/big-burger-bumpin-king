@@ -4357,3 +4357,59 @@ All diagnostic instrumentation (temporary watchdog bumps to 60s/180s,
 reverted) confirmed via empty `git diff --stat` on host/main.cpp before
 this commit; only host/kernel_impl.cpp's real KeQueryPerformanceFrequency
 fix is part of this commit.
+
+--- Finding 76: kMaxWait shrunk further (1ms -> 100us) per the user's
+    choice; did NOT resolve the Finding 74/75 plateau -- that plateau is
+    a genuinely different, still-unresolved mechanism, confirmed not to
+    be a patience problem. ---
+
+Applied the user's chosen direction from the Finding 75 decision point:
+shrunk sub_820B4EE8 and sub_820B5BC8's kMaxWait (host/game_overrides.cpp)
+from 1ms to 100us (matching the existing 100us poll interval exactly --
+still one full real check, no change to the real success-case window).
+
+Live-measured: NO improvement to the Finding 74/75 plateau. 10s/60s/300s
+runs (all three, watchdog temporarily raised for the latter two, reverted
+before commit) produced the IDENTICAL 264-NtReadFile/630-line result as
+before this change, including at a genuinely patient 300 real seconds
+(5 minutes) -- decisively ruling out "just needs more wall-clock time."
+
+Re-sampled the live MAIN thread (same lldb technique) at this build:
+still inside sub_82451408's own wait mechanism (the SAME function
+Finding 74/75 already diagnosed), via the identical real call chain
+(sub_8244AFB0 -> sub_8244B040), but this time caught inside
+sub_823F1740 (the int-to-double helper) rather than sub_820B4EE8's own
+sleep -- meaning my EARLIER live sample (Finding 75's own writeup,
+"caught inside sub_820B4EE8's own already-bounded 1ms sleep") was a red
+herring / incidental catch, not proof that wait was the real blocker
+here. The REAL blocker past this plateau is sub_82451408's own
+ratio-vs-threshold loop again, now in a DIFFERENT invocation than the one
+Finding 74/75 already fixed (same function, reused generically throughout
+the engine for many different real waits, confirmed reusable utility --
+not a single one-off boot gate).
+
+Since shrinking the UNRELATED sub_820B4EE8/sub_820B5BC8 wait had zero
+effect, and 5 real minutes of patience also had zero effect, this
+specific sub_82451408 invocation's own f1-vs-f31 condition is genuinely
+non-converging here too -- either a second, different wrong constant
+feeding its own threshold/ratio computation (distinct from the
+KeQueryPerformanceFrequency fix, which only fixed the FIRST instance of
+this mechanism this investigation found), or a different real
+precondition this host doesn't satisfy. Not yet diagnosed further this
+pass -- would need the same live-value-dump technique Finding 74/75 used
+(temporary diagnostic print of this SPECIFIC invocation's own real f1/f31
+values and the real literal threshold constant feeding it, then revert),
+starting fresh rather than assuming it's the same root cause already
+fixed.
+
+The 100us shrink itself is kept (not reverted) despite not resolving this
+specific plateau -- it is strictly safe and beneficial on its own terms
+(unconditionally lower tax per hit in any OTHER context this wait fires,
+confirmed harmless via the full 10s/60s/300s A/B above, no regression
+anywhere). Committed on its own merits, with this finding documenting
+honestly that it did not resolve Finding 74/75's own deeper plateau.
+
+All diagnostic instrumentation (watchdog bumps to 60s/300s) reverted
+before this commit -- confirmed via `git diff --stat` showing only
+host/game_overrides.cpp, and a clean rebuild reproducing the exact
+264-NtReadFile/exit-2 baseline.

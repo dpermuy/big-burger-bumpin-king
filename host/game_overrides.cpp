@@ -57,9 +57,16 @@ void sub_820B4EE8(PPCContext& __restrict ctx, uint8_t* base)
     // iteration, not the rare edge case assumed when 50ms was chosen) and the fence
     // has never once been observed to advance before timing out -- the 50ms bound
     // was effectively the dominant cost of the whole post-loading-screen frame loop.
-    // Shrunk to 1ms: still gives the "resolves almost immediately" real case 10 full
-    // 100us polls to succeed, while cutting the confirmed-dead case's tax ~50x.
-    constexpr auto kMaxWait = std::chrono::milliseconds(1);
+    //
+    // Finding 75: even at the 1ms bound this cost ~50x cheaper than before, live
+    // measurement past a later, deeper real plateau (the KeQueryPerformanceFrequency
+    // fix) shows this wait is STILL the dominant real cost -- hit at high enough
+    // volume that even 1ms/hit doesn't clear within 180 real seconds. Shrunk further
+    // to 100us: still one full real check plus one full 100us poll before giving up
+    // (matches the existing poll interval exactly, so the "resolves almost
+    // immediately" real case keeps a genuine chance to succeed), cutting the
+    // confirmed-dead case's tax another 10x on top of Finding 71's own 50x.
+    constexpr auto kMaxWait = std::chrono::microseconds(100);
     const auto start = std::chrono::steady_clock::now();
 
     while (true)
@@ -150,9 +157,10 @@ void sub_820B5BC8(PPCContext& __restrict ctx, uint8_t* base)
         return;
     }
 
-    // Finding 71: shrunk from 50ms -- see sub_820B4EE8's own comment above for the
-    // full reasoning (same confirmed-permanent-deadlock class, same fix).
-    constexpr auto kMaxWait = std::chrono::milliseconds(1);
+    // Finding 71/75: shrunk from 50ms to 1ms to 100us -- see sub_820B4EE8's own
+    // comment above for the full reasoning (same confirmed-permanent-deadlock
+    // class, same fix).
+    constexpr auto kMaxWait = std::chrono::microseconds(100);
     const auto start = std::chrono::steady_clock::now();
     while (target > current())
     {
