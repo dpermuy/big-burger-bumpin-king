@@ -261,7 +261,7 @@ int main()
     // vector_opc=2 (word2 bits24-28).
     vs[18] = 62u | (0xFu << 16);
     vs[19] = 0u;
-    vs[20] = 1u | (1u << 16) | (2u << 24) | (1u << 31) | (1u << 30);
+    vs[20] = (1u << 8) | (1u << 16) | (2u << 24) | (1u << 31) | (1u << 30);
     // Slot 7: real interpolator-0 export. vectorDest=0, write mask 0xF,
     // src1=src2=0 both TEMP, vector_opc=2.
     vs[21] = 0u | (0xFu << 16);
