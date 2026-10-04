@@ -950,10 +950,42 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 
 PPC_FUNC(__imp__KeDelayExecutionThread)
 {
-    // Returns immediately without sleeping -- a real sleep here would burn
-    // the harness's 10s watchdog budget for no benefit, since nothing else
-    // runs concurrently to change state while we'd otherwise wait. Same
-    // reasoning as NtWaitForSingleObjectEx (Phase 2C).
+    // Finding 77: this used to return immediately without sleeping, on the
+    // reasoning that "nothing else runs concurrently to change state while
+    // we'd otherwise wait" (Phase 2C). That premise is stale -- this project
+    // has real concurrent threads now (the GPU pump thread, real
+    // ExCreateThread'd worker threads), and a tight caller loop (confirmed
+    // live, Finding 76/77: sub_82451408's own real "wait for a ratio" loop,
+    // which calls this indirectly on every pass with zero real yield in
+    // between) genuinely starves them of any scheduling opportunity at all
+    // on a host with limited real parallelism -- confirmed via a live A/B:
+    // adding an unrelated, incidental real syscall (a temporary diagnostic
+    // printf) let that exact wait progress much further, while the
+    // unmodified no-op build stayed stuck at the identical point even after
+    // 300 real seconds.
+    //
+    // Real NT signature: KeDelayExecutionThread(KPROCESSOR_MODE WaitMode,
+    // BOOLEAN Alertable, PLARGE_INTEGER Interval) -- r3=WaitMode,
+    // r4=Alertable, r5=&Interval (signed 64-bit, 100ns units, negative =
+    // relative). Interval is read and honored, but capped tightly (matching
+    // Finding 71/76's own established "bound a real wait, never let one
+    // call burn meaningful watchdog budget" philosophy) -- the fix this
+    // project actually needs is a real scheduling yield happening at all,
+    // not honoring an arbitrarily long real requested duration literally.
+    constexpr auto kMaxSleep = std::chrono::milliseconds(1);
+    auto sleepDuration = std::chrono::nanoseconds(kMaxSleep);
+    uint32_t intervalPtr = static_cast<uint32_t>(ctx.r5.u64);
+    if (intervalPtr != 0)
+    {
+        int64_t interval = static_cast<int64_t>(PPC_LOAD_U64(intervalPtr));
+        if (interval < 0)
+        {
+            auto requested = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<int64_t, std::ratio<1, 10000000>>(-interval));
+            sleepDuration = std::min(requested, sleepDuration);
+        }
+    }
+    std::this_thread::sleep_for(sleepDuration);
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 

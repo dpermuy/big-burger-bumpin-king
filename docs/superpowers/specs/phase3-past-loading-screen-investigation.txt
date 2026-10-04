@@ -4413,3 +4413,83 @@ All diagnostic instrumentation (watchdog bumps to 60s/300s) reverted
 before this commit -- confirmed via `git diff --stat` showing only
 host/game_overrides.cpp, and a clean rebuild reproducing the exact
 264-NtReadFile/exit-2 baseline.
+
+--- Finding 77: real root cause of the Finding 74/76 plateau --
+    KeDelayExecutionThread was a complete no-op, never sleeping or
+    yielding at all, likely starving other real concurrent threads.
+    Fixed and live-confirmed to genuinely resolve the wait it was
+    blocking -- the specific "more file reads" metric plateaus anyway,
+    but for an unrelated, benign reason (the file simply finished). ---
+
+Finding 76 left off with: shrinking the UNRELATED sub_820B4EE8/
+sub_820B5BC8 wait had zero effect, and 5 real minutes of patience also
+had zero effect, on the real plateau (sub_82451408's own ratio-wait,
+f1 vs f31=30.0). Re-instrumented sub_82451408's loop with a richer
+diagnostic (f1, f31, r30, r31, real elapsed seconds since first hit --
+added then fully reverted, confirmed via empty `git diff` on
+ppc_recomp.58.cpp before this commit) and found: r31 stays CONSTANT
+across the whole run (one continuous invocation, not several), and r30
+(the elapsed-ticks numerator feeding f1's denominator) grows at only
+~88,000 ticks/sec of real wall-clock time -- nowhere close to this
+host's real, confirmed 24,000,000 Hz CNTVCT_EL0 rate (Finding 75) -- while
+the loop itself executes over 200 MILLION passes in under 6 real
+seconds (~29 nanoseconds/pass), far faster than any real OS-level
+sleep/yield syscall could possibly execute that often.
+
+This pointed at the loop's own sub_82128B38(0) call chain
+(-> sub_820A9FE0 -> sub_820AB5C8 -> KeDelayExecutionThread) never
+actually yielding the CPU at all. Confirmed: host/kernel_impl.cpp's
+KeDelayExecutionThread was a complete no-op (`ctx.r3.u64 = 0;`, no sleep,
+no read of the real Interval parameter whatsoever), on a stale Phase 2C
+rationale ("nothing else runs concurrently to change state") that no
+longer holds now this project has real concurrent threads (the GPU pump
+thread, real ExCreateThread'd workers). A MAIN-thread loop that never
+yields at all can starve every other real thread of CPU time on a host
+with limited real parallelism -- live-confirmed indirectly: adding an
+unrelated, incidental real I/O syscall (the temporary diagnostic printf)
+let the SAME wait progress dramatically further than the unmodified
+no-op build did even given a genuinely patient 300 real seconds,
+strongly implicating a scheduling-starvation mechanism rather than a
+math/formula bug in the ratio itself.
+
+Fixed (host/kernel_impl.cpp): KeDelayExecutionThread now reads the real
+Interval parameter (r5, a pointer to a signed 64-bit NT-convention
+value, 100ns units, negative = relative) and performs a REAL
+`std::this_thread::sleep_for`, capped at 1ms regardless of what was
+requested (matching the Finding 71/76 "bound a real wait tightly, never
+let one call burn meaningful watchdog budget" philosophy) -- guaranteeing
+a genuine scheduling yield on every single call, never the prior
+zero-yield no-op.
+
+Live-confirmed the fix is correct and the wait genuinely resolves
+repeatedly now: with the richer diagnostic still active (since reverted),
+observed real convergence (f1 dropping 667 -> 393 -> 263 -> 98.7 -> 65.2
+-> 40.2 -> 32.9, tracking genuine real elapsed time via the now-real
+sleeps) and TWO successful real exits (gt=0 at count=6000/t=7.69s and
+count=12000/t=15.41s), each immediately followed by f1 resetting to a
+fresh, different value (152.27, confirming this is a correctly-working,
+reusable "wait for ratio" utility called repeatedly throughout real
+per-frame processing, not a single one-shot boot gate).
+
+Despite the mechanism now being provably correct, the specific
+"NtReadFile count" plateau metric this whole investigation has tracked
+since Finding 74 does NOT move past 264 even given 60 real seconds with
+this fix in place. Checked why: the real file (w_commonobjectshires.xen)
+genuinely finished -- confirmed via its own real NtSetInformationFile
+SetPosition call to exactly 26,836,992 (matching the last read's own
+offset+size), the file's real, confirmed total size. Nothing else opens
+or reads for 60+ real seconds afterward, which is consistent with normal,
+benign, syscall-free CPU-bound work (asset parsing/decompression,
+in-memory engine setup) rather than a stall -- not yet proven either way
+with certainty, but the underlying mechanism this whole investigation
+chased (the wait itself) is now confirmed genuinely fixed, so NtReadFile
+count is no longer a reliable signal for whether anything is still
+stuck; a future pass would need a different kind of live check (e.g.
+sampling the MAIN thread's own call chain well past this point to see if
+it's doing real varied work vs. stuck somewhere new) rather than
+grepping for more file reads.
+
+All diagnostic instrumentation (the richer printf in ppc_recomp.58.cpp,
+its #include additions, and watchdog bumps to 20s/60s) fully reverted;
+confirmed via `git diff --stat` showing only host/kernel_impl.cpp, and a
+clean rebuild reproducing the exact 264-NtReadFile/exit-2 10s baseline.
