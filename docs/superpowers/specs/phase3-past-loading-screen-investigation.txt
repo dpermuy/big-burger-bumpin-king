@@ -7489,3 +7489,73 @@ investigated.
 No source or binary changes in this finding beyond the reverted
 temporary diagnostics; confirmed via `git diff --stat host/main.cpp`
 showing no changes.
+
+Finding 119: sub_8256D010's crash fully explained -- a real,
+in-source empty-list fallback branch sets up a null pointer, which
+then feeds a null function-pointer call (`bctrl` to guest address 0),
+not a codegen or memory-corruption bug.
+
+Reapplied Finding 118's temporary 0x8270F784=1 patch to reproduce,
+then worked the crash two ways in parallel: read the PPC source
+around the fault (ppc_recomp.81.cpp:4525-4594) and, since this is a
+Release build with no debug info (`CMAKE_BUILD_TYPE=Release`, `-O3
+-DNDEBUG`, confirmed via build/CMakeCache.txt -- source-level `expr`
+evaluation on `ctx` is not available), cross-checked by disassembling
+the actual compiled function (`lldb ... disassemble --name
+__imp__sub_8256D010`) and reading raw registers at the fault
+(`register read x8 x9 x19 x20`).
+
+First false lead, caught and ruled out: the faulting `ldr x8, [x8,
+x9]` used x9 = 0xFFFFFFFF7E600000, which looked like a sign-extension
+bug (a 32-bit guest address, zero-extension expected, landing as a
+huge negative 64-bit value) given the fault address
+(0x6f7e600000) sits below the 0x7000000000 guest-memory base.
+Ruled out by computing what that constant actually is:
+PPC_IMAGE_BASE + PPC_IMAGE_SIZE - PPC_CODE_BASE*2 (0x82000000 +
+0x740000 - 0x820A0000*2) equals exactly 0xFFFFFFFF7E600000 -- this is
+the expected, correctly-folded constant half of this project's own
+`PPC_LOOKUP_FUNC`/`PPC_CALL_INDIRECT_FUNC` macros (ppc_context.h:110-
+113), the mechanism `bctrl`/`PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32)`
+always compiles to. Nothing wrong here -- nearly re-reported a
+tooling/codegen bug that wasn't real.
+
+Reversing the macro's arithmetic against the actual fault address
+(`final = base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + (y -
+PPC_CODE_BASE)*2`, solved for y) gives `ctx.ctr.u32 == 0` at the
+crash. The game attempted to call guest function address 0 -- a null
+function pointer, not a stray/garbage one. This is consistent with
+everything upstream in the source: `ctx.ctr` was loaded two
+instructions earlier via `lwz r11,160(r10)` / `mtctr r11`
+(ppc_recomp.81.cpp:4588-4590), where r10 itself came from `lwz
+r10,0(r3)` (line 4582). Reading backward from there, r3 is set by a
+real two-way branch a few lines up (4560-4578): `lwz r11,6784(r31)`
+loads a sub-object pointer from the function's own object parameter,
+`lwz r10,224(r11)` reads what looks like a count/length field from
+that sub-object, and `cmpwi cr6,r10,0` / `ble cr6,->loc_8256D068`
+takes a "list is empty" fallback (`li r3,0`) whenever that count is
+<= 0; the other branch indexes into a real array at offset
+`(count+56)*4` from the sub-object instead. In this run, the
+fallback branch is the one taken -- count is <= 0 -- producing r3=0,
+then r10=*(0+0) and r11=*(r10+160), both landing in guest address 0's
+neighborhood (unmapped/zero-filled in this project's memory image),
+giving ctr=0 and the null-pointer call.
+
+Net: this is not a recompiler, sign-extension, or memory-safety bug.
+It's a real empty-list/registry condition in the game's own logic --
+some sub-object reachable via the object's own field+6784 has a
+count field (at that sub-object's own offset+224) that's <= 0 when
+the real retail game would apparently have at least one entry
+registered there by this point (plausibly something that should get
+populated by, or in response to, the package-loading activity this
+run was in the middle of when field+76 was unblocked -- e.g. a
+content/package registration callback this project's package/
+content-loading path doesn't yet implement). What object this is,
+what's supposed to populate that count, and whether it's genuinely
+missing functionality or a timing/ordering issue (checked before the
+real registration happens) are not yet determined -- reasonable next
+step, not done this finding.
+
+All temporary changes (the reapplied 0x8270F784=1 patch) were
+reverted immediately after this investigation; `git diff --stat
+host/main.cpp` confirmed clean and the binary was rebuilt from the
+clean tree before this finding was written.
