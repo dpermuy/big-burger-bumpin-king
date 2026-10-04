@@ -6533,3 +6533,55 @@ fix. host/main.cpp's watchdog (temporarily raised to 90s for this
 session's own live testing) is confirmed reverted via `git diff --stat`
 before this commit; no production code changed this pass, diagnosis
 only.
+
+--- Finding 107: narrowed Finding 106's search -- ruled out every one of
+    sub_8244AE70's own direct callees as the real writer of field+136.
+    Real producer is at least two levels deeper, or elsewhere entirely.
+    Diagnosis only. ---
+
+Continued Finding 106's search for field+136's real writer, starting
+from sub_8244AE70's own 9 direct callees (the only real candidates one
+level below sub_8244AFB0's own loop body).
+
+Live-checked the real gating conditions for all 3 CONDITIONAL callees
+first (cheaper to rule out than reading full bodies): sub_8212C4B8 and
+sub_8212D368 share one real gate, r31 loaded from a fixed global
+address (0x82671D80) -- confirmed live via direct memory read, value is
+0, so both calls are skipped every single time, never reached at all
+in this boot path. sub_825F8C80's own gate compares the main object's
+own field+116 against field+120 -- confirmed live, both read 0 (equal),
+so it is also always skipped. All three conditional callees are
+confirmed dead code on this real execution path; none can be field
+136's writer.
+
+Checked the 5 remaining UNCONDITIONAL callees (sub_824584C8,
+sub_824A4BC8, sub_82460518, sub_8245D2E8, sub_82467478) for a direct
+write to offset+136 within their own bodies (not tracing their own
+further sub-calls yet): sub_82460518/sub_8245D2E8/sub_82467478 have
+none at all. sub_824584C8/sub_824A4BC8 each have a few, but all target
+ctx.r1.u32 + 136 -- real stack-frame spill slots (r1 is the stack
+pointer), unrelated to the real global object's own field+136 (which
+would need a base of r3/r10/r11/r30/r31, not r1). False positives, ruled
+out.
+
+Status: every callee sub_8244AE70 calls directly is now ruled out as a
+direct writer. The real one is either inside a SECOND-level call these
+functions make internally (not yet traced -- sub_824584C8 and
+sub_824A4BC8 in particular are large, ~880/~1323 lines, almost
+certainly calling further sub-functions themselves), inside
+sub_82461D28's own per-item indirect dispatch (already deeply
+characterized by Finding 2/69+ for a DIFFERENT reason -- its own
+per-call cost -- but never specifically checked for writing field 136),
+or set by a completely separate real mechanism/thread not reached
+through this call chain at all (e.g. one of the many parked worker
+threads, once ITS OWN prerequisite is met -- unconfirmed either way).
+
+This narrows the search meaningfully (8 of the most obvious candidates
+ruled out with concrete, live-confirmed evidence) but does not yet find
+the real writer. Continuing to the next level (second-level calls
+inside sub_824584C8/sub_824A4BC8, or sub_82461D28's own real dispatch
+targets) is the natural next step, at a comparable cost to this pass.
+
+No code change this pass -- diagnosis only. All temporary diagnostic
+watchdog changes (host/main.cpp, raised to 60s for live memory probing)
+confirmed reverted via `git diff --stat` before this commit.
