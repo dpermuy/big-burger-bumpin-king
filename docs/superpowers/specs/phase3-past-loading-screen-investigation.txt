@@ -6967,3 +6967,96 @@ session's own blind static/dynamic search could not in many hours.
 tools/ppc_xref.py's two extensions (offset-aware matching, indirect-
 call tracking) are a real, permanent improvement to the tool and are
 committed as part of this finding, alongside the finding itself.
+
+--- Finding 113: lldb process-attach unblocked (user granted Developer
+    Tools access to the real controlling terminal app, Warp, after an
+    earlier grant to Terminal.app didn't apply since Warp -- not
+    Terminal.app -- is this session's actual process-tree root);
+    corrects Finding 110-112's own field+72 framing and pinpoints the
+    REAL blocking field as field+76 of the same object. ---
+
+With live attach restored, re-examined sub_82451408 (private/ppc/
+ppc_recomp.58.cpp:4600-4927) from its real top instead of the middle
+slice Findings 110-112 worked from.
+
+First, a live sanity check corrected a misreading: field+72 (host
+0x70B9163D88) was read live, pre-breakpoint, within ~1s of process
+start, and was ALREADY 0x00000001 (real big-endian value 1) -- not 0,
+and not something any of this session's attempts set. Re-reading the
+real branch direction at loc_82451528 (line 4780: `bne cr6,
+0x824514c8` -- branches to loc_824514C8 when field+72 IS nonzero)
+shows field+72==1 selects a real-timebase (mftb/rdtsc-based) elapsed-
+time computation path rather than a ratio-division path; both paths
+converge back into the same loc_82451534 continuation. field+72 is a
+mode selector, not a block -- Findings 111/112's "field+72 is the
+permanent blocker" framing was wrong. (A live memory-write attempt
+during this correction used the wrong byte order (wrote raw bytes
+`01 00 00 00` instead of `00 00 00 01`), briefly setting field+72 to
+the real value 0x01000000 instead of 1 in one now-exited diagnostic
+process; this had no effect since the mode-selector branch treats any
+nonzero value identically, and the process was never kept alive
+afterward -- no state persists from this.)
+
+Reading the function from its real start (line 4600) shows r31 (this
+object) is reloaded fresh every call via the same canonical global
+pointer chain this whole investigation has used throughout (lis
+r11,-32145 / lwz r31,-20220(r11) -- guest 0x826EB104 -> 0xB9163D40).
+Every call recomputes a fresh elapsed-time value via mftb/sub_820A7248
+and funnels it into loc_82451534's real duration-accumulation block
+(lines 4782-4927, same block Finding 111 already read). The actual
+gate on ever reaching `stw r11,136(r31)` (line 4926-4927, the real
+write Finding 111 found) is the pair of `ble` branches at lines 4908
+and 4922: the first compares field+76 (loaded at line 4874: `lwz
+r10,76(r31)`) against 0 -- when field+76 <= 0, line 4908's `ble`
+ALWAYS skips straight to the function epilogue (loc_82451618),
+regardless of how much time has accumulated or how many times this
+function is called. field+76 is live-confirmed to be 0 every time
+this session read it (both via manual breakpoint-stop reads and the
+dedicated watchpoint below). field+76, not field+72, is the real
+permanent blocker.
+
+Live-confirmed sub_82451408 IS being called repeatedly (breakpoint
+hit count climbed to 5 across a handful of manual `continue`s within
+about a second of wall time -- this function runs often, not rarely),
+and its accumulator-adjacent fields (+76, +84, +88, all read via the
+same fixed host addresses as +72) stayed at exactly 0 across every
+one of those calls. field+80 reads as the real IEEE-754 float 1.0,
+confirming the live memory read/byte-order interpretation itself is
+correct (a plausible real value, not noise).
+
+Re-ran tools/ppc_xref.py against the corrected target:
+  python3 tools/ppc_xref.py --find-writes 0x826EB104 --deref --offset 76 --hops 4
+  python3 tools/ppc_xref.py --find-writes 0x826EB104 --deref --offset 76 --hops 4 --find-indirect
+Both return zero hits -- the same static-search dead end Findings
+110-112 hit for field+72/136, now reproduced exactly for field+76.
+
+Ran a dedicated real hardware watchpoint on field+76 itself (host
+0x70B9163D8C, attached ~1s after process start -- the earliest this
+object is reliably mapped) for a full standard 10s run: only the
+watchpoint's own initial-creation report fired (the same "new value"
+artifact this project's own established methodology (Findings 109,
+112) already knows to discount), zero genuine write events before the
+process exited normally via the watchdog. field+76 is never written
+during this object's entire observed live lifetime, matching the
+static tool's own negative result.
+
+Conclusion: the real, corrected permanent blocker is field+76 of the
+object at guest 0xB9163D40 (host 0x70B9163D40), staying at 0 for this
+object's entire life, which unconditionally prevents field+136 (the
+flag sub_8244AFB0's own outer loop -- Finding 106 -- waits on) from
+ever being set by sub_82451408. Three independent techniques (manual
+read-the-whole-function tracing, the static xref tool, a dedicated
+live hardware watchpoint from near process start) now agree on this
+specific field, for the same reasons Findings 110-112 already
+documented for the superficially similar field+72/136: no statically
+or dynamically observable write exists in this session's own toolkit.
+The same three candidate explanations Finding 112 already listed
+(uninitialized-by-design pending a real subsystem this project hasn't
+implemented; a real DMA/interrupt-driven write outside CPU-side static
+analysis; a real reference-implementation comparison being the fastest
+way to actually resolve it) still apply, now pointed at the correct
+field.
+
+Diagnostic-only changes (temporary host/main.cpp watchdog extensions
+used during this finding's live tests) all reverted; confirmed via
+`git diff --stat host/main.cpp` showing no changes before this commit.
