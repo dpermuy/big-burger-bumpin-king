@@ -6715,3 +6715,72 @@ No code change this pass -- diagnosis only. All temporary diagnostics
 (the 1200s watchdog bump in host/main.cpp) confirmed reverted via `git
 diff --stat` showing no changes, and a clean rebuild reproducing the
 exact 264-NtReadFile/exit-2 baseline.
+
+--- Finding 110: exhausted the consumer-side search entirely -- all 9
+    real load sites of the target pointer, checked directly, do not
+    write field+136, and neither do their own immediate callees. This
+    specific field's real producer is not findable via grep-based
+    tracing from either direction (consumer-forward or load-site-direct)
+    without a proper cross-reference tool. Diagnosis only. ---
+
+Took the smarter direction Finding 108/109 identified: rather than
+continuing to trace forward from sub_8244AFB0's own call tree (3 levels
+deep already, Findings 106-108), worked from the OTHER side -- every
+real site in the whole codebase that LOADS the target pointer itself
+(confirmed exactly 9, via the same real base+offset pattern,
+lis r11,-32145 / ...-20220(r11), re-confirmed with full preceding
+context this time -- Finding 108's own note that one candidate,
+private/ppc/ppc_recomp.104.cpp:2631, uses a DIFFERENT base and isn't a
+real match still holds; all 9 OTHERS use the exact right base).
+
+Checked all 9 directly, two ways:
+1. A same-function write to field+136 anywhere in the REST of each
+   load site's own function body (not just the following ~100 lines --
+   the full remaining body, confirmed via the next PPC_FUNC_IMPL
+   boundary): none, at any of the 9 sites.
+2. What each site does immediately with the loaded pointer. Four sites
+   (private/ppc/ppc_recomp.54.cpp:4480/4510, ppc_recomp.53.cpp:
+   8047/8087) compute self+176 or self+200 and tail-call/branch into
+   sub_8244B810 with that sub-address as their own "self" -- read
+   sub_8244B810 in full (private/ppc/ppc_recomp.57.cpp:3142-3204, a
+   small, real, generic elapsed/remaining-count calculator): it only
+   ever touches its own self+0/4/12/20, never writes anything, and
+   could not reach back to field+136 (136 < 176/200) through any
+   positive offset it uses. One site (ppc_recomp.105.cpp:9241) writes
+   the ADJACENT field+132 (a coincidence, not a connection -- confirmed
+   the value written there is an unrelated local stack address) then
+   calls sub_8244E9D8, but passes it a COMPLETELY DIFFERENT object
+   (confirmed: that call's own r3 argument is loaded from a different
+   real global entirely, not this pointer). The remaining 4 sites
+   (ppc_recomp.109.cpp:5550/5659, ppc_recomp.54.cpp:329/16016) use the
+   loaded pointer only for further READS of other fields (108/116/120,
+   48/52/56/60/44, 124), never a write, and never pass it onward to
+   another call in the immediately-following code.
+
+Status: this closes out the consumer-forward direction (Findings
+106-108, three call-tree levels from sub_8244AFB0) AND the load-site-
+direct direction (this finding, all 9 real references to the pointer
+itself) with a fully negative result both ways. Combined with Finding
+109's own 20-real-minute live confirmation that the field never
+changes, this is about as exhaustive a search as manual grep-and-verify
+tracing can practically achieve. The real producer, if one exists at
+all in this build, is reachable only through a path this search
+technique cannot see -- most plausibly a bulk copy/initialization
+routine that writes this field as part of a larger structure blit
+(not a literal "+136" instruction at all, e.g. a vectorized/looped
+copy whose source and destination are both computed generically and
+never literally say "136" in the generated code), or the field is
+genuinely dead/unreachable in this real compiled title (a feature or
+code path never exercised in retail play).
+
+Recommended path forward for a future pass, now that pure grep is
+confirmed exhausted: a real disassembler-level cross-reference tool
+(e.g. re-running XenonAnalyse, if it can emit a full use/def map per
+real guest address, or a one-off script walking every PPC_FUNC_IMPL in
+every private/ppc/*.cpp file to statically resolve EVERY lis+offset
+pair into its real effective address and build a true reverse index --
+a few hours of tooling work that would make this and any future
+"find the real writer of address X" question a single lookup instead
+of this session's own manual, partial, multi-finding search).
+
+No code change this pass -- diagnosis only.
