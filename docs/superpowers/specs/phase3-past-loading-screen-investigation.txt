@@ -6462,3 +6462,74 @@ All diagnostic-only changes (the temporary 90s headless-watchdog bump)
 reverted before committing; confirmed via `git diff --stat` showing only
 host/kernel_impl.cpp, and a clean rebuild reproducing the exact
 264-NtReadFile/exit-2 baseline above.
+
+--- Finding 106: identified a real, previously-unisolated outer gate --
+    sub_8244AFB0's OWN loop (not sub_8244AE70's, not sub_82451408's)
+    is the real overarching condition for whether this whole call chain
+    ever exits. Confirmed-never-satisfied over a 90s live run via a
+    direct hardware watchpoint. Real producer not yet found. ---
+
+Both this investigation's own history (Finding 2 onward) and the
+reconciled other-branch work (Finding 74-78/105) traced deep into
+sub_8244AE70/sub_82461D28/sub_82451408's own call tree, but neither ever
+stepped back to characterize sub_8244AFB0 ITSELF, which directly calls
+sub_8244AE70 in a real loop of its own (private/ppc/ppc_recomp.57.cpp:
+1851-1938, loc_8244AFD8's own back-edge at line 1931): read a real
+global pointer (lwz r3,-20220(r31), r31=0x826f0000 -- resolves to the
+fixed guest address 0x826EB104), dereference it, check offset+136 of
+the pointed-to object, and only exit the whole loop (falling through to
+__restgprlr_29/return) once that field is non-zero. Finding 2's own
+original enumeration explicitly marked sub_8244B040 (sub_8244AFB0's own
+caller) as "all branches forward, no loop" -- true for that function,
+but sub_8244AFB0 itself, one level deeper, was never separately
+examined for a loop of its own in that original pass, and no later
+finding in either branch's history ever went back to check it either.
+
+Confirmed empirically (not just from static reading) via a real
+hardware watchpoint: attached early to a live --window run, read the
+real pointer at guest address 0x826EB104 (resolves to 0xB9163D40 -- the
+same real object sub_82451408 itself operates on, confirmed by matching
+the exact value this investigation has seen repeatedly as that
+function's own "self" context throughout Findings 74-78/105), computed
+the real host address of its own field+136 (base 0x7000000000 +
+0xB9163D40 + 136 = 0x70B9163DC8), and set a watchpoint there. Current
+value at attach: 0. Ran the full process to natural completion under
+the watchpoint (a real --window run, ~90s): the watchpoint fired only
+once, at the moment of its own creation (reporting the current value,
+not a write) -- it never fired again as a genuine write event for the
+rest of the run. The process reached its own usual real end state (264
+NtReadFile, ~5200+ frames drawn, ~2300+ present signals -- consistent
+healthy throughput, just somewhat slowed by the watchpoint's own real
+overhead) and exited via the normal watchdog path, with the field
+confirmed still 0 the whole time. This directly, empirically proves the
+real gate is never satisfied in this boot path, within the window
+tested -- not a timing/patience issue, matching the same "confirmed-
+permanent" character every other real fix this investigation has made
+(Findings 56-98, 71-78/105) shared before being diagnosed and fixed.
+
+Not yet found: the real intended writer of this field. A static grep
+for "+ 136" stores (both globally and narrowed to the same
+0x8244-0x8246-prefixed subsystem range sub_8244AFB0/AE70 live in)
+returns dozens of candidates, overwhelmingly false positives (offset
+136 is a common small field/stack offset reused by many unrelated
+structs and local frames across the whole codebase) -- pure static
+search did not converge to a single, confident real writer this pass.
+A future pass's natural next step: either a more targeted trace from
+the real object's own OTHER known fields (field+124/128, confirmed in
+an unrelated function at private/ppc/ppc_recomp.54.cpp:16016+ to be
+real camera/clip-plane floats -- suggesting this object is a broad
+"world/frame" context, not something narrow, so its own field+136
+writer could plausibly live almost anywhere in the engine), or a second
+live watchpoint session instrumented to catch a write via a SOFTWARE
+(not hardware-limited) breakpoint-on-every-store approach, or tracing
+what real condition sub_8244AE70's own sequence of ~10 callees
+(824584C8, 82461D28, 824A4BC8, 8212C4B8, 82460518, 8245D2E8, 82467478,
+8212D368, 825F8C80, 82128EB0, per the other branch's own Finding 69)
+is collectively supposed to produce that this gate is waiting for.
+
+This is a real, concrete, previously-unisolated piece of the overall
+puzzle -- not yet root-caused to a specific missing producer or applied
+fix. host/main.cpp's watchdog (temporarily raised to 90s for this
+session's own live testing) is confirmed reverted via `git diff --stat`
+before this commit; no production code changed this pass, diagnosis
+only.
