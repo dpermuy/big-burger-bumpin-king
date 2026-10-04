@@ -6585,3 +6585,68 @@ targets) is the natural next step, at a comparable cost to this pass.
 No code change this pass -- diagnosis only. All temporary diagnostic
 watchdog changes (host/main.cpp, raised to 60s for live memory probing)
 confirmed reverted via `git diff --stat` before this commit.
+
+--- Finding 108: traced a third level deep (sub_82461D28's own real,
+    live-resolved indirect dispatch targets, plus their own callees) --
+    still no real producer found. One promising match turned out to be
+    a different object entirely. The grep-based search technique itself
+    has hit a real scalability limit. Diagnosis only. ---
+
+Continued past Finding 107's negative result by resolving sub_82461D28's
+own two real indirect (vtable-style) call sites live: a temporary
+diagnostic (added then fully reverted) printed every resolved call
+target across a full run. Confirmed a small, finite set: 3 distinct
+targets for the "case 0" site, 13 for the "cases 1-4" site (339 and
+1845 real calls respectively over one run) -- not an unbounded space,
+contrary to the earlier worry that live-resolving indirect dispatch
+would be intractable.
+
+Checked all 16 real targets directly for a field+136 write: none.
+Went one level deeper into sub_825E8D28 (the one function from this
+whole investigation's very first-ever finding, Finding 2) specifically,
+since it's reached through this same dispatch and was never checked for
+this exact write before -- its own 5 real callees (sub_82446D50,
+sub_8246B778, sub_825697E0, sub_825E8998, sub_825E8A60) were checked
+too. Found one real, non-stack write: sub_825E8A60
+(private/ppc/ppc_recomp.106.cpp:23196-23199) writes r11+136 where r11
+is loaded from a real global pointer at `base(-32143)-2200`, resolving
+to real guest address 0x8270F768 -- confirmed via direct computation
+this is a COMPLETELY DIFFERENT object from Finding 106's own target
+(0x826EB104, resolving at runtime to 0xB9163D40). Also, the value
+written there is a literal 0 (r10 is `li r10,0` immediately above) --
+a clear/reset, not a "mark complete" set, even if it had been the right
+object. False positive, ruled out.
+
+Status: three full levels of tracing from sub_8244AFB0's own loop
+(direct callees, their callees, sub_82461D28's live-resolved indirect
+targets and THEIR callees) have found zero genuine writers of the real
+target field. The pure-grep technique ("search every reachable function
+for a `+ 136,` store, manually verify which object it targets") has a
+real, demonstrated scalability problem: offset 136 is common enough
+across unrelated structs and stack frames that most matches are false
+positives requiring real verification effort each time, and the
+reachable function set grows combinatorially with each level (16 real
+targets this round, each with their own further callees not yet
+checked). Continuing this exact technique a 4th level deep is possible
+but has a worsening signal-to-noise ratio, not an improving one.
+
+Recommended next technique for a future pass, in order of promise: (1)
+a much longer-duration hardware watchpoint session on the exact real
+address (0x70B9163DC8, confirmed reachable and stable across runs) --
+Finding 106's own 90s test is short relative to how bursty/rare some of
+this investigation's OTHER real producers have turned out to be
+(Finding 94/95's own VdSwap-tied bursts took up to several real seconds
+between events); a 10-20 minute patient watch would give a more
+decisive true/false answer than continuing static tracing. (2) Checking
+whether this gate is tied to real user input at all (XamInputGetState/
+XamInputGetCapabilities are both confirmed hardcoded to always report
+no controller connected -- if the real game is waiting at a "press
+start" or similar real screen, this flag would never be reachable
+without implementing real input simulation, a separate, large, already
+partially-scoped gap, not a loading-screen bug at all).
+
+No code change this pass -- diagnosis only. All temporary diagnostics
+(the two printf call sites and their #include <cstdio> in
+ppc_recomp.59.cpp) fully reverted; confirmed via `git diff --stat`
+showing no changes, and a clean rebuild reproducing the exact
+264-NtReadFile/exit-2 baseline.
