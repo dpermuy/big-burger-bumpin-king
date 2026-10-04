@@ -6784,3 +6784,99 @@ a few hours of tooling work that would make this and any future
 of this session's own manual, partial, multi-finding search).
 
 No code change this pass -- diagnosis only.
+
+--- Finding 111: built a real static cross-reference tool (tools/
+    ppc_xref.py) -- it found the real, genuine field+136 writer in
+    seconds, something 4 rounds of manual tracing (Findings 106-108,
+    110) missed entirely. Also found the REAL reason it never fires:
+    a specific, now-identified upstream gate (field+72) confirmed live
+    stuck at 1. That gate's own writer is not reachable via the tool's
+    current (named-call-only) interprocedural tracking -- most likely
+    set via a real indirect call, a genuine tool limitation, not a new
+    dead end. ---
+
+Built tools/ppc_xref.py: a Python static dataflow analyzer over every
+PPC_FUNC_IMPL in private/ppc/*.cpp. It does an intraprocedural linear
+symbolic walk of register values (constants from li/lis, register
+copies, addi-style offsets, PPC_LOAD_U*/PPC_STORE_U* against a known
+base), recording every store's resolved target address (concrete or
+symbolic -- e.g. "whatever is stored at global address G, plus offset
+N" when the base is itself a load from a known address) into a
+queryable index, plus a call-argument index (which named callees ever
+receive a given resolved expression as one of their first 8 integer
+arguments) to chain the search across function boundaries up to a
+configurable hop count. See the module's own docstring for full design
+and explicit Limitations (linear-scan, not control-flow-aware; named
+calls only, no PPC_CALL_INDIRECT_FUNC tracking yet; a handful of other
+scoped simplifications) -- it is a fast triage tool, not a replacement
+for reading the real code or verifying live, same discipline as every
+other finding in this file.
+
+Sanity-checked against Finding 110's own already-confirmed field+132
+write (ppc_recomp.105.cpp:9241-9244) before trusting it on the real
+question -- found it correctly and immediately.
+
+Queried for the real target (field+136 of the pointer at global
+address 0x826EB104, i.e. this whole investigation's own long-running
+target since Finding 106): found ONE direct hit, in seconds, that
+Findings 106-110's four rounds of manual tracing (three call-tree
+levels forward, nine load sites backward) never surfaced --
+sub_82451408 itself (private/ppc/ppc_recomp.58.cpp:4924-4927):
+`li r11,1 / stw r11,136(r31)`. This is a real, genuine SET (value 1,
+not a clear) of the exact right object's field. It had been missed
+because it lives in a region of sub_82451408's own body that the
+original manual trace (which focused on the f1/f31 ratio-wait loop
+specifically) never read -- a real, demonstrated case of the tool
+finding something outside the specific code path a human trace
+happened to focus on.
+
+Read the real gating logic around it in full (lines 4756-4927): this
+write is reached only when, at loc_82451528, the SAME object's
+field+72 is zero (`lwz r11,72(r31) / cmpwi cr6,r11,0 / bne ->
+loc_824514C8` -- i.e. non-zero sends control BACK to the top of the
+f1/f31 wait loop this whole investigation has been live-sampling since
+Finding 74; only zero falls through to the real completion logic that
+eventually reaches the field+136 write, after some real
+duration-accumulation/scaling arithmetic using the object's own
+field+76/80/84/88 and a shared global timer).
+
+Live-checked field+72's real value directly (same resolved-address
+technique as every other field in this investigation): 0x00000001 --
+confirmed non-zero. This is THE real, concrete, identified reason the
+whole mechanism never reaches the field+136 write: not a missing
+accumulator, not a bad threshold (also checked live: field+76/84 both
+read 0, consistent with the completion condition being trivially
+satisfiable once reached) -- a single upstream flag that stays stuck
+at 1 forever in this real boot path.
+
+Searched for field+72's own real writer two ways: (1) the tool's own
+interprocedural query from the same seed, 5 hops -- zero results; (2) a
+broader, seed-independent query for ANY function writing its own
+param(0)+72 -- found ~300 candidates (offset 72 is as common as offset
+136 was), checked for overlap with the 16 real indirect-dispatch
+targets already resolved live in Finding 108 -- no intersection.
+Neither search found a confirmed writer. The most likely explanation:
+field+72 is set via a real PPC_CALL_INDIRECT_FUNC (vtable-style) call
+this tool's current call-index does not track at all (a genuine,
+documented limitation, not evidence the writer doesn't exist) -- this
+project's own codebase uses indirect dispatch extensively (confirmed
+throughout Findings 2, 69-71, 106-108), so this is a real gap in the
+tool worth closing in a future pass, not a dead end in the
+investigation itself.
+
+Status: this is the deepest, most concrete point this investigation
+has reached -- a specific, verified, real field (object+72) identified
+as the one remaining unknown standing between the current healthy
+steady-state and the real code path (now fully read and understood,
+object+136's own write) that marks this object's own wait complete.
+Next step for a future pass: extend tools/ppc_xref.py to resolve
+PPC_CALL_INDIRECT_FUNC targets (either statically, by tracking known
+vtable-pointer values the same way the rest of the tool tracks
+pointers, or by feeding it the live-resolved target lists this
+session's own earlier manual diagnostics already produced for several
+real dispatch sites) and re-run the field+72 query with that
+capability added.
+
+tools/ppc_xref.py and its .gitignore entries (tools/.ppc_xref_cache.json,
+tools/__pycache__/) are committed as a real, reusable project asset --
+not a one-off throwaway script.

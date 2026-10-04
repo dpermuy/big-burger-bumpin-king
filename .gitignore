@@ -4,3 +4,5 @@ build/
 .DS_Store
 .superpowers/
 site/
+tools/.ppc_xref_cache.json
+tools/__pycache__/
