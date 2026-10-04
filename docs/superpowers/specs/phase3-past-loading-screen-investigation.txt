@@ -7324,3 +7324,90 @@ though that connection is a hypothesis, not yet verified.
 No source or binary changes in this finding; no diagnostic main.cpp
 edits were left uncommitted (confirmed via `git diff --stat
 host/main.cpp` showing no changes).
+
+Finding 117: Finding 116 correction -- the string-parse path was a
+real tracing error (wrong base address, then a wrong call-argument
+assumption on top of it). Corrected live tracing shows field+76
+simply mirrors a single global, which reads 0 in our loaded image
+and may be the same class of bug this project has already fixed once
+before (Phase 2S/2T: raw XEX .data section genuinely zero at a slot
+real console firmware would have populated).
+
+User asked to verify Finding 116's "live read gave an implausible
+value, 0x396B0040" discrepancy before trusting it further -- correct
+call. The live read WAS wrong: Finding 116 computed the `lis
+r11,-32143` base as 0x82450000 by mentally reusing a different
+finding's base (sub_82451408's own `lis r11,-32145` -> 0x826F0000,
+for the OBJECT pointer). Running the actual arithmetic
+(-32143*65536) gives 0x82710000, not 0x82450000 -- a 0x2C0000
+difference. Every address Finding 116 derived from that base was
+therefore wrong: the "fallback global" is really at 0x8270F784 (not
+0x8244F784), and the "config string pointer slot" is really at
+0x82708BA0 (not 0x82448BA0). Re-reading live with the corrected
+addresses: the fallback global at 0x8270F784 reads 0 (not the
+0xD0030020 Finding 116 reported -- that was a real value, just read
+from the wrong address). The string-pointer slot at 0x82708BA0 reads
+0xA01BEF50 -- a real, well-formed guest heap address (matches the
+0xA0xxxxxx allocation range seen throughout this run's own boot log),
+not the implausible garbage Finding 116 flagged. So the specific
+"garbage read" that triggered this re-check is fully explained: wrong
+address, not corrupted/uninitialized memory.
+
+Fixing the address also exposed a second, independent error in
+Finding 116's control-flow trace. Re-reading sub_82451630's source
+around the write (ppc_recomp.58.cpp:5660-5667) shows the `lwz
+r3,-29792(r27)` line Finding 116 treated as "the string argument fed
+into the bl sub_823ED898 call" actually executes AFTER that call
+returns (it's set up for a later, unrelated instruction) -- the
+call's actual r3 argument is whatever sub_8244E8C0 returned just
+before the branch into this block, not that global-string read at
+all. Live-confirmed by setting a breakpoint directly on
+`__imp__sub_823ED898`: it never fires during a full run. The
+"string-parse chain" Finding 116 followed (sub_823ED898 ->
+sub_823EEEF8 -> sub_823EEC00, a real strtol-shaped parser --
+that part of the reading was correct) is real code that exists, but
+it is not the path this run actually takes to reach the field+76
+write.
+
+The path actually taken (confirmed by sub_823ED898 never being hit,
+and by context around ppc_recomp.58.cpp:5621-5631's `cmplwi
+cr6,r3,0` / `beq cr6,0x82451b18`): when r3 is already 0 at that
+check, execution jumps straight to loc_82451B18, which loads r11
+directly from the SAME global fallback (`lis r11,-32143` /
+`lwz r11,-2196(r11)` -- note: -2196, a DIFFERENT nearby offset from
+the one Finding 116 misread as -2172; both exist in this function for
+different fields, this one is the real source for THIS field) and
+falls straight through to the write at loc_82451B20. No string
+parse, no sub_823ED898 call, no sub_8244E8C0 lookup on this
+particular path -- field+76 is just a direct copy of that global.
+Live data is fully consistent with this: the global reads 0, field+76
+reads 0 after the one real call completes (Finding 116's own
+step-out measurement, which remains valid -- only the explanation of
+*why* changes here).
+
+Checked who writes that corrected global (0x8270F784):
+`ppc_xref.py --find-writes 0x8270F784 --hops 4` again found zero
+writers -- the same recurring blind spot. This time there's a
+plausible non-bug explanation sitting right in this project's own
+codebase: host/main.cpp:89-96 already documents and fixes an
+identical-shaped problem for a different address (0x82670100, the
+kernel tick-struct pointer) with the comment "Real Xbox 360
+kernel/HAL boot code (outside any title's own executable) populates
+this slot... This project never emulates that boot sequence, and the
+raw XEX's .data section genuinely contains zero here (confirmed,
+Phase 2S) -- so the host writes it directly." If 0x8270F784 is the
+same category -- a .data slot the real console's dashboard/firmware
+or an earlier boot stage would set before this title's own code runs,
+which this project doesn't emulate -- then `ppc_xref.py` finding no
+writer is the CORRECT, expected static result (there is no writer in
+the recompiled code to find), not another instance of the tool's
+known blind spot. Not yet confirmed: what the real value should be.
+Phase 2S/2T's fix used Xenia as ground truth for its slot; the same
+approach (check Xenia source, or UnleashedRecomp, for whatever this
+address or its surrounding structure represents) is the natural next
+step before writing any value here, since writing the wrong value
+would just trade one wrong default for another.
+
+No source or binary changes in this finding; no diagnostic main.cpp
+edits were left uncommitted (confirmed via `git diff --stat
+host/main.cpp` showing no changes).
