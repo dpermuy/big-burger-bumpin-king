@@ -7156,3 +7156,70 @@ real subsystem this project hasn't).
 No source or binary changes in this finding; no diagnostic main.cpp
 edits were left uncommitted (confirmed via `git diff --stat
 host/main.cpp` showing no changes).
+
+Finding 115: UnleashedRecomp kernel-surface diff finds real stub-
+fidelity gaps, but the known hot call chain makes zero direct kernel
+calls -- rules out "missing kernel primitive on this path" as the
+field+76 (Finding 113) explanation.
+
+Followed up on Finding 114's own closing note: compared this
+project's host/kernel_impl.cpp and host/kernel_stubs.cpp against
+UnleashedRecomp's kernel/imports.cpp (fetched via `gh api
+repos/hedge-dev/UnleashedRecomp/contents/UnleashedRecomp/kernel/
+imports.cpp`) for Ex/Ke/Nt/Rtl/Mm/Ob/Io/Hal/Dbg-prefixed functions.
+
+Cross-referenced against this project's own title's actual 123-entry
+import table (host/kernel_imports.txt) rather than UnleashedRecomp's
+full import surface -- the two titles import different function sets
+and a raw diff against UnleashedRecomp's surface produces false
+positives (e.g. NtCreateSemaphore/NtReleaseSemaphore/
+NtWaitForMultipleObjectsEx, which UnleashedRecomp imports but this
+project's own binary never does).
+
+Found three real stub-fidelity gaps among functions this project's
+binary DOES import:
+- KeReleaseSemaphore (host/kernel_stubs.cpp): pure no-op, logs and
+  returns 0, never touches any semaphore state. However
+  KeInitializeSemaphore (host/kernel_impl.cpp:1229) already carries a
+  prior-session comment: "No-op -- nothing observed waits on or
+  releases this semaphore" -- i.e. this exact gap was already
+  investigated and deliberately left as a documented no-op, not an
+  oversight. Not re-litigated further this finding.
+- NtResumeThread / NtSuspendThread (host/kernel_stubs.cpp): blind
+  no-ops, no investigation comment. Checked whether this matters:
+  ExCreateThread (host/kernel_impl.cpp:1248) never reads any
+  CREATE_SUSPENDED-style creation-flags argument at all and always
+  starts the new std::thread immediately. So even if the real guest
+  creates a thread suspended and later calls NtResumeThread to start
+  it, this project's threads are already running by then -- the
+  mismatch only causes threads to start *earlier* than the real
+  console would, never *never*. Wrong direction to explain a stall.
+- RtlTryEnterCriticalSection (host/kernel_stubs.cpp): blind no-op,
+  always returns 0 (BOOLEAN false/failed-to-enter). This IS the right
+  shape for a stall if a real spin-loop pattern depends on it
+  eventually succeeding. Traced its 4 real call sites (private/ppc/
+  ppc_func_mapping.cpp, ppc_recomp.12/38/46.cpp); the one in
+  ppc_recomp.12.cpp is inside sub_82128610 (line 114-127), called only
+  from sub_82462A30 (ppc_recomp.59.cpp:26997), neither of which
+  appears anywhere in the known field+76 hot call chain (sub_8244AFB0,
+  sub_8244B040, sub_82451408, and the 7 leaf functions sub_82451408
+  calls, confirmed live via breakpoint hit-counts in Finding 113/114).
+
+Then checked the hot chain directly rather than guessing further:
+grepped the full body of each of the 10 known hot-chain functions
+(sub_8244AFB0, sub_8244B040, sub_82451408, sub_82453B00, sub_820A50F0,
+sub_820A9FD0, sub_8212DAE8, sub_8212D2E0, sub_825DEC18, sub_8212B130)
+for any `__imp__<Ex|Ke|Nt|Rtl|Mm|Ob|Io|Hal|Dbg|Xam|Vd>` call. Zero
+hits in all 10. This call chain is pure in-guest computation -- it
+makes no kernel/syscall calls at all, directly. Combined with the
+already-zero static-xref and live-watchpoint results for field+76
+itself (Finding 113), this means: whatever is supposed to write
+field+76 is not reachable from this traced chain by a missing or
+broken kernel primitive on this path. The writer, if one exists, is
+still in code this investigation has not yet located -- the kernel
+diff narrows "where to keep looking" (not in these 10 functions' own
+direct syscalls) rather than finding the writer.
+
+No source or binary changes in this finding; no diagnostic main.cpp
+edits were left uncommitted (confirmed via `git diff --stat
+host/main.cpp` showing no changes).
