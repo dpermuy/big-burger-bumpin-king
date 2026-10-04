@@ -7411,3 +7411,81 @@ would just trade one wrong default for another.
 No source or binary changes in this finding; no diagnostic main.cpp
 edits were left uncommitted (confirmed via `git diff --stat
 host/main.cpp` showing no changes).
+
+Finding 118: confirmed via a live decisive test that field+76 is a
+real, load-bearing permanent blocker, not a benign zero default --
+patching it unblocks genuinely new forward progress (real package/
+save-data loading never reached before in this entire investigation)
+before crashing at a new, later wall.
+
+First, checked whether 0x8270F784 (Finding 117's corrected fallback-
+global address) reads 0 because of a bug in this project's own XEX
+section-copying logic (host/main.cpp:57-77) or because the retail
+binary's own .data section genuinely contains 0 there. Added a
+temporary diagnostic read using XenonUtils' own `Image::Find`
+(bypasses this project's loader entirely, reads straight from the
+parsed XEX) right after section copying in SetupMemoryImage. Result:
+0x00000000, straight from the file. Not a loader bug -- this really
+is baked into the retail .data section as zero. This matches the
+exact shape of a precedent already fixed once in this same file
+(host/main.cpp:89-96, the kernel tick-struct pointer): "real Xbox 360
+kernel/HAL boot code... populates this slot... the raw XEX's .data
+section genuinely contains zero here... so the host writes it
+directly."
+
+Given that precedent, ran the decisive test: temporarily patched
+0x8270F784 = 1 at the same point in SetupMemoryImage (before
+`_xstart` runs), temporarily extended the watchdog to 45s to give
+room to observe further, rebuilt, and ran. Result, reproduced twice
+identically: no watchdog timeout. Instead, the process now visibly
+proceeds through dozens of real `NtCreateFile`/`NtReadFile` calls
+against actual package files (`d:\packages\xbox360online_fetm.xen`,
+`w_saveload_fetm.xen`, etc.) -- real asset/save-data package loading
+activity this investigation has never once observed in ~18 prior
+findings, all the way back to Finding 15. Then it crashes
+deterministically (same line count, same ~5 second wall time, both
+runs) with EXC_BAD_ACCESS / SIGBUS (exit code 138) at a bad guest
+pointer dereference.
+
+Backtrace (via lldb `bt` on the crash):
+  frame #0: __imp__sub_8256D010 + 412 (`ldr x8, [x8, x9]` -- the
+             faulting load, address 0x6f7e600000, well below the
+             0x7000000000 guest-memory base, i.e. a garbage/
+             underflowed guest pointer, not a valid guest address)
+  frame #1: __imp__sub_82453200 + 460
+  frame #2: __imp__sub_8244B040 + 5116 (the same per-iteration
+             function from Findings 106/114/115/116)
+  frame #3: __imp__sub_8212B130 + 204 (already in this
+             investigation's known call-chain whitelist, Finding 115)
+  frame #4: sub_825DEC18 (same whitelist, Finding 115)
+  frame #5: __imp___xstart + 1588
+This confirms field+76 is a real gate on genuinely new code, not an
+inert default: with it unblocked, execution reaches a function
+(sub_8256D010) this investigation has never touched before, and that
+function dereferences a bad pointer -- almost certainly because
+whatever structure it expects (plausibly populated by the package-
+loading machinery just now reached for the first time) isn't fully
+set up by this project's current implementation. This is a new,
+separate, downstream problem, not evidence against the field+76 fix.
+
+All temporary changes (the `Image::Find` diagnostic, the 0x8270F784
+patch, the 45s watchdog extension) were reverted immediately after
+the test; `git diff --stat host/main.cpp` confirmed clean before this
+finding was written, and the binary was rebuilt from the clean tree
+afterward.
+
+Net result: field+76 is THE real blocker this entire phase-3
+investigation has been chasing since Finding 106. Fixing it (by
+whatever the right permanent mechanism turns out to be -- a host
+boot-time patch matching the kernel-tick-struct precedent, or
+properly implementing whatever config/profile subsystem should set
+it) is very likely to be necessary and is now proven sufficient to
+produce real further progress, not just a different kind of stall.
+The next wall is sub_8256D010's bad pointer dereference, reached via
+sub_82453200 <- sub_8244B040 <- sub_8212B130 <- sub_825DEC18 <-
+__imp___xstart, during real package-file loading -- not yet
+investigated.
+
+No source or binary changes in this finding beyond the reverted
+temporary diagnostics; confirmed via `git diff --stat host/main.cpp`
+showing no changes.
