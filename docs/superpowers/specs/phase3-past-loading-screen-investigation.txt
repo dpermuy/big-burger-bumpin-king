@@ -7223,3 +7223,104 @@ direct syscalls) rather than finding the writer.
 No source or binary changes in this finding; no diagnostic main.cpp
 edits were left uncommitted (confirmed via `git diff --stat
 host/main.cpp` showing no changes).
+
+Finding 116: field+76's real writer found at last -- sub_82451630,
+called once early in boot. It genuinely writes field+76, and in this
+run writes it to 0 via a config-lookup fallback chain, not because
+nothing ever writes it.
+
+Technique: instead of anchoring a search at the known object's
+canonical pointer (exhausted six times over, Findings 106-115),
+grepped raw XenonRecomp-preserved asm comments across all of
+private/ppc/*.cpp for any store with immediate offset 76 (`// st(w|h|
+b|fd|fs)...,76(`) -- 616 hits, far too many to read individually
+since offset 76 is a generic, widely-reused struct offset across
+unrelated objects throughout the 25MB binary. Narrowed by
+intersecting against the small, already-established whitelist of
+functions that ever dereference THIS object's canonical global
+pointer at all (found by grepping for the exact literal pair `lis
+r11,-32145` / `lwz rN,-20220(r11)` that every known reader of this
+object uses, e.g. sub_82451408's own r31 setup) -- only 10 functions
+in the entire codebase ever do this, a tractable set. Cross-checking
+each of those 10 functions' bodies against the 616-hit offset-76 list
+found exactly one match: sub_82451630 (private/ppc/ppc_recomp.58.cpp,
+function spans lines 4956-6397), which loads the object pointer into
+r23 at entry (line 4981, confirmed never reassigned before the write)
+and stores to r23+76 at line 5692.
+
+sub_82451630's only real caller is inside sub_8244B040 (private/ppc/
+ppc_recomp.57.cpp:2448), the same per-iteration function already
+confirmed live (Finding 114) to run repeatedly on the main guest
+thread. Live-confirmed via a breakpoint on `__imp__sub_82451630`
+(symbol present, unstripped) that it is called exactly ONCE across a
+full watchdog-timeout run -- very early in boot, well before the bulk
+of MmAllocatePhysicalMemoryEx allocation traffic. This resolves what
+looked like a contradiction: the call site is reachable every
+iteration per the static read, but something upstream in
+sub_8244B040 only takes that branch on the iteration(s) where some
+precondition holds, and that's apparently just the first one. (Which
+specific upstream condition gates repeat calls was not traced this
+finding -- not needed to answer "who writes field+76".)
+
+Used `thread step-out` at that single breakpoint hit to run the whole
+function to completion while still attached, then read field+76 live
+via the same fixed-address memory-read technique as Finding 113 (no
+register-name dependency, so no debugger-timing-perturbation concern
+applies here the way it did for the Finding 114 constructor hunt --
+this read happens after a confirmed real return, not during a
+perturbed race). Result: field+76 == 0 after the one real call
+completes. Confirmed this is NOT "the write never executed" by
+reading sub_82451630's actual branch structure around the write
+(lines 5592-5692): there are two disjoint ways to reach the write,
+with two different sources for the stored value --
+  (a) loc_82451B04: r11 = return value of sub_823ED898(...) (a real
+      function call result)
+  (b) loc_82451B14/B18/B20 (straight fallthrough): r11 =
+      PPC_LOAD_U32(0x8244F784) (a hardcoded-looking global fallback,
+      confirmed live to hold a real nonzero value, 0xD0030020, this
+      run)
+Since field+76 ended up 0 while the (b) global is nonzero, path (a)
+was the one actually taken -- sub_823ED898's return value was 0 in
+this run, and that's what landed in field+76. This is a real,
+traced, explained result, not an unresolved negative.
+
+Followed sub_823ED898 to understand what "0" means: sub_823ED898 ->
+sub_823EEEF8 -> sub_823EEC00 (private/ppc/ppc_recomp.47.cpp:27031,
+ppc_recomp.48.cpp:1503 and 1056). Reading sub_823EEC00's body (radix
+bounds-checked against 2 and 36 at lines 1117-1124, byte-at-a-time
+digit scan) identifies it as a strtol-shaped string-to-integer parser
+with a 0 default -- not a dictionary/config-key lookup as first
+guessed from the wrapper names alone. Its string argument traces back
+to a global pointer slot read repeatedly throughout sub_82451630 via
+the literal pair `lis r11,-32143` / `...,-29792(r11)`, resolving to
+absolute guest address 0x82448BA0.
+
+Checked who writes 0x82448BA0: `ppc_xref.py --find-writes 0x82448BA0
+--hops 4` found zero writers (the same static-search blind spot this
+investigation has hit repeatedly -- see Limitations in the tool's own
+docstring). A live read of that address at the sub_82451630 breakpoint
+gave 0x396B0040 -- NOT flagged as a confirmed result: this value
+doesn't fit any guest address pattern observed elsewhere in this
+project (code/data is 0x8xxxxxxx, runtime heap allocations are
+0xA0xxxxxx/0xB9xxxxxx), which could mean either genuinely
+uninitialized memory at this read's timing, or that this offset
+derivation has a mistake not yet caught. Flagged explicitly as
+unverified -- a reasonable next step, not a conclusion to build on
+yet.
+
+Net result of this finding: field+76 is not "nothing ever writes
+it" (the implicit framing since Finding 113). Something does write
+it, exactly once, early in boot, and in this run it legitimately
+computes to 0 through a real, traced fallback chain ending in a
+string-to-int parse of what looks like an empty/null/not-yet-set
+config string. The practical next question is no longer "who writes
+field+76" (answered) but "what should have populated the config
+string at ~0x82448BA0 before sub_82451630 ran, and why didn't it" --
+plausibly related to the real file I/O failures already visible in
+this project's own boot log (`NtOpenFile: "cache:\" -> status=
+0xC000000E`, `NtCreateFile: "d:\_T_E_S_T.___" -> status=0xC0000034`),
+though that connection is a hypothesis, not yet verified.
+
+No source or binary changes in this finding; no diagnostic main.cpp
+edits were left uncommitted (confirmed via `git diff --stat
+host/main.cpp` showing no changes).
