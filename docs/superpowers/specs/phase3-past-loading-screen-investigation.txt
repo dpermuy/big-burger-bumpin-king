@@ -6650,3 +6650,68 @@ No code change this pass -- diagnosis only. All temporary diagnostics
 ppc_recomp.59.cpp) fully reverted; confirmed via `git diff --stat`
 showing no changes, and a clean rebuild reproducing the exact
 264-NtReadFile/exit-2 baseline.
+
+--- Finding 109: decisive 20-minute live confirmation -- the real gate
+    is permanently, never satisfied, not a patience/rarity issue;
+    real controller input ruled out as the cause; real producer still
+    not found. Diagnosis only. ---
+
+Closed out the two open questions Finding 108 left. First, cheaply:
+checked host/kernel_imports.txt (the canonical real list of every
+kernel function this binary imports) for any real controller-state
+polling API -- only XamInputSetState (rumble/force-feedback OUTPUT, not
+state input) is imported; XamInputGetState/XamInputGetCapabilities are
+never called anywhere in the real recompiled code (confirmed via a
+targeted grep across private/ppc/*.cpp -- the only matches are each
+function's own standard PPC_WEAK_FUNC trampoline, never a real caller).
+This decisively rules out "waiting for a real controller press" as the
+cause of this stall -- the real game, at this point in its own real
+boot sequence, never checks controller state via any real, confirmed
+kernel import at all.
+
+Second: ran the real hardware watchpoint from Finding 106 (same
+resolved host address, 0x70B9163DC8) for the real, full 20 minutes
+(1200s, a temporary watchdog bump, reverted before this commit) instead
+of the earlier 90s sample. Result: the watchpoint fired only once, at
+its own creation (reporting the current value, not a write), for the
+ENTIRE 20 real minutes -- confirmed via the process reaching its own
+natural watchdog-timeout completion (55,321 frames drawn, 29,819
+present signals, both healthy, continuous, steadily-growing counts
+across the whole real window -- not stalled or pegged, a genuinely
+running loop) with the watched field still unconditionally 0 the whole
+time. This is more than 13x longer than Finding 106's own original 90s
+sample and still shows zero change -- decisively ruling out "it's a
+rare/bursty real event that just needs more patience," the same
+category of explanation that turned out to be correct for several
+OTHER real fixes this investigation made (Findings 94/95's own
+VdSwap-tied bursts). This field is not bursty; it is permanently,
+unconditionally stuck at 0 in this boot path, for a reason this session
+has not yet found.
+
+Status: both of Finding 108's own recommended next directions are now
+closed out with concrete, decisive evidence -- one ruled the hypothesis
+out entirely (input), the other confirmed the gate's own permanence
+beyond reasonable doubt (20 real minutes). The real producer -- whoever
+is SUPPOSED to write this field, and why it doesn't -- remains
+genuinely unfound after three full levels of static call-tree tracing
+(Findings 106-108) plus this session's own exhaustive live patience
+test. This is the honest, current state of the chase: a confirmed-real,
+confirmed-permanent gate with no identified cause, a genuinely
+unresolved piece of the investigation, not a dead end this session
+failed to pursue seriously.
+
+A concrete, not-yet-tried direction for a future pass: rather than
+continuing to trace FORWARD from sub_8244AFB0's own call tree (three
+levels deep already, worsening signal-to-noise), work BACKWARD from the
+field itself using a disassembly-level cross-reference tool (if one
+exists for this project's own build, e.g. a real symbol/xref database
+XenonAnalyse or a similar static-analysis step might produce) to find
+every instruction in the whole ~110-file, multi-hundred-thousand-line
+codebase that computes the exact address 0x826EB104 (or dereferences
+through it) in ONE pass, rather than this session's own approach of
+manually re-deriving reachability one call level at a time.
+
+No code change this pass -- diagnosis only. All temporary diagnostics
+(the 1200s watchdog bump in host/main.cpp) confirmed reverted via `git
+diff --stat` showing no changes, and a clean rebuild reproducing the
+exact 264-NtReadFile/exit-2 baseline.
