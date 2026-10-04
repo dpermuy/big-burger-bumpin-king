@@ -6880,3 +6880,90 @@ capability added.
 tools/ppc_xref.py and its .gitignore entries (tools/.ppc_xref_cache.json,
 tools/__pycache__/) are committed as a real, reusable project asset --
 not a one-off throwaway script.
+
+--- Finding 112: decisive conclusion -- field+72 is confirmed
+    permanently stuck at 1 via a direct hardware watchpoint (two
+    independent 20-minute runs), with zero writer found via an
+    extended version of the Finding 111 tool (now offset-aware and
+    indirect-call-site-tracking) either. This is the honest, final
+    state of this specific investigative thread. ---
+
+Extended tools/ppc_xref.py (Finding 111) two ways before this final
+live test: (1) fixed an offset-matching gap -- the original
+interprocedural search only matched an argument that was EXACTLY the
+seed expression, missing the real, common pattern (already seen in
+this same investigation, Finding 110's own sub_8244B810 example) of a
+caller passing `object+K` as a sub-object pointer; added
+match_seed_with_offset to handle this, propagating the adjusted target
+offset through the recursion. (2) added tracking for real
+PPC_CALL_INDIRECT_FUNC sites (5877 found codebase-wide) as a distinct,
+target-unresolved call type, queryable the same way as named calls, so
+a short list of "indirect call sites reachable with this object as an
+argument" can be generated for live verification instead of guessing.
+
+Re-ran the field+72 query with both fixes: zero direct/interprocedural
+writes (same negative as before the fix -- the offset-matching gap
+wasn't the reason this search came up empty), and zero reachable
+indirect-call sites either, within 5 hops, from the same real object
+seed. The sanity check (field+136's own already-confirmed write) still
+passes correctly, confirming the tool itself is working -- this is a
+genuine negative result, not a bug in the search.
+
+Given static analysis (now meaningfully more capable than Finding 111's
+first version) still found nothing, ran the most direct test possible:
+a real hardware watchpoint on field+72's own resolved live address
+(0x70B9163D88), for two full independent 20-minute (1200s) runs. Zero
+genuine write events in either run -- only the initial watchpoint-
+creation report, identical to Finding 109's own result for field+136
+and to this same field's own first, earlier check. Both runs completed
+to their own natural watchdog exit with healthy, continuously-growing
+real activity throughout (71,810 frames / 32,472 present signals in
+this run's own full window) -- not stalled, not frozen, just never
+writing this one specific field.
+
+This is now a triply-confirmed, maximally-verified negative result:
+(a) exhaustive forward call-tree tracing (Findings 106-108, 3 levels),
+(b) exhaustive backward load-site tracing (Finding 110, all 9 real
+references to the containing object), (c) a purpose-built, twice-
+extended static cross-reference tool checking both named-call and
+indirect-call interprocedural paths (Finding 111 + this finding), and
+(d) two independent 20-minute real hardware watchpoints directly on
+the field's own live memory. All four, independent techniques agree:
+field+72 is permanently 1 in this real boot path, and no code this
+session can find -- by any method tried -- ever touches it.
+
+**Conclusion for this investigative thread:** the real, final blocker
+keeping this title's own loading sequence from ever completing is now
+fully diagnosed down to one specific, named, verified field on one
+specific, identified object (self+10768-based structure, field+72),
+with the real completion logic that WOULD fire once it clears fully
+read and understood (sub_82451408:4756-4927). Why nothing ever clears
+it remains unknown after exhausting every static and live technique
+this session has available. The most likely remaining explanations,
+in order of plausibility: (1) it's set once at real object construction
+to a value this project's own asset-loading pipeline never fully
+replicates (e.g. a real field normally populated by parsing additional
+real data this project's own XDVDFS/package-reading code doesn't yet
+decode deeply enough to reach the specific sub-structure that would
+flip it); (2) it depends on a real subsystem this project has not yet
+implemented at all (network, achievements, or another real XAM service
+whose own real completion callback is what the game expects to clear
+this flag); (3) it is read by a real DMA-driven or hardware-interrupt
+driven path this CPU-side static analysis category cannot see by
+construction, not just by tooling limitation.
+
+Recommended for a genuinely different future pass, since this
+session's own toolkit (manual tracing, the custom xref tool, live
+watchpoints) has been exhausted on this specific question: compare
+against a REAL reference implementation if one exists for this exact
+title or a close sibling (this project's own established practice of
+checking Xenia/skate3recomp-style real reference source for ground
+truth, used successfully throughout Findings 69-78), specifically for
+whatever real engine subsystem initializes or completes self+10768's
+own field+72 -- a real symbol name or comment in a reference
+implementation would very likely resolve in minutes what this
+session's own blind static/dynamic search could not in many hours.
+
+tools/ppc_xref.py's two extensions (offset-aware matching, indirect-
+call tracking) are a real, permanent improvement to the tool and are
+committed as part of this finding, alongside the finding itself.
