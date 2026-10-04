@@ -30,6 +30,18 @@
 static std::mutex g_stateMutex;
 static thread_local uint32_t g_currentThreadHandle = 0; // this thread's own ExCreateThread handle, 0 if not a guest-spawned thread
 
+// Real per-listener notification queue (XamNotifyCreateListener/XNotifyGetNext),
+// confirmed against Xenia's own XNotifyListener (src/xenia/kernel/xnotifylistener.h/.cc):
+// a plain FIFO of (id, data) pairs, no cap. g_stateMutex guards this too -- same
+// coarse-lock posture as every other piece of shared kernel state in this file.
+struct NotifyListener
+{
+    uint64_t mask;
+    std::deque<std::pair<uint32_t, uint32_t>> queue;
+};
+static std::unordered_map<uint32_t, NotifyListener> g_notifyListeners;
+static bool g_notifiedStartup = false; // real Xenia: only the first mask&1 listener, ever, gets the startup push
+
 PPC_FUNC(__imp__KeBugCheck)
 {
     fmt::println("[kernel] KeBugCheck: code=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
@@ -539,7 +551,31 @@ PPC_FUNC(__imp__KeQuerySystemTime)
 
 PPC_FUNC(__imp__KeQueryPerformanceFrequency)
 {
+    // Finding 75: this must report the REAL frequency __rdtsc() (mftb) actually
+    // ticks at on THIS host, not real Xbox 360 hardware's own documented 50MHz --
+    // confirmed live, this was a genuine, measurable mismatch (this host's own
+    // __rdtsc() is CNTVCT_EL0, confirmed 24,000,000 Hz via CNTFRQ_EL0 on this real
+    // Apple Silicon Mac, not 50,000,000). Any real game code computing a wait
+    // duration from "elapsed ticks vs this frequency" silently waited far longer
+    // than intended wall-clock time -- root cause of a confirmed-live stall
+    // (docs/superpowers/specs/phase3-past-loading-screen-investigation.txt,
+    // Findings 74-75) well past all prior loading-screen fixes.
+    //
+    // Queried live via CNTFRQ_EL0 (not hardcoded) since this exact register is
+    // what this host's own __rdtsc() (ppc_context.h) reads -- always correct by
+    // construction on any AArch64 host, never a second hardcoded guess to drift
+    // out of sync with the first.
+#if defined(__aarch64__) || defined(_M_ARM64)
+    uint64_t freq;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    ctx.r3.u64 = freq;
+#else
+    // x86_64's __rdtsc() is the real RDTSC instruction (CPU-model-specific GHz-
+    // range rate, not a fixed architectural constant like CNTFRQ_EL0) -- this
+    // host's own target is AArch64 only, so this platform's own equivalent
+    // mismatch is flagged, not guessed at, here.
     ctx.r3.u64 = 50000000ULL; // Xbox 360's documented hardware timebase frequency
+#endif
 }
 
 PPC_FUNC(__imp__KeEnableFpuExceptions)
@@ -963,10 +999,42 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 
 PPC_FUNC(__imp__KeDelayExecutionThread)
 {
-    // Returns immediately without sleeping -- a real sleep here would burn
-    // the harness's 10s watchdog budget for no benefit, since nothing else
-    // runs concurrently to change state while we'd otherwise wait. Same
-    // reasoning as NtWaitForSingleObjectEx (Phase 2C).
+    // Finding 77: this used to return immediately without sleeping, on the
+    // reasoning that "nothing else runs concurrently to change state while
+    // we'd otherwise wait" (Phase 2C). That premise is stale -- this project
+    // has real concurrent threads now (the GPU pump thread, real
+    // ExCreateThread'd worker threads), and a tight caller loop (confirmed
+    // live, Finding 76/77: sub_82451408's own real "wait for a ratio" loop,
+    // which calls this indirectly on every pass with zero real yield in
+    // between) genuinely starves them of any scheduling opportunity at all
+    // on a host with limited real parallelism -- confirmed via a live A/B:
+    // adding an unrelated, incidental real syscall (a temporary diagnostic
+    // printf) let that exact wait progress much further, while the
+    // unmodified no-op build stayed stuck at the identical point even after
+    // 300 real seconds.
+    //
+    // Real NT signature: KeDelayExecutionThread(KPROCESSOR_MODE WaitMode,
+    // BOOLEAN Alertable, PLARGE_INTEGER Interval) -- r3=WaitMode,
+    // r4=Alertable, r5=&Interval (signed 64-bit, 100ns units, negative =
+    // relative). Interval is read and honored, but capped tightly (matching
+    // Finding 71/76's own established "bound a real wait, never let one
+    // call burn meaningful watchdog budget" philosophy) -- the fix this
+    // project actually needs is a real scheduling yield happening at all,
+    // not honoring an arbitrarily long real requested duration literally.
+    constexpr auto kMaxSleep = std::chrono::milliseconds(1);
+    auto sleepDuration = std::chrono::nanoseconds(kMaxSleep);
+    uint32_t intervalPtr = static_cast<uint32_t>(ctx.r5.u64);
+    if (intervalPtr != 0)
+    {
+        int64_t interval = static_cast<int64_t>(PPC_LOAD_U64(intervalPtr));
+        if (interval < 0)
+        {
+            auto requested = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<int64_t, std::ratio<1, 10000000>>(-interval));
+            sleepDuration = std::min(requested, sleepDuration);
+        }
+    }
+    std::this_thread::sleep_for(sleepDuration);
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
@@ -988,32 +1056,54 @@ PPC_FUNC(__imp__XamInputGetState)
     ctx.r3.u64 = kErrorDeviceNotConnected;
 }
 
+// Finding 69 (handle validation/output-pointer contract) + Finding 73 (the real
+// startup-notification producer) reconciled: Finding 69 established the real
+// (handle, match_id, id_ptr, param_ptr) -> BOOL contract and validated the handle
+// against the real handle table, but had no real producer yet -- "this project
+// has no code anywhere that enqueues a real notification into a listener yet."
+// Finding 73 supplies exactly that producer, confirmed against real Xenia source
+// (src/xenia/kernel/kernel_state.cc, RegisterNotifyListener): the first-ever
+// listener whose mask has bit 0 set gets 8 real startup notifications queued
+// once -- confirmed real retail titles (e.g. Resident Evil 5) depend on receiving
+// them. One ungated block: all 8 fire together, or none do.
 PPC_FUNC(__imp__XamNotifyCreateListener)
 {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     uint32_t handle = g_nextHandle++;
     g_handleTable[handle] = HandleObject{ HandleObjectType::Generic, false };
+
+    uint64_t mask = ctx.r3.u64;
+    g_notifyListeners[handle] = NotifyListener{ mask, {} };
+
+    if (!g_notifiedStartup && (mask & 0x1) != 0)
+    {
+        g_notifiedStartup = true;
+        auto& queue = g_notifyListeners[handle].queue;
+        queue.push_back({ 0x00000009, 1 }); // XN_SYS_UI on
+        queue.push_back({ 0x00000009, 0 }); // XN_SYS_UI off
+        queue.push_back({ 0x0000000A, 1 }); // XN_SYS_SIGNINCHANGED
+        queue.push_back({ 0x0000000A, 1 }); // XN_SYS_SIGNINCHANGED
+        queue.push_back({ 0x00000012, 0 }); // XN_SYS_INPUTDEVICESCHANGED
+        queue.push_back({ 0x00000012, 0 }); // XN_SYS_INPUTDEVICESCHANGED
+        queue.push_back({ 0x00000013, 0 }); // XN_SYS_INPUTDEVICECONFIGCHANGED
+        queue.push_back({ 0x00000013, 0 }); // XN_SYS_INPUTDEVICECONFIGCHANGED
+    }
+
     ctx.r3.u64 = handle;
 }
 
 // Finding 69: real contract (confirmed against skate3recomp's rexglue-sdk,
 // src/kernel/xam/xam_notify.cpp -- itself Xenia's real XNotifyGetNext) is
 // (handle, match_id, id_ptr, param_ptr) -> BOOL, dequeuing one notification
-// from the listener object created by XamNotifyCreateListener above. The
-// previous stub (host/kernel_stubs.cpp) unconditionally returned 0 without
-// ever validating the handle or writing id_ptr/param_ptr at all -- a real
-// contract violation independent of whatever the game does with the return
-// value: real callers can rely on *id_ptr being written even on the empty
-// path, and this host left that guest memory untouched. This project has no
-// code anywhere that enqueues a real notification into a listener yet (no
-// producer exists for the mask a listener subscribes to), so honestly this
-// always reports "none available" today, same observable result as the old
-// stub for now -- but it does it by validating the handle and following the
-// real memory-write contract, both worth having regardless of whether a real
-// notification source is ever added.
+// from the listener object created by XamNotifyCreateListener above. Real
+// Xenia semantics (XNotifyListener::DequeueNotification, both overloads):
+// match_id==0 dequeues the oldest queued notification (FIFO); a nonzero
+// match_id does a linear scan for the first queued entry with that exact id
+// and dequeues only that one.
 PPC_FUNC(__imp__XNotifyGetNext)
 {
     uint32_t handle = (uint32_t)ctx.r3.u64;
+    uint32_t matchId = (uint32_t)ctx.r4.u64;
     uint32_t idPtr = (uint32_t)ctx.r5.u64;
     uint32_t paramPtr = (uint32_t)ctx.r6.u64;
 
@@ -1037,8 +1127,49 @@ PPC_FUNC(__imp__XNotifyGetNext)
         return;
     }
 
-    // No real notification source exists in this project yet -- nothing to dequeue.
-    ctx.r3.u64 = 0;
+    auto listenerIt = g_notifyListeners.find(handle);
+    if (listenerIt == g_notifyListeners.end())
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
+
+    auto& queue = listenerIt->second.queue;
+    bool dequeued = false;
+    uint32_t id = 0;
+    uint32_t data = 0;
+
+    if (matchId != 0)
+    {
+        for (auto queueIt = queue.begin(); queueIt != queue.end(); ++queueIt)
+        {
+            if (queueIt->first == matchId)
+            {
+                id = matchId;
+                data = queueIt->second;
+                queue.erase(queueIt);
+                dequeued = true;
+                break;
+            }
+        }
+    }
+    else if (!queue.empty())
+    {
+        id = queue.front().first;
+        data = queue.front().second;
+        queue.pop_front();
+        dequeued = true;
+    }
+
+    if (dequeued)
+    {
+        PPC_STORE_U32(idPtr, id);
+        if (paramPtr != 0)
+        {
+            PPC_STORE_U32(paramPtr, data);
+        }
+    }
+    ctx.r3.u64 = dequeued ? 1 : 0;
 }
 
 PPC_FUNC(__imp__KeRaiseIrqlToDpcLevel)

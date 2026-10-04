@@ -6350,3 +6350,115 @@ INTERRUPT, not these TYPE0/other memory-writing swap packets.
     1-104): the original stall is fixed; what remains is a pre-existing,
     separately-scoped rendering gap, not a continuation of this
     investigation's own question. ---
+
+--- Finding 105: reconciling two branches that diverged after Finding 104 --
+    a correction to Finding 103/104's own "not a bug" conclusion about
+    KeDelayExecutionThread, plus two genuinely new fixes neither branch
+    had, all landed on master. ---
+
+Context: after Finding 104 closed this file on the `worktree-phase3k-
+gpu-command-tracer` branch, a SEPARATE session continued independent
+work in an older, un-rebased worktree checked out from a commit before
+Finding 90. That session re-discovered and numbered its own "Finding
+71-78" against this exact file and these exact functions -- those
+numbers collide with THIS branch's own, unrelated Finding 71 ("real
+Mutant/auto-reset-Event acquire semantics") and are NOT the same
+findings. This entry reconciles the two lines under one real, continued
+numbering (105+) so no future reader has to guess which "Finding 71"
+is meant. The other branch's own log, with its own self-consistent
+71-78 numbering, remains at
+.claude/worktrees/phase2k-physmem-stall/docs/superpowers/specs/
+phase3-past-loading-screen-investigation.txt as a historical record of
+that session's own reasoning -- cite "the other branch's Finding N" when
+referring to it from here on, never a bare "Finding N" past this point.
+
+**Correction to Finding 103/104:** Finding 103 live-probed sub_82451408's
+call into KeDelayExecutionThread (via sub_82128B38 -> sub_820A9FE0 ->
+sub_820AB5C8), found the requested interval is 0ms, and concluded "on
+real hardware this also wouldn't meaningfully delay, so the host stub's
+existing instant-return behavior is NOT a bug for this specific call."
+Finding 104 built on that to call the whole investigation successfully
+closed, with "healthy ~100% CPU, continuously varying execution" as the
+corrected success criterion.
+
+The other branch's own live testing (its Finding 74/76/77, re-run and
+re-confirmed here) shows this reasoning has a real gap: a genuine
+Sleep(0)/yield call on real hardware still relinquishes the CPU to the
+scheduler, even for a zero-duration request -- this host's prior
+KeDelayExecutionThread didn't relinquish anything at all, ever. A
+temporary entry-counter diagnostic (added then reverted on that other
+branch) proved sub_82451408 does NOT consist solely of unconditional
+forward branches: it contains a real backward-branching loop
+(loc_824514C8 through loc_82451528, confirmed again by direct reading
+here) computing a real ratio against a fixed threshold, and a 300-real-
+second live test with the ORIGINAL no-op KeDelayExecutionThread showed
+this ratio NEVER converging -- stuck at an identical point regardless of
+added patience, while CPU stayed pegged near 100% the whole time. That
+is exactly the "healthy ~100% CPU, continuously varying execution"
+signature Finding 104 treated as sufficient evidence of no remaining
+bug -- but it was not converging, and does converge correctly once a
+real (even very short) sleep is introduced on every call. Finding 104's
+corrected success criterion is necessary but was not, by itself,
+sufficient to rule out this specific class of non-terminating ratio
+wait; a genuinely stuck tight loop and a genuinely healthy frame loop
+can both present as "steady ~100% CPU, varying PC" to a coarse live
+sample.
+
+**Fixed (host/kernel_impl.cpp), landed on master:**
+1. KeDelayExecutionThread now performs a real std::this_thread::sleep_for
+   for the real requested interval (read from the real Interval pointer,
+   NT 100ns-unit convention), capped at 1ms regardless of what's
+   requested -- giving every call a genuine scheduling yield without
+   ever meaningfully taxing the watchdog budget, rather than the prior
+   unconditional no-op.
+2. KeQueryPerformanceFrequency now queries CNTFRQ_EL0 live instead of
+   hardcoding Xbox 360 hardware's own documented 50,000,000 Hz -- this
+   host's own __rdtsc() (ppc_context.h) is a raw CNTVCT_EL0 passthrough,
+   confirmed live at exactly 24,000,000 Hz on this real Apple Silicon
+   Mac, a genuine, measurable mismatch neither branch's prior history
+   had caught. Any real elapsed-tick-vs-threshold computation (including
+   sub_82451408's own loop above) was silently running at roughly 24/50
+   of its assumed rate before this fix.
+3. XamNotifyCreateListener/XNotifyGetNext: kept this branch's own
+   Finding 69 handle-validation and real output-pointer-write contract
+   (the other branch's own version lacked both), and added the real
+   producer Finding 69 explicitly said didn't exist yet -- the other
+   branch's own startup-notification push, confirmed against real Xenia
+   source (kernel_state.cc, RegisterNotifyListener): the first-ever
+   listener whose mask has bit 0 set gets 8 real notifications
+   (XN_SYS_UI on/off, XN_SYS_SIGNINCHANGED x2, XN_SYS_INPUTDEVICESCHANGED
+   x2, XN_SYS_INPUTDEVICECONFIGCHANGED x2) queued once, confirmed real
+   retail titles (Resident Evil 5) depend on receiving them.
+
+sub_820B4EE8/sub_820B5BC8 (Findings 92-98) were NOT touched by this
+reconciliation -- the other branch's own competing fix (progressively
+shrinking the bound to 100us) was built on the ORIGINAL Finding 61
+premise ("confirmed-permanent deadlock") that Findings 90-98 on THIS
+branch had already disproven with more rigorous, longer live testing
+(bursty-but-real progress, needing a WIDE ~5000ms bound, not a narrow
+one) before the other branch's own session ever started. This branch's
+existing fix is kept as-is; the other branch's own competing change was
+deliberately not brought over.
+
+**Live-verified on master, this session, reconciled build:**
+- Headless 10s: exit 2, 264 NtReadFile (reaches, within the STANDARD
+  10s window, the exact point that previously needed the other branch's
+  own 120s diagnostic window to reach even in isolation -- the two
+  branches' real fixes compound).
+- A temporary 90s headless window (reverted, not part of this commit)
+  showed a genuinely NEW signal neither branch's own isolated testing
+  ever produced: `[gpu_state] out-of-range register write index=0x7400`
+  -- real new GPU command-stream activity past every point either branch
+  reached alone, confirming this reconciliation is not just "no
+  regression" but real combined forward progress.
+- --window: real shader translation still succeeds for both the real
+  vertex and pixel shader, the real compiled pipeline swap still
+  happens, and present-signal throughput rose from ~26-27 (this
+  session's own pre-fix baseline) to 179 in the same 10s window --
+  healthier real frame pacing, consistent with KeDelayExecutionThread
+  now yielding properly instead of starving other threads.
+
+All diagnostic-only changes (the temporary 90s headless-watchdog bump)
+reverted before committing; confirmed via `git diff --stat` showing only
+host/kernel_impl.cpp, and a clean rebuild reproducing the exact
+264-NtReadFile/exit-2 baseline above.
