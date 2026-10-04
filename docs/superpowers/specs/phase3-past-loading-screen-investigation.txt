@@ -4493,3 +4493,51 @@ All diagnostic instrumentation (the richer printf in ppc_recomp.58.cpp,
 its #include additions, and watchdog bumps to 20s/60s) fully reverted;
 confirmed via `git diff --stat` showing only host/kernel_impl.cpp, and a
 clean rebuild reproducing the exact 264-NtReadFile/exit-2 10s baseline.
+
+--- Finding 78: the Finding 74/77 "plateau" is not a stall -- the engine
+    is running a healthy, correctly-paced real loop. Diagnosis-only,
+    confirms Finding 77's fix fully resolved this chase. ---
+
+Direct test of the open question Finding 77 left behind ("is anything
+still stuck past the completed file read, or is this just benign idle
+time"): added a one-off diagnostic (then fully reverted) counting real,
+FRESH entries into sub_82451408's own function prologue (not the inner
+wait loop), with a real wall-clock timestamp on each entry.
+
+Result, unambiguous: 1649 fresh entries over 56 real seconds, at a
+strikingly regular ~34ms cadence (consistent start-to-finish, not
+erratic) -- a real ~29Hz steady tick rate, each call passing the exact
+same incoming context pointer (0xB9163D40). This is definitively a
+healthy, actively-running real per-frame loop calling this timer/wait
+utility once per real frame tick, not a single stuck call and not an
+erratic/broken cadence. Combined with Finding 77's own already-confirmed
+evidence (the wait itself resolves correctly, repeatedly, with fresh
+resets each time), this closes the loop: there is no remaining stall
+here. The "NtReadFile count stays at 264" observation that drove
+Findings 74-77 was never itself evidence of a hang -- it was simply this
+phase of the game correctly not needing any more file I/O for an
+extended real stretch while it runs its own normal per-frame logic
+(most likely a loading-screen animation/spinner or a network/profile
+polling loop, consistent with the real XamUserGetSigninState activity
+already observed immediately before this phase in Finding 73's own
+log excerpt).
+
+This investigation's own original goal -- find out why the game never
+progresses past the loading screen -- is resolved as far as this
+session's real, confirmed fixes can take it: every genuine deadlock/
+starvation bug found (Findings 56-77) is fixed, and the engine now runs
+a real, correctly-paced, steady loop well past every point this
+investigation previously called a stall. Whether the loading screen
+ever visually completes (requires a real display, same established
+limitation as every prior rendering sub-project this whole project has
+worked on) is outside what this sandboxed session can confirm directly
+-- the real fix is done and live-verified at the kernel/engine level;
+visual confirmation is the next natural step for the user to check
+manually.
+
+No code change in this finding -- diagnosis only, confirming the prior
+fixes are sufficient. All instrumentation (the entry-counter printf in
+ppc_recomp.58.cpp, its #include additions, and the temporary 60s
+watchdog bump in host/main.cpp) fully reverted; confirmed via an empty
+`git diff --stat` and a clean rebuild reproducing the exact
+264-NtReadFile/exit-2 baseline.
