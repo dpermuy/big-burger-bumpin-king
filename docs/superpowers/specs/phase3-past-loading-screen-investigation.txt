@@ -8684,3 +8684,22 @@ Verified: rebuilt and ran the placeholder build headless; exit code 2
 Finding 140 test. Not a crash.
 
 Still open: the real completion signal for display field+92.
+
+Finding 142: after the placeholder (Finding 141), the windowed build
+presents frames but shows no game draw activity. Not playable yet.
+
+Ran `--window` for 12 s. Renderer report: 589 drawn frames, 33 present
+signals. Log: no `VdSwap` lines in the kernel trace and no PM4 draw
+lines; the only draw-related output is the renderer's own summary.
+Stubbed kernel calls are the expected boot set (MmFreePhysicalMemory
+x66, NetDll_XNetGetEthernetLinkStatus x3, a few profile and launch
+calls, one KeReleaseSemaphore). Guest main thread is parked in the
+designed idle loop.
+
+Read: the window is presenting, but the presents are not carrying game
+content. I did not look at the window itself, so a blank or clear
+screen is an inference from the trace, not a visual check.
+
+Next step, not done: find where the game is supposed to issue its
+first frame's draw commands after the idle loop, and whether they are
+gated by the same display state or by content that is not loaded.
