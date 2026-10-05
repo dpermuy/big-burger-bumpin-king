@@ -8464,3 +8464,43 @@ Hypothesis 3 is the cheapest to test next: trace the guard that
 decides whether `sub_825F8BD0` calls `sub_824A84E0` at all, in the
 per-tick loop, to see whether this single call should be running
 at all on the normal path.
+
+Finding 134: the field+28 / display-setup guard test. Hypothesis 3
+from Finding 133 is falsified -- the setup is supposed to run once,
+and it does. The stall is downstream, in sub_824A0B68's wait on
+field+92. Also corrects the byte-order error behind several earlier
+"0x01000000" values.
+
+Guard, read from live source and the disassembly:
+- The per-tick caller `sub_8244B040` calls `sub_825F8BD0`
+  unconditionally (ppc_recomp.57.cpp:2539-2541); its return value
+  only gates the code after it.
+- The real guard is inside `sub_825F8BD0` (ppc_recomp.109.cpp:
+  5546-5573): `clrlwi r11,r11,31` on display field+16, then `bne` to
+  `loc_825F8C20` (return 0). So the setup runs only when display
+  field+16 bit 0 is CLEAR.
+- `sub_824A78E0`'s own early return on field+28 (Finding 131) is a
+  second, independent guard inside the setup.
+
+Live values, same build:
+- At `__imp___xstart` (boot): display field+16 = 0, field+28 = 0,
+  field+92 = 0. The bit-0 guard passes, so the setup runs exactly
+  once -- matching the single watchpoint hit in Finding 132.
+- During the stall (attach, 6 s in): field+16 = 85983747 (0x05200203,
+  bit 0 SET), field+28 = 1, field+92 = 1. So after the first setup,
+  the guard blocks any second call. Nothing re-runs the setup, and
+  the stall is not caused by repeated setup.
+
+Correction to Findings 127-133: the guest value written to field+28
+and field+92 is 1, not 0x01000000. Those earlier values came from
+watchpoint "new value" output and from raw `str w9` host bytes
+(little-endian). A big-endian guest reads 0x00000001. Read through
+`__builtin_bswap32`, both fields are 1. The "0x01000000 bit" framing
+(which Finding 127 used to infer a bit-24 status flag) is wrong; the
+latch is a plain boolean. Findings 127's stall attribution (a busy
+wait on field+92, as an equality test against zero) still holds.
+
+Net: the setup-guard path behaves correctly. The remaining question
+is still the same, now sharper: what should clear field+92 back to 0
+so that sub_824A0B68 unblocks and clears field+28? Nothing in this
+build writes field+92 after the first setup.
