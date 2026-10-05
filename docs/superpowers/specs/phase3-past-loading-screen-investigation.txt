@@ -8091,3 +8091,82 @@ null-call), there still isn't enough real, correctly-configured
 content for it to find something to do, and it's reaching a genuine
 "nothing to display, exit gracefully" decision in its own code. Not
 yet traced to a specific check or confirmed as the real cause.
+
+Finding 127: Finding 126's "graceful shutdown" read was wrong --
+corrected live. The main thread isn't idling at all; it's in a NEW
+genuine busy-wait (same shape as Finding 106's original stall),
+spinning on a display/video-mode status bit that's set once and
+never cleared. Strong, concrete lead: this looks tied to the
+project's own hardcoded 1280x720 viewport vs. the game's own
+1920x1080 check.
+
+Re-examined Finding 126's claim with a longer live run. Temporarily
+extended the watchdog to 90s (reverted after, standard discipline)
+and timed a real run: `time ./build/BigBumpinHost` showed 88.98s
+user time out of 90.20s wall time -- essentially 100% CPU the entire
+run, not idling. The log output stops at the exact same
+`ExTerminateThread`/`MmFreePhysicalMemory` sequence Finding 126 saw,
+then produces ZERO further lines for the remaining ~85 seconds
+despite the process staying fully busy -- a silent loop making no
+further host-visible (logged) calls, not a clean exit.
+
+Attached live and sampled thread #4's PC six times across 30 seconds
+(5s apart): pinned at the exact same instruction every single time
+(`__imp__sub_824A0B68 + 396`). A genuine tight busy-loop, confirmed,
+not a transient or idling state -- correcting Finding 126's "reaches
+idle, exits via watchdog" framing. (An earlier two-sample check during
+the same investigation had caught it mid-transient and looked like it
+was still moving; six samples 5s apart settled the question.)
+
+Read the real source (ppc_recomp.65.cpp:23745-23821): straightforward
+code, no mystery in the shape -- `if (field+92 of a global object at
+guest 0x826E2110 != 0) { loc_824A0BC4: goto loc_824A0BC4; }` -- an
+explicit, deliberate spin-wait for a status field to clear, written
+by the original game as a real wait loop (this is exactly why
+Finding 126's `-fno-finite-loops` fix was still correct and necessary
+-- this loop, too, is a genuine guest wait state that clang would
+otherwise trap on).
+
+Static search for the writer (`ppc_xref.py --find-writes 0x826E2110
+--offset 92 --hops 4`) found nothing, the same recurring blind spot.
+Set a live WRITE watchpoint on the field instead (host
+0x70826E216C) spanning the whole 90-second run. It fired exactly
+twice: once at 0 (construction-time zero-init) and once at
+`16777216` (0x01000000, a single high bit, not a plain boolean) --
+call chain `sub_824A78E0 <- sub_824A84E0 <- sub_825F8BD0 <-
+sub_8244B040 <- sub_8212B130 <- ...` (sub_825F8BD0 is already in
+this investigation's own canonical-object whitelist from Finding
+116). No third write ever happens in the full 90-second run --
+nothing clears this bit, same unresolved-completion-signal shape as
+Findings 113 and 121-125, just a new instance of it.
+
+Read the setter (`sub_824A78E0`, ppc_recomp.66.cpp:5040 onward) to
+understand what the bit represents, and it's a concrete, named thing,
+not another generic flag: it reads this same global object's field+0
+and field+4 and compares them against the literals 1920 and 1080
+(lines 5086-5095, `cmpwi cr6,r11,1920` / `cmpwi cr6,r11,1080`) --
+this object is a display/video-mode configuration structure, and this
+function clamps/validates the requested resolution against (at
+least) 1920x1080 before setting the pending-bit this investigation is
+chasing. This project's own host/main.cpp hardcodes the Metal
+renderer's viewport to 1280x720 ("Fixed at 1280x720 for this
+milestone") and pre-seeds the GPU's AVIVO_D1MODE_VIEWPORT_SIZE
+register to match. A game requesting/validating a 1920x1080-class
+mode while the host's own GPU register state and renderer are fixed
+at 1280x720 is a strong, concrete candidate for why nothing ever
+signals "mode-set complete" back to this field -- plausible, not yet
+proven: the exact real VD*-family kernel call or GPU register this
+field is supposed to be cleared by has not been identified.
+
+Reasonable next step, not started: trace what real display-mode-
+change acknowledgment mechanism (likely a VdSetDisplayMode-adjacent
+kernel call, or a specific GPU register this project's MMIO block
+doesn't yet back) is supposed to clear this bit, and whether seeding
+it correctly (matching this project's own existing 1280x720 GPU-
+register-preseeding precedent in host/main.cpp) resolves this the
+same low-risk way Finding 120 resolved field+76.
+
+No source or binary changes in this finding; the temporary 90s
+watchdog extension was reverted (`sed` back to `seconds(10)` both
+call sites) and confirmed clean via `git diff --stat host/main.cpp`
+before this finding was written.
