@@ -1626,6 +1626,20 @@ PPC_FUNC(__imp__VdGetSystemCommandBuffer)
 
 PPC_FUNC(__imp__VdSwap)
 {
+    // Placeholder for the display-setup completion signal (Phase 3 Findings
+    // 127-140). The game's display setup latches display field+92 to 1 and a
+    // later teardown waits for it to read 0; nothing in this build's guest code
+    // clears it, so the teardown spins forever. Clearing it here, on the first
+    // VdSwap after the setup, is what lets the game reach its idle state. The
+    // real signal is not identified; this is not verified against real hardware
+    // timing and should be replaced when it is.
+    {
+        constexpr uint32_t kDisplayFieldPlus92 = 0x826E216C;
+        if (PPC_LOAD_U32(kDisplayFieldPlus92) != 0)
+        {
+            PPC_STORE_U32(kDisplayFieldPlus92, 0);
+        }
+    }
     // Real semantics confirmed against Xenia's VdSwap_entry (src/xenia/kernel/
     // xboxkrnl/xboxkrnl_video.cc:352-436): VdSwap is not just a "present" call --
     // the KERNEL is responsible for writing real PM4 content into a small region

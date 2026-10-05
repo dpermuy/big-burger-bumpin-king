@@ -8668,3 +8668,19 @@ ordering were not verified against real hardware.
 
 Reverted: `git checkout -- host/kernel_impl.cpp` restored the file, the
 watchdog is back to 10 s, and the binary was rebuilt from the clean tree.
+
+Finding 141: the VdSwap placeholder for display field+92 is committed.
+This is a stand-in for the real completion signal, not the signal
+itself (see Finding 140 for the test).
+
+Change: host/kernel_impl.cpp `__imp__VdSwap` clears guest 0x826E216C
+(display object field+92) to 0 when it is nonzero, with a comment
+stating it is a placeholder for the real completion signal, not
+verified against real hardware timing, and to be replaced when the
+signal is identified.
+
+Verified: rebuilt and ran the placeholder build headless; exit code 2
+(the standard watchdog exit), with the same idle-state outcome as the
+Finding 140 test. Not a crash.
+
+Still open: the real completion signal for display field+92.
