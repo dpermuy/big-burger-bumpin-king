@@ -8337,3 +8337,30 @@ clean binary -- confirming the blocking condition directly, rather
 than continuing to extend a chain of inferences (Finding 127's
 original attribution, now three findings and one real fix attempt
 deep) that has already needed two corrections.
+
+Finding 130: the XGetVideoMode fix's values DO reach the caller
+correctly, but the hang persists -- so the gating isn't what
+Finding 129 assumed.
+
+Re-verified the stall live on the clean binary: thread #4 pinned at
+`sub_824A0B68+396` (self-branch), `x10 = 0x01000000` at the check,
+i.e. field+92 of the object at guest 0x826E2110 holds exactly the
+value Finding 127's watchpoint captured. Finding 127's attribution
+of the blocking condition is correct. Attach-by-raw-address
+breakpoints failed (ASLR load bias); reliable method is external
+attach to the already-stuck process and read registers after
+`thread select 4`.
+
+Test: re-applied an XGetVideoMode that writes width=1280, height=720,
+hiDef=1 into the caller's struct, and added a temporary guest-side
+printf right after the call. Output: `hiDef=0x1 height=720` -- the
+caller reads back exactly what was written. Yet the stall is
+unchanged. So the branch that stores 0x01000000 is not controlled by
+the XVIDEO_MODE fields alone. Next step: map which guest instruction
+stores the 0x01000000 value and walk backward from it on the live
+disassembly, rather than inferring the gate from the source.
+
+Reverted both temporary edits (kernel_impl.cpp via git checkout;
+the guest-side printf and its cstdio include in the git-ignored
+private/ppc/ppc_recomp.66.cpp by hand). Rebuilt clean; `git status`
+shows no tracked changes.
