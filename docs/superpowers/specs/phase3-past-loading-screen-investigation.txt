@@ -8504,3 +8504,39 @@ Net: the setup-guard path behaves correctly. The remaining question
 is still the same, now sharper: what should clear field+92 back to 0
 so that sub_824A0B68 unblocks and clears field+28? Nothing in this
 build writes field+92 after the first setup.
+
+Finding 135: the stall is the idle-tick teardown, not a stray call.
+Also corrects Finding 128's negative result.
+
+Teardown flow, live-confirmed from source:
+- `sub_8244B040` (ppc_recomp.57.cpp:2788-2818): when the work queue
+  item's count (+8) is zero (the normal idle tick), it falls through
+  to `loc_8244B610` and calls `sub_824A3CC8`.
+- `sub_824A3CC8` (ppc_recomp.65.cpp:31506-31560): only tears down if
+  display field+16 bit 0 is SET (the state the setup leaves behind)
+  and field+28 is nonzero. It then calls `sub_824A0B68` (the spin)
+  and clears field+16 bit 0, which lets the setup run again later.
+- `sub_824A0B68`: calls four guest functions (`sub_8249A228`,
+  `sub_8251C158`, `sub_820B4B88`, `sub_820B9B30`) and then reads
+  field+92 once. Nonzero means self-branch forever.
+
+So the design expects field+92 to be cleared by an asynchronous
+completion between the setup's store and that read. Nothing in this
+build does that, and the stall is the first idle tick after setup.
+
+Correction to Finding 128: its periodic 1 ms clear could not have
+landed between the setup's store and the read, which happen within
+microseconds on the same thread. That negative result was not a
+test of the completion-signal hypothesis.
+
+Hook limits: all four callees before the check are guest code (no
+host implementation in kernel_impl.cpp or kernel_stubs.cpp), so a
+host-side hook cannot clear field+92 at the right moment without
+patching guest instructions, which this build cannot do at runtime
+(the guest code is compiled host text).
+
+Decision needed: the two available experiments are (a) a
+diagnostic build that replaces the field+92 check in sub_824A0B68
+with an unconditional fall-through, to see whether the game gets
+past the first idle tick, or (b) stopping. (a) is a test only and
+would not be committed as a fix.
