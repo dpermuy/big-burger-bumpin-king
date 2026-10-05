@@ -8170,3 +8170,91 @@ No source or binary changes in this finding; the temporary 90s
 watchdog extension was reverted (`sed` back to `seconds(10)` both
 call sites) and confirmed clean via `git diff --stat host/main.cpp`
 before this finding was written.
+
+Finding 128: Finding 127's "pending mode-change ack" framing for
+field+92 doesn't hold up under a direct test -- disproved the quick
+fix, and found the real check is a one-time trap, not a retry loop,
+which is itself the reason the quick fix couldn't have worked. Real
+semantics of the bit still not nailed down; this needs a careful
+full read of sub_824A78E0, not another quick patch attempt.
+
+Added temporary diagnostic logging to `VdSetDisplayMode` and
+`VdQueryVideoMode` (both already real, implemented kernel functions,
+not stubs -- VdSetDisplayMode no-ops to success, VdQueryVideoMode
+returns success without writing any data, "no confirmed struct
+layout"). Confirmed live: `VdSetDisplayMode` is called exactly once,
+with real arguments; `VdQueryVideoMode` is called twice, and its
+second call's r5 argument is `0x050002D0` -- the EXACT value
+host/main.cpp pre-seeds into `AVIVO_D1MODE_VIEWPORT_SIZE` for this
+project's own fixed 1280x720 viewport. This is evidence the game is
+correctly seeing this project's real 1280x720 configuration flow
+back through at least one real path, which weakens (does not
+disprove, but weakens) the specific "1920x1080 mismatch" framing
+Finding 127 proposed.
+
+Tested the direct hypothesis two ways, both negative:
+1. Cleared the field+92 bit inside `VdSetDisplayMode` itself (the
+   natural point a real "mode change complete" signal would fire).
+   No effect -- still hangs identically. Explanation found after:
+   `VdSetDisplayMode` runs once, early, before the main tick loop
+   even starts; the bit doesn't get SET until later (confirmed
+   Finding 127's own call chain, `sub_824A78E0` inside the tick
+   loop), so clearing it here is already stale by the time it matters.
+2. Cleared the field+92 bit continuously, every 1ms, from the
+   existing host-side tick thread (a blunt test of "does clearing it
+   at all, by any mechanism, unblock progress" -- temporarily
+   extended the watchdog to 30s to give room to observe). Also no
+   effect -- confirmed live via repeated thread-PC sampling (same
+   technique as Finding 127): still pinned at the exact same
+   instruction. This is the more informative negative result: it
+   rules out "the real fix is just clearing this bit, by whatever
+   means" entirely.
+
+Read the real PPC source for why #2 couldn't have worked
+(ppc_recomp.65.cpp:23796-23805, already quoted in Finding 127): the
+check is `lwz r11,92(r31); cmplwi cr6,r11,0; beq cr6,->proceed` --
+executed EXACTLY ONCE -- followed, on the nonzero path, by
+`loc_824A0BC4: goto loc_824A0BC4;`, an unconditional branch with no
+re-read of memory at all. This is a one-shot decision into a true
+dead-end trap, not a polling/retry loop. Once the guest branches into
+it, no amount of host-side memory patching afterward can un-make
+that decision -- explains both negative results at once, and is
+itself a useful correction to how this bit's check works (Finding
+127 implicitly assumed a retry-style wait).
+
+Went back to pin down exactly what sets the bit, since Finding 127's
+own source reading (ppc_recomp.66.cpp:5150-5157, `li r11,1; stw
+r11,92(r31)`) turned out not to match the live value observed
+(`16777216` / `0x01000000`, not `1`) -- a discrepancy not caught at
+the time. Resolved it by disassembling the real compiled function
+directly and locating the exact instruction at the watchpoint's own
+reported offset (ppc_recomp.66's `__imp__sub_824A78E0`, host offset
++624/+628): `mov w9, #0x1000000; str w9, [x19, w11, uxtw]` -- a
+literal, unconditional store of exactly the observed value, reached
+via a different branch than the one Finding 127 happened to read.
+This means Finding 127's identification of the SETTER function was
+right (confirmed again, same `sub_824A78E0`), but the specific
+branch/line within it, and so the real triggering condition, was
+not. The earlier source read (lines 5150-5157) is a different,
+later write to the same field within the same large function, not
+the one that actually fired live.
+
+Net: still don't know the real trigger or correct fix. What's ruled
+out: a simple "clear this bit" host patch, by any timing. What's
+confirmed: the check is a one-shot trap not a poll, `sub_824A78E0` is
+still the right function to understand, and the project's own real
+1280x720 config IS visible to the game through at least the
+`VdQueryVideoMode` path tested here. Reasonable next step, not
+started: read `sub_824A78E0` end-to-end against its live
+disassembly (not source alone -- Finding 127's source-only read
+already produced one wrong attribution) to find the actual branch
+condition controlling the `mov w9,#0x1000000` store, since that
+condition is what needs to evaluate differently for the bit to
+never get set in the first place.
+
+All temporary changes (diagnostic logging in both `VdSetDisplayMode`
+and `VdQueryVideoMode`, the periodic-clear test in the host tick
+thread, the 30s watchdog extension) were reverted; `git diff --stat
+host/main.cpp host/kernel_impl.cpp` confirmed both clean, and the
+binary was rebuilt from the clean tree before this finding was
+written.
