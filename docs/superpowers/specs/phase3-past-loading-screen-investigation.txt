@@ -8799,3 +8799,29 @@ is in this path); whether more rectangles across frames cover the
 intended layout; indexed rectangle lists (still skipped).
 
 Reverted the print; `git status` shows no tracked changes in host/.
+
+Finding 147: why the cyan rectangle is missing from the captured frame.
+Not fully resolved. The cause is a coordinate-space mismatch between
+the game's vertex positions and what the renderer does with them.
+
+Positions (temporary print, reverted): the cyan rectangle's six expanded
+vertices span x -0.5..2559.5 and y -0.5..191.5. The black rectangle
+spans x -0.5..1279.5 and y -0.5..479.5. The renderer passes these
+straight through as normalized device coordinates (the translated vertex
+shader applies no transform), so most of the cyan rectangle lies far
+outside the [-1, 1] view and never rasterizes.
+
+Viewport (temporary print of writes to PA_CL_VPORT_* registers 0x210F..
+0x2114, reverted): the game writes x scale 640, x offset 640, y scale
+-240, y offset 240, z scale 1, z offset 0. That describes a 1280x480
+window, and the renderer ignores it. Applying it as window coordinates
+does not bring the cyan rectangle on-screen either: its x extent reaches
+2559, beyond 1280.
+
+So the positions are not in the 1280x480 window space, and they are not
+normalized device coordinates either. Reading the Xenos register that
+enables or disables viewport transform (PA_CL_VTE_CNTL) and checking how
+the game builds its rectangle vertices is the next step. Not done.
+
+Reverted the gpu_state print; `git status` shows no tracked changes in
+host/. The renderer is unchanged by this finding.
