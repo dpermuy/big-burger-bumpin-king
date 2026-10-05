@@ -8776,3 +8776,26 @@ rebuilt clean, and confirmed no stray processes.
 Not established: whether the rectangles' positions are what the game
 intends, the real colours and textures (blocked on the placeholder
 shader and on content), and the indexed rectangle case (still skipped).
+
+Finding 146: the black triangle is the game's own vertex colour, not a
+shader fault. The "placeholder shader" concern from Finding 145 does
+not hold: the renderer is already using the translated shader from
+sub-project 3b (`now using real translated shader`), and the vertex
+colour data reaches it.
+
+Checked the expanded rectangle vertices directly (temporary print in
+host/gpu_trace.cpp, reverted): the float4 attribute at byte offset 12
+of each 28-byte record is real data.
+- first rectangle: attr = (0.000, 1.000, 1.000, 0.498) (cyan, half alpha)
+- second rectangle: attr = (0.000, 0.000, 0.000, 0.996) (black)
+
+The frame dumped in Finding 145 showed a black triangle, which matches the
+second rectangle's colour. So the rendering path is carrying the game's
+colours correctly for at least those two rectangles.
+
+Still open: the cyan rectangle did not appear in that dumped frame (it
+may be off-screen or in a different frame); textures (no texture binding
+is in this path); whether more rectangles across frames cover the
+intended layout; indexed rectangle lists (still skipped).
+
+Reverted the print; `git status` shows no tracked changes in host/.
