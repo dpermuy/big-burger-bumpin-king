@@ -7821,3 +7821,102 @@ No source or binary changes in this finding; confirmed via `git diff
 --stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
 changes -- this investigation used only live lldb commands and static
 analysis against the unmodified, already-clean binary.
+
+Finding 124: traced the real construction call chain live (rather
+than the 53 static slot+84 candidates, which stayed too ambiguous to
+prioritize) -- it connects straight back to Finding 106's original
+stuck loop. Did not find vtable slot+84's caller yet; did find and
+correct one of this session's own dead ends, and found a new,
+reusable binary-search dispatch pattern worth keeping.
+
+Live-confirmed construction chain (via breakpoint + `bt` on
+`__imp__sub_8256D250`, cross-checked against each frame's actual
+disassembly rather than trusting symbol names alone -- see the
+dead-end below for why that caution paid off):
+`sub_8244AFB0` (Finding 106's own stuck loop) -> `sub_8244AE70` ->
+`sub_82461D28` -> `sub_825E8D28` -> `sub_825E8A60` ->
+`sub_824532F0` -> `sub_8244A458` -> `sub_825DDB48` (the factory,
+confirmed via Finding 121) -> `sub_8256D250` (the constructor). This
+object's entire construction happens inside the exact loop this whole
+phase-3 investigation started from -- a real, concrete link between
+the very first finding of this session's larger effort and this
+thread's own crash chain, not previously established.
+
+Caught and corrected a dead end from earlier this finding: set a
+breakpoint by name on `__imp__sub_825DDB48` to confirm the factory
+runs, and it showed hit count 0 even while the constructor it's
+supposed to call (per source) clearly did run. Rather than conclude
+something impossible (a function's body executing without its entry
+running), disassembled the actual calling frame directly
+(`frame select 1` / `disassemble --frame`) and found real, matching
+logic (size=7056, call sub_8212D2E0, conditionally call
+sub_8256D250) at a DIFFERENT address than the one
+`__imp__sub_825DDB48` resolved to -- a symbol-table quirk (this build
+has no debug info, Finding 119, and apparently an inexact or
+colliding entry for this one internal symbol), not a real behavioral
+contradiction. The source-level logic match is what actually settles
+it; the breakpoint-by-name result for this one symbol was simply
+unreliable. Worth remembering: when a breakpoint-by-name result
+contradicts other live evidence, check the disassembly at the
+suspect address before trusting either signal.
+
+This also retroactively confirms Finding 123's own live memory-search
+finding (the `{factory_ptr, type_tag}` table at guest 0x8209D1D8)
+was a real but UNRELATED table -- a genuine dead end, not a tooling
+error. A read watchpoint on that table's first entry never fired
+across the whole run (already noted in Finding 123), and this
+finding's own disassembly of the real construction chain shows the
+actual dispatch mechanism is completely different: `sub_8244A458`
+(private/ppc/ppc_recomp.57.cpp:22-110) is a binary search, not a
+linear table scan -- sorted keys at `table_base+4` (stride 8), parallel
+function-pointer values at `table_base+8` (stride 8), entry count at
+`table_base+29816`, table_base = `lis r11,-32143` / `addi
+r7,r11,-29776`. On a key match it does a genuine tail call
+(`bctr`, not `bctrl` -- no return address pushed) straight into the
+resolved handler. This is a distinct, reusable pattern from the
+linear table Finding 123 found; worth keeping both in mind for future
+tracing in this codebase, now that it's confirmed more than one
+dispatch convention is in use.
+
+Followed the chain one step past construction to see if the attach
+call might sit immediately next to it: `sub_824532F0` (the chain's
+frame #2, immediately above the factory/constructor), after getting
+the constructed object back in r31, checks a specific bit
+(`0x20000000`) of field+104 and -- depending on that bit -- calls
+EITHER vtable slot+0 (not slot+84) with flag=1, OR a different
+function (`sub_8244E458`) entirely. Neither is the slot+84 attach
+call Finding 123 identified. So the attach trigger is not immediately
+adjacent to construction in this specific call chain; it's either
+inside `sub_8244E458` (not yet examined) or triggered by something
+unrelated to this construction event altogether (e.g. a later,
+separate callback tied to package-load completion, which this run's
+fatal crash may prevent from ever being reached).
+
+Ran that exact widened test before closing out this finding: a read
+watchpoint on the vtable slot itself (guest 0x8207A630+84 =
+0x8207A684 -- the shared slot, not any one instance's own field+6784)
+across a full run to the crash. It never fired either. This is
+strictly stronger than Finding 123's direct breakpoint on
+`sub_8256B7D0`: it proves no object of this class, not just this one
+instance, ever has its slot+84 method dispatched anywhere in this
+entire run. Combined with Finding 123, this is now airtight at the
+class level, not just the instance level.
+
+Net: slot+84's real caller is still not found, but its absence is
+now confirmed as thoroughly as this investigation's techniques allow.
+This finding's value is the corrected, live-confirmed call chain
+(tying this whole crash investigation back to Finding 106), the
+caught dead end (saves a future session from re-trusting the
+0x8209D1D8 table), the new binary-search-dispatch pattern, and the
+class-wide (not just instance-wide) confirmation that slot+84 never
+fires. The one reasonable next step left, not started: read
+`sub_8244E458` (the other branch of `sub_824532F0`'s post-
+construction dispatch) -- or pivot to this investigation's second
+standing hypothesis (a missing/wrong host-kernel primitive specific
+to whatever subsystem should be triggering this attachment, Finding
+115's style).
+
+No source or binary changes in this finding; confirmed via `git diff
+--stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
+changes -- this investigation used only live lldb commands and static
+analysis against the unmodified, already-clean binary.
