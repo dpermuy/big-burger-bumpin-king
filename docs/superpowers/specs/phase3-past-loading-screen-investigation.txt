@@ -8258,3 +8258,82 @@ thread, the 30s watchdog extension) were reverted; `git diff --stat
 host/main.cpp host/kernel_impl.cpp` confirmed both clean, and the
 binary was rebuilt from the clean tree before this finding was
 written.
+
+Finding 129: did the full disasm/source reconciliation Finding 128
+asked for, found a real, well-justified, concrete root cause
+(`XGetVideoMode`'s empty output), implemented and tested a proper
+fix for it -- and it still didn't unblock the hang. Live-confirmed
+negative result, not abandoned mid-attempt; root cause for THIS
+exact field+92 write is solid, but something else, not yet found,
+also needs fixing, or this write isn't the real blocker after all.
+
+Source-only reading kept producing wrong attributions (twice now,
+Findings 127 and 128). This time, read the live disassembly
+instruction-by-instruction from the function's real entry point
+(`lldb disassemble --name __imp__sub_824A78E0 --count 170`, not a
+small window around the known offset) and matched each ARM64
+instruction forward against the PPC source by data flow, not by
+line-number guessing. This resolved the earlier confusion
+conclusively: the write firing the watchpoint is a `stwx`-shaped
+indexed store (`PPC_STORE_U32(ctx.r31.u32 + 92, ...)` computed via a
+separate address-add instruction), which a literal-offset grep for
+`92(r31)` can never match -- a real, generalizable gap in that
+search technique worth remembering for future findings.
+
+Traced the controlling branch precisely: this instruction block is
+reached whenever EITHER `XGetVideoMode`'s output `dwValid`-shaped
+field (offset+16 relative to its output struct) reads false, OR
+that struct's `dwDisplayHeight` (offset+4) reads below 720; a
+separate `b.hs` branch skips the entire block (and so the write)
+when height is >=720 and the query succeeded. `XGetVideoMode`
+(host/kernel_impl.cpp) was already a real, host-implemented kernel
+function -- not a stub -- but a no-op leaving its output buffer
+zero-initialized, which is exactly "invalid, height=0": guaranteed
+to take the problem branch every time, matching the real Xbox 360
+`XVIDEO_MODE` struct layout (dwDisplayWidth@0, dwDisplayHeight@4,
+fIsInterlaced@8, fIsWideScreen@12, fIsHiDef@16, RefreshRate@20 as a
+float, VideoStandard@24 -- recognized from the real XDK API, not
+guessed, and the field positions line up exactly with what the live
+disassembly reads).
+
+Implemented a real fix: wrote actual values into all six fields
+matching this project's own fixed 1280x720 renderer configuration
+(width=1280, height=720, not interlaced, widescreen=true,
+fIsHiDef=true since 720p is HD, refresh=60.0f, NTSC). Rebuilt,
+temporarily extended the watchdog to 30s, ran a full timed test:
+still hangs identically (89s~ CPU-busy of 90s pattern repeated at
+30s scale, same `MmFreePhysicalMemory`/`ExTerminateThread` tail, same
+watchdog exit). Live-sampled thread #4's PC directly: still pinned
+at the exact same instruction (`sub_824A0B68 + 396`) as every prior
+finding in this sub-investigation. The fix had zero observable
+effect on the actual hang, despite being correct and well-justified
+on its own terms.
+
+This means one of: (a) this specific write isn't actually what
+causes `sub_824A0B68`'s busy-wait to trip (field+92 might get set to
+a problem value via a completely different path even with this fix
+in place -- not re-verified live after the fix, a gap in this
+finding's own testing worth flagging), (b) there's a second,
+independent cause also setting the bit or an equivalent blocking
+condition, or (c) `sub_824A0B68`'s check isn't reading THIS field at
+all and Finding 127's original identification of the blocking
+condition itself needs re-verification from scratch, live, against
+the post-fix binary, rather than assumed still valid.
+
+Reverted the `XGetVideoMode` implementation along with the watchdog
+extension, since it's a real improvement in isolation but doesn't
+solve the problem it was written for, and committing an unproven fix
+would misrepresent its status -- matches Finding 128's own
+discipline of not keeping a change that didn't demonstrate the
+effect it was built to test. `git diff --stat host/main.cpp
+host/kernel_impl.cpp` confirmed both clean before this finding was
+written, and the binary was rebuilt from the clean tree.
+
+Reasonable next step, not started: before trying another fix, re-
+verify live (fresh watchpoint + thread sample, same techniques used
+throughout) which field `sub_824A0B68`'s actual check reads and
+what value it holds at the moment of the stall, on the CURRENT
+clean binary -- confirming the blocking condition directly, rather
+than continuing to extend a chain of inferences (Finding 127's
+original attribution, now three findings and one real fix attempt
+deep) that has already needed two corrections.
