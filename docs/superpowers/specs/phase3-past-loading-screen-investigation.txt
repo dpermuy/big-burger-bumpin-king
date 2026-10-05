@@ -8603,3 +8603,23 @@ code this build does not produce. Next step, not done: check whether
 any kernel or GPU call in the display path (VdSetDisplayMode,
 VdSwap, VdCallGraphicsNotificationRoutines, the vblank interrupt
 callback) is expected to deliver that signal.
+
+Finding 138: the vblank / swap callback path is not the field+92
+completion signal. Ruled out.
+
+Checked the registered graphics callback that `VdSwap` already invokes
+(host/kernel_impl.cpp:1692-1696, Finding 32): the game's callback
+`sub_820B5160` (ppc_recomp.4.cpp:11402). Its body manipulates kernel
+event bits on a different object (offsets 10772/10776 from its own
+argument, `r4`), uses a `bctrl` through a registered handler on that
+object, and never touches the display object at guest 0x826E2110.
+So a vblank event cannot clear display field+92 directly.
+
+Remaining candidates for the completion signal, not yet checked:
+- A write from a worker thread that the stall path waits on
+  (`__semwait_signal` / `__psynch_cvwait` threads in Finding 136's
+  attach). Those threads sit in normal waits; none was observed
+  storing to the display object.
+- The `stb` stores at `sub_8249D1C0` (ppc_recomp.65.cpp:14600) and
+  `sub_824A2A48` (ppc_recomp.65.cpp:28882), which Finding 137 did not
+  finish. Neither is confirmed as writing the display object.
