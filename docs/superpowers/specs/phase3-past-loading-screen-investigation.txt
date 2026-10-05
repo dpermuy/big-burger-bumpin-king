@@ -8424,3 +8424,43 @@ Remaining question: which event should clear field+92 (or unlatch
 field+28) after the first display setup. Nothing in this build
 writes field+92 after the first call (Finding 127), and the
 watchpoint shows nothing rewrites field+28 either.
+
+Finding 133: the display-setup caller chain, and why it doesn't
+self-correct.
+
+Read the callers of the latching function (live chain from Finding
+132):
+- `sub_825F8BD0` (ppc_recomp.109.cpp:5534): reads the canonical
+  object (slot 0x826EB104, the same object as Findings 113-125) and
+  the display object at 0x826E2110 (r29). It reads display field+16
+  and calls the display-mode setup path (via sub_824A84E0).
+- `sub_824A84E0` (ppc_recomp.66.cpp:6748): stores its three
+  arguments into display fields +0 (width), +4 (height), +16, sets
+  +20/+24/+64 to fixed values, calls `sub_824A78E0` (the latch), and
+  then clamps width/height against a small table (1280x720,
+  640x480). The caller's arguments are the source of the resolution.
+
+So the display setup is driven each tick from `sub_8244B040` through
+`sub_825F8BD0`. Nothing in this chain clears display field+92 or
+field+28. The only place that zeroes field+28 is the unblocked branch
+of `sub_824A0B68`, which never runs because field+92 stays set
+(Findings 127, 131, 132). That's a deadlock inside the build's own
+logic: the setup latches its flags, then the teardown waits for a
+completion signal the build never produces.
+
+Hypotheses for the missing completion signal (none verified):
+1. A vblank / graphics-interrupt callback that the game expects to
+   clear field+92. Mostly ruled out: Finding 114 showed the
+   UnleashedRecomp reference stubs these callbacks too and still
+   runs.
+2. A kernel call on the normal path (XGetVideoMode returning real
+   data) that we're still missing. Finding 130 showed the XVIDEO_MODE
+   values reach the caller and don't change the outcome.
+3. The first setup is supposed to run only once, behind a guard that
+   this build satisfies incorrectly on entry. Would explain why the
+   latch sits at the wrong value at the first call.
+
+Hypothesis 3 is the cheapest to test next: trace the guard that
+decides whether `sub_825F8BD0` calls `sub_824A84E0` at all, in the
+per-tick loop, to see whether this single call should be running
+at all on the normal path.
