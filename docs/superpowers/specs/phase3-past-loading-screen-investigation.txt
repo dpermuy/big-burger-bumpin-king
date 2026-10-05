@@ -7559,3 +7559,41 @@ All temporary changes (the reapplied 0x8270F784=1 patch) were
 reverted immediately after this investigation; `git diff --stat
 host/main.cpp` confirmed clean and the binary was rebuilt from the
 clean tree before this finding was written.
+
+Finding 120: field+76's fix made permanent -- host/main.cpp now
+patches 0x8270F784=1 at boot, matching the kernel-tick-struct
+precedent. Not a researched-correct value, a placeholder proven
+necessary and sufficient to unblock real progress.
+
+Added a permanent patch in SetupMemoryImage (host/main.cpp, right
+before the existing GPU-register preseeding block), documented
+inline with the same level of detail as the kernel tick struct it
+sits next to: what field+76 gates (sub_82451408's loading-complete
+path), who sets it from this global (sub_82451630, Findings 116-117),
+confirmation the raw XEX .data section is genuinely zero here
+(Finding 118, so this is not a loader bug being papered over), and an
+explicit caveat that `1` is a placeholder chosen because it's the
+minimum value satisfying the observed `<= 0` gate and matches the
+sibling field+72 (naturally 1 in this image) -- not because the real
+value is known.
+
+Rebuilt and reran to confirm the permanent version behaves
+identically to Finding 118's temporary test: exit code 138 (SIGBUS),
+same real package-loading activity (`NtCreateFile`/`NtReadFile`
+against `w_saveload_fetm.xen` etc.), same crash point
+(sub_8256D010, Finding 119's already-understood null function-
+pointer call). This was expected and is not a regression -- Finding
+119's empty-list issue is a separate, already-documented problem one
+step further down the same path, not caused by this fix. The
+standard 10-second watchdog was left untouched throughout (confirmed
+via `grep -n "wait_for(std::chrono::seconds" host/main.cpp` showing
+both call sites still at 10) since the crash now happens at ~5
+seconds, well before the watchdog would ever fire -- this patch
+changes the failure mode from "silent hang, watchdog timeout" to
+"fast, deterministic, debuggable crash," which is strictly better for
+continued investigation regardless of what the real value turns out
+to be.
+
+This is a real, committed source change (host/main.cpp), not a
+reverted diagnostic -- `git diff host/main.cpp` before committing
+showed exactly the one intended addition, nothing else.

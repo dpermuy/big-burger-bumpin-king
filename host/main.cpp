@@ -95,6 +95,26 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
     constexpr uint32_t kKernelTickPointerSlot = 0x82670100; // r13(0x82670000) + 256
     PPC_STORE_U32(kKernelTickPointerSlot, kKernelTickStructAddr);
 
+    // field+76 of the loading-progress object at guest 0x826EB104's canonical
+    // pointer slot (Phase 3 investigation, Findings 106-118) is unconditionally
+    // gated: sub_82451408 skips the whole loading-complete path whenever it's
+    // <= 0, and sub_82451630 (the one-time boot-time initializer) sets it
+    // straight from this global via a config-lookup fallback chain. The raw
+    // XEX's .data section genuinely contains zero here too (confirmed live via
+    // XenonUtils' Image::Find, bypassing this project's own loader entirely --
+    // Finding 118), so like the kernel tick struct above, real console
+    // kernel/profile/settings machinery this project doesn't emulate must be
+    // what's supposed to populate it. 1 is a placeholder, not a researched
+    // correct value -- it's the minimum that satisfies the observed `<= 0`
+    // gate (and matches the sibling field+72, which is naturally 1 in this
+    // image), chosen to unblock forward progress; live-confirmed (Finding 118)
+    // to be necessary and sufficient to reach genuinely new code (real
+    // package-loading activity never observed before in this investigation)
+    // rather than just moving the hang. Revisit if real difficulty/profile
+    // settings loading is ever implemented.
+    constexpr uint32_t kLoadingProgressConfigSlot = 0x8270F784;
+    PPC_STORE_U32(kLoadingProgressConfigSlot, 1);
+
     // GPU MMIO register block at 0x7FC80000. Real hardware (and Xenia) trap these
     // reads; this harness backs them with plain memory, so registers the game polls
     // must be pre-seeded with the values Xenia's GraphicsSystem::ReadRegister returns
