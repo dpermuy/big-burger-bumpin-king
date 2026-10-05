@@ -8004,3 +8004,90 @@ No source or binary changes in this finding; confirmed via `git diff
 --stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
 changes -- this investigation used only live lldb commands and static
 analysis against the unmodified, already-clean binary.
+
+Finding 126: fixed Finding 119's crash with two real, permanent,
+broadly-scoped host/toolchain changes -- a guard on indirect guest
+calls, and a compile flag preventing clang from trapping on genuine
+guest idle loops. The game now runs a full real boot (package
+loading, object construction, graceful internal shutdown decision)
+and reaches the exact same watchdog-timeout exit this whole
+investigation started from, instead of crashing.
+
+Fix 1 -- guard `PPC_CALL_INDIRECT_FUNC` against invalid targets
+(private/ppc/ppc_context.h): Finding 119's crash was a guest call
+through a null function pointer (`ctx.ctr.u32 == 0`), which makes
+`PPC_LOOKUP_FUNC`'s own address arithmetic
+(`uint32_t(y) - PPC_CODE_BASE`) underflow and read far outside the
+real function table -- faulting on the read itself, before any
+null check on the result could run. This shape (fall back to a
+not-yet-ready object, call through it anyway) is architecturally
+guaranteed to recur throughout the rest of this title's code now
+that real gameplay logic is reachable, not something to special-
+case per crash site. Added `PPC_GuardedCallIndirect` -- checks the
+target falls within `[PPC_CODE_BASE, PPC_CODE_BASE + PPC_IMAGE_SIZE)`
+before doing the lookup at all, logs once (capped at 20 total
+messages, to avoid log spam if this recurs often) and no-ops
+otherwise, instead of letting the macro fault. Live-confirmed: same
+build, same run, the guard fires exactly once at the exact Finding
+119 site (`[guard] ... invalid guest address 0x0`), and execution
+continues past it into real further package-loading activity never
+observed in this investigation before.
+
+Fix 2 -- `-fno-finite-loops` for the whole BigBumpinPPC target
+(CMakeLists.txt): with Fix 1 alone, the process survived the
+original crash but then hit a NEW stop (EXC_BREAKPOINT / SIGTRAP,
+exit 133) at `sub_825DEC18 + 96` -- disassembly showed a bare
+`brk #0x1`. Read the real PPC source (ppc_recomp.105.cpp:10616-10639):
+`sub_825DEC18` calls `sub_8212B130` once and then falls into
+`loc_825DEC34: // b 0x825dec34` -- an unconditional branch to itself,
+a deliberate real-hardware idle-forever state (this function sits
+directly under `__imp___xstart`; every single backtrace in Findings
+118-125 shows `sub_8212B130` still on the stack, meaning under normal
+operation it never returns here at all). A side-effect-free loop that
+provably never terminates is UB per the C++ standard's forward-
+progress rules, and clang's optimizer is permitted to -- and at -O3,
+does -- replace it with a trap instead of actually looping. Correct
+per the standard, wrong for recompiled guest code: this is a genuine
+intentional idle state, not unreachable code. `-fno-finite-loops`
+(confirmed supported by this clang) disables that specific
+optimization for the whole PPC target, not just this one function,
+since the same shape almost certainly recurs elsewhere in a title
+this size. Live-confirmed: rebuilt, reran -- the process now stays
+alive past the point that used to trap, doing real work (more
+package loads, `MmFreePhysicalMemory`/`ExTerminateThread`/
+`ObDeleteSymbolicLink` -- a genuine, orderly internal shutdown
+sequence, not corruption), and exits with the SAME watchdog-timeout
+message and exit code (2) that this entire Phase 3 investigation
+started from back at Finding 106 -- except now preceded by a full,
+real, previously-never-observed boot sequence instead of a silent,
+unexplained hang.
+
+Both changes are real, permanent, committed source changes, not
+reverted diagnostics -- matching Finding 120's precedent (the
+field+76 boot patch), not the usual "revert before commit" discipline
+used throughout this investigation's many temporary probes.
+
+Housekeeping note worth recording: `private/ppc/ppc_context.h` lives
+inside this repo's git-ignored `private/` directory (the whole tree
+is excluded, since it's ~110 files of XenonRecomp-decompiled game
+code, regenerated from the retail XEX rather than authored here).
+There is no tracked setup/generation script that would reproduce a
+hand-edit to this one file if `private/` were ever wiped and
+regenerated -- confirmed by searching for one. Since
+`ppc_context.h` is not decompiled game logic but a small, hand-
+adapted toolchain support header (it already differs from its
+upstream submodule counterpart,
+`thirdparty/XenonRecomp/XenonUtils/ppc_context.h`, e.g. the project's
+own earlier `#include <cstdio>` addition), force-added it as a
+tracked exception to the `private/` ignore rule (`git add -f`) so
+this fix survives a regeneration. No other file under `private/` was
+touched or force-added.
+
+Remaining open question from this finding, not investigated: WHY the
+game's own logic decides to shut down (ExTerminateThread et al.)
+rather than continue running -- plausibly because, under today's two
+placeholder/guard fixes (field+76's value, Finding 120; this guarded
+null-call), there still isn't enough real, correctly-configured
+content for it to find something to do, and it's reaching a genuine
+"nothing to display, exit gracefully" decision in its own code. Not
+yet traced to a specific check or confirmed as the real cause.
