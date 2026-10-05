@@ -7597,3 +7597,82 @@ to be.
 This is a real, committed source change (host/main.cpp), not a
 reverted diagnostic -- `git diff host/main.cpp` before committing
 showed exactly the one intended addition, nothing else.
+
+Finding 121: Finding 119's empty-list root cause narrowed further --
+the "sub-object pointer" at the crashing object's field+6784 isn't a
+sub-object at all, it's a deliberately null manager/owner reference,
+zero-initialized by this exact class's own real constructor
+(sub_8256D250) alongside a 16-byte header group. Static search for
+who else ever writes it finds no sibling-class candidate; the real
+setter, if one exists at runtime, isn't a plain immediate-offset
+store.
+
+Rather than continue reasoning about ARM64 register allocation by
+hand (the approach that produced a near-miss false lead last finding
+-- the PPC_LOOKUP_FUNC constant), used the more reliable technique:
+a temporary diagnostic `printf` inserted directly into the generated
+source (private/ppc/ppc_recomp.81.cpp, right after the field+6784/
++224 reads in __imp__sub_8256D010), following this project's own
+established "temporary edit, verify, revert before commit" discipline
+-- previously only ever applied to host/main.cpp, extended here to a
+private/ppc/*.cpp file for the first time, with the same discipline
+(reverted immediately, `git diff --stat` confirmed clean, rebuilt
+from the clean tree before writing this finding).
+
+Live output: `object(r31)=0xB5074FC0 subobj(r31+6784)=0x00000000
+count(subobj+224)=0`. The "sub-object pointer" is null -- not a
+sub-object with a zero count, an actually-null reference. `lwz
+r10,224(r11)` with r11=0 just happens to read near guest address 0
+(unmapped/zero-filled in this project's image), coincidentally
+producing the same "count<=0" symptom Finding 119 already identified,
+but the real fact worth separating out is that field+6784 itself was
+never set to point at anything.
+
+Reran the same offset-sweep technique from Finding 116 (grep raw asm
+comments for any store to this literal offset): `// stw
+[^,]*,6784\(` across all of private/ppc/*.cpp -- only 11 hits
+project-wide (a tractable, offset-6784-is-fairly-distinctive result,
+unlike offset 76's 616). One of them, sub_8256D250
+(ppc_recomp.81.cpp:4955, only 0x240 bytes from the crashing
+sub_8256D010 -- almost certainly a sibling virtual method of the
+exact same class), is this class's real constructor: it sets the
+vtable pointer (`stw r11,0(r31)` with r11 built from `lis
+r11,-32248`/`addi r11,r11,-22992`, resolving to guest address
+0x8207A630) and, in the same few instructions, zeroes field+6784
+alongside 6788/6792/6796 as one deliberate 16-byte group -- field+6784
+being null is this class's own intended default state at construction
+time, not an uninitialized-memory accident.
+
+Checked the other 10 writers for the same vtable-construction
+pattern (`lis r11,-32248` combined with the exact `-22992` addend) to
+see if any belongs to this same class and sets a real value later --
+none do. Every other offset-6784 writer sits in an unrelated function
+using different neighboring field offsets (6768, 6772, 6780 instead
+of this class's own 6788/6792/6796/6800), consistent with 6784 being
+a coincidentally-reused generic struct offset across several
+unrelated large classes in the full retail binary, the same pattern
+already seen for offset 76 (Finding 116). So for this specific class,
+static search for a plain-immediate-offset store finds no setter at
+all besides the constructor's own zero-init.
+
+This doesn't mean no setter exists -- it means if one exists, it's
+not a simple `stw rX,6784(rY)` the grep-based sweep can find (e.g. a
+computed/indexed store, or a bulk struct copy/memcpy of the whole
+object). Determining whether field+6784 is genuinely meant to stay
+null in this run's conditions (making the game's own null-deref-on-
+empty-manager path a latent bug real hardware would also hit, just
+one this project's boot sequence reaches differently) or whether some
+missing host-side package/content-loading callback is supposed to
+attach a real manager here, would need either a live hardware
+watchpoint on this specific object instance's field+6784 across a
+longer run (to see if anything EVER writes it, the same technique
+Finding 113 used successfully for field+76), or broader investigation
+of the package-loading subsystem this run was in the middle of
+exercising when the crash occurred. Neither done this finding --
+a reasonable next step, not yet started.
+
+All temporary changes (the printf diagnostic and its `#include
+<cstdio>` in ppc_recomp.81.cpp) were reverted immediately after this
+investigation; `git diff --stat host/main.cpp private/ppc/
+ppc_recomp.81.cpp` confirmed both clean, and the binary was rebuilt
+from the clean tree before this finding was written.
