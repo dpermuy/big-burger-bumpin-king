@@ -8747,3 +8747,32 @@ confirmed.
 Still open: indexed rectangle lists, the approximated attribute
 interpolation on the implied corner, and whether the rectangles land
 where the game intends (needs a visual check).
+
+Finding 145: visual check of the rectangle expansion (Finding 144).
+Rectangles reach the screen as geometry; the placeholder shader colours
+them black, and no game art is drawn yet.
+
+macOS blocked a full-screen capture (`screencapture`: "could not create
+image from display"; the terminal lacks screen-recording permission and
+that cannot be granted from here). Instead, a temporary readback in the
+Metal renderer rendered one frame into an offscreen texture of the same
+size and format, wrote its BGRA pixels to a file, and converted to PNG.
+
+First attempt: at frame 120 the snapshot held only the 24 point
+placeholders at the origin and showed only the clear colour. Those
+frames carry no rectangles.
+
+Second attempt: the dump triggered on the first frame containing a
+rectangle-expanded command (six-vertex `Triangle`). That frame shows a
+single black triangle in the lower-right, with a diagonal edge clipped
+at the frame boundary, about 111k non-clear sampled pixels of 2560x1440
+at 1/7 sampling. It is consistent with one of a rectangle's two
+triangles, the other probably off-screen; not confirmed against the
+game's intended layout.
+
+Reverted the renderer readback (`git checkout -- host/renderer_metal.mm`),
+rebuilt clean, and confirmed no stray processes.
+
+Not established: whether the rectangles' positions are what the game
+intends, the real colours and textures (blocked on the placeholder
+shader and on content), and the indexed rectangle case (still skipped).
