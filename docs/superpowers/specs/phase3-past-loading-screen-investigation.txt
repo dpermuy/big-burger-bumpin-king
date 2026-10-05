@@ -8703,3 +8703,26 @@ screen is an inference from the trace, not a visual check.
 Next step, not done: find where the game is supposed to issue its
 first frame's draw commands after the idle loop, and whether they are
 gated by the same display state or by content that is not loaded.
+
+Finding 143: the game does issue frames and draws, and the renderer
+drops the real geometry. Frames are not empty.
+
+Evidence:
+- `breakpoint set --name __imp__VdSwap` fired repeatedly during a run,
+  called from `sub_820CCA68` <- `sub_824A76D0` (the display frame
+  path). The game presents every frame.
+- `gpu_trace.log` from a 12 s windowed run: 118 IM_LOAD_IMMEDIATE, 52
+  DRAW_INDX_2 lines split as:
+  - 28 with `primType=8`, logged as `unsupported primType=8, skipped`.
+  - 24 with `primType=1 vertexCount=1` (the sub-project 2 point
+    placeholder).
+
+Primitive type 8 is `kRectangleList` (0x08), confirmed against Xenia's
+`src/xenia/gpu/xenos.h` (PrimitiveType enum). A rectangle list is three
+vertices per rectangle, which Xenia's own comment (xenos.h:934) notes
+D3D9 resolves by drawing as a triangle.
+
+So the first real gap is concrete: the renderer skips the game's
+rectangle-list draws. Implementing that is a renderer change (expand
+each rectangle to two triangles, or emit the third corner), not a
+kernel fix. Not implemented in this finding; needs a decision.
