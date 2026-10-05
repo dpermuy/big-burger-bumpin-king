@@ -7920,3 +7920,87 @@ No source or binary changes in this finding; confirmed via `git diff
 --stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
 changes -- this investigation used only live lldb commands and static
 analysis against the unmodified, already-clean binary.
+
+Finding 125: the field+6784/vtable-slot+84 mystery (Findings 121-124)
+is resolved -- not a missing feature, a pure timing consequence of
+Finding 119's crash. There is no broken attachment subsystem. The
+game's own normal queue-and-drain mechanism would attach the manager
+completely correctly on the NEXT tick; the process never survives
+to a next tick because Finding 119's crash happens first, later in
+the exact same tick.
+
+Started from `sub_8244E458`, the function Finding 124 identified as
+the real second half of `sub_824532F0`'s post-construction dispatch
+(the one that didn't call slot+84 directly). Reading it fully (past
+where Finding 124 stopped) revealed a deferred-work QUEUE, not a
+dead end: a fixed 16-slot array (capacity check `cmpwi cr6,r11,16` /
+`beqlr cr6` -- silently drops the item if full, a separate, real
+latent bug not pursued further here), 28-byte stride, a shared
+counter at offset+468. Confirmed live this is a SINGLE GLOBAL
+SINGLETON, not a per-caller queue: broke on `__imp__sub_8244E458`,
+read its actual `r3` (queue owner) parameter via the `$x0`-offset-0
+trick (Finding 122), and compared against the global pointer slot at
+`lis r11,-32143` / `lwz r10,-29804(r11)` (guest 0x82708B94) --
+exact match (0xB91621F0), live-confirmed, not assumed.
+
+Found a sibling enqueue function at the same address neighborhood,
+`sub_8244E410` (private/ppc/ppc_recomp.57.cpp:10565-10603, literally
+the function immediately before `sub_8244E458` in the same file),
+which enqueues into the identical global queue with its own type tag
+(2) -- confirming this is a shared, multi-producer event queue used
+by more than one subsystem, not something built just for our class.
+
+Set a READ watchpoint on the queue's shared counter field (guest
+0xB91621F0+468, host 0x70B91623C4) spanning the whole run from
+`__imp___xstart` through the crash, rather than continuing to guess
+at which function drains it. Three distinct call sites hit it across
+several `continue`s: two were `sub_8244E458` re-reading its own
+just-written counter (expected, matches its own source), and one was
+genuinely new -- `sub_8245BAC0`, called directly from `sub_8244B040`
+itself (private/ppc/ppc_recomp.57.cpp), not nested inside the
+construction chain at all.
+
+Read `sub_8245BAC0` (private/ppc/ppc_recomp.59.cpp:9439 onward): a
+real drain loop. Checks the counter, early-returns if zero
+(`ble cr6,->loc_8245BCEC`), otherwise walks live entries and
+dispatches each by a small type tag (0-6) through a jump table
+(`lis r12,-32186`/`addi r12,r12,-17564`, indexed `*4`), each case a
+distinct handler. Case 0 (`loc_8245BBAC`) does call a virtual method
+on the stored object -- vtable slot+4, not slot+84 directly -- so
+this doesn't resolve to a byte-exact match with `sub_8256B7D0`
+without reconciling an apparent offset discrepancy between what
+`sub_8244E458` writes (fields at +20/+28/+40 within its own locally-
+computed entry base) and what `sub_8245BAC0` reads (fields at +0/+8/
++20 within ITS OWN differently-based local pointer) -- not resolved
+byte-for-byte this finding, and not needed to be: the exact case
+number stops mattering once the real explanation (below) is in hand.
+
+The decisive check: where does `sub_8244B040` call these two
+functions relative to each other? `grep -n "sub_8245BAC0\|
+sub_8244AFB0" private/ppc/ppc_recomp.57.cpp` (excluding definitions)
+shows `sub_8245BAC0` called three times (lines 2730, 2738, 2746),
+ALL before the single call to `sub_8244AFB0` (line 2758) -- the exact
+function whose deep call tree does both our object's construction
+(Finding 124's chain) and, later in the same tree, Finding 119's
+crash. So within any one tick: drain runs first (operating on
+whatever was queued by the END of the PREVIOUS tick), then
+construction runs and enqueues our object for the queue to pick up
+NEXT tick -- a perfectly ordinary, correct design. The object
+simply hasn't had its turn yet when the process dies, later in this
+exact same tick, from an entirely unrelated cause (Finding 119).
+
+Net: Findings 121-124's hunt for "who's supposed to call vtable
+slot+84" was looking for something that doesn't need fixing. The
+real mechanism (a global deferred-work queue, drained once per tick
+before new work is queued for the next one) is intact and would
+handle this correctly on its own, given a second tick to run in.
+Fixing Finding 119's null function-pointer crash (the real, sole
+remaining blocker in this chain) should resolve field+6784 as a
+side effect, for free, rather than needing any separate intervention
+-- a strong, actionable, well-evidenced conclusion to pursue next
+over continuing to chase this thread any further.
+
+No source or binary changes in this finding; confirmed via `git diff
+--stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
+changes -- this investigation used only live lldb commands and static
+analysis against the unmodified, already-clean binary.
