@@ -8572,3 +8572,34 @@ rather than bypassed.
 
 Reverted both temporary edits; `git diff --stat host/main.cpp` is
 clean and the binary was rebuilt from the clean tree.
+
+Finding 137: searched for the real completion signal for field+92.
+Not found. Recorded what was ruled out.
+
+Method: scanned every generated ppc_recomp file for functions that
+(a) build the display object (`lis -32146` + `addi ...,8464`) and
+(b) store to offset 92 through a non-stack base. 34 functions had
+offset-92 stores; 8 had a non-stack base. Live watchpoint evidence
+(Findings 127, 132, 136) already showed that in the reachable run,
+field+92 is written only by `sub_824A78E0`, so any real clearer must
+live on a path this build never reaches.
+
+Ruled out as the clearer:
+- `sub_824A2B90` (ppc_recomp.65.cpp:29361): allocator/constructor that
+  stores a computed nonzero value.
+- `sub_82515D58` (ppc_recomp.71.cpp:3088): initialization routine
+  storing r30 at offsets 76/88/92 of a different object.
+- `sub_8244B040` / `sub_82451630`: stores at +92 are on other
+  objects (the canonical object, not the display object).
+
+Not checked in full: `sub_8249D1C0` (`stb r11,92(r31)`), `sub_824A2A48`
+(`stb r10,92(r3)`), `sub_82405DA0` (`stw ...,92(r20)`), and the
+offset-92 stores in `sub_824A78E0` at +6380 (`stw r10,92(r11)`).
+
+Conclusion so far: no clearing store to the display object's field+92
+exists on any path reachable in this build's run. That fits a
+completion signal that is delivered asynchronously by host or device
+code this build does not produce. Next step, not done: check whether
+any kernel or GPU call in the display path (VdSetDisplayMode,
+VdSwap, VdCallGraphicsNotificationRoutines, the vblank interrupt
+callback) is expected to deliver that signal.
