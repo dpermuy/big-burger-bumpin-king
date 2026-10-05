@@ -8646,3 +8646,25 @@ reachable path. It must come from host or device behavior the build
 does not model yet, or the clear sits on a branch this build's
 inputs never reach. Not resolved; recommend deciding the next step
 with the user rather than guessing further.
+
+Finding 140: a host-side clear of display field+92 in `VdSwap` unblocks
+the stall. Diagnostic only, reverted, not committed.
+
+Test: added a temporary block at the top of `VdSwap` (host/kernel_impl.cpp)
+that stores 0 to guest 0x826E216C if it is nonzero, extended the watchdog
+to 60 s, rebuilt, and ran.
+
+Result: the clear fired once, on the first `VdSwap` after the display
+setup (log: `VdSwap cleared display field+92 (was 1)`). The main guest
+thread then sat at `sub_825DEC18+96` (the designed idle loop) at 8 s,
+not in the `sub_824A0B68` spin. Same outcome as Finding 136's direct
+bypass of the wait.
+
+Meaning: `VdSwap` is a usable host-observable point between the display
+setup's latch and the teardown's read, and clearing the field there is
+sufficient for the game to reach its idle state. This is a placeholder
+for the real completion signal, not the signal itself. Timing and
+ordering were not verified against real hardware.
+
+Reverted: `git checkout -- host/kernel_impl.cpp` restored the file, the
+watchdog is back to 10 s, and the binary was rebuilt from the clean tree.
