@@ -8540,3 +8540,35 @@ diagnostic build that replaces the field+92 check in sub_824A0B68
 with an unconditional fall-through, to see whether the game gets
 past the first idle tick, or (b) stopping. (a) is a test only and
 would not be committed as a fix.
+
+Finding 136: removing the field+92 wait in sub_824A0B68 ends the
+stall. Diagnostic only, not committed.
+
+Test: temporarily replaced the `beq cr6,0x824a0bc8` on the field+92
+compare with an unconditional `goto loc_824A0BC8` in the generated
+ppc_recomp.65.cpp (git-ignored, reverted by hand afterward), extended
+the watchdog to 60 s, rebuilt, and ran.
+
+Result: no busy-spin. Attached 8 s in: thread #4 (the guest main
+thread) is parked at `sub_825DEC18+96`, which is the designed idle
+self-loop after `sub_8212B130` returns. Worker threads are on normal
+waits (`__semwait_signal` / `__psynch_cvwait`). The process still
+exits with the watchdog message at the end of the run, consistent
+with the designed idle state rather than a hang. Log tail: the same
+ExTerminateThread / MmFreePhysicalMemory sequence as before, then
+`NtWaitForSingleObjectEx: unknown handle 0x1007`.
+
+Meaning: the field+92 completion wait is the only thing holding the
+display setup open. Once the wait is out of the way, the main tick
+chain returns instead of spinning, and the guest reaches its idle
+state. That confirms the stall is this one wait, not something
+downstream.
+
+Not established: whether the game is playable after this (no renderer
+or content check was done), or whether the real completion signal is
+a kernel call or a GPU event. The next question is what the real
+build clears field+92 with, so the wait can be satisfied correctly
+rather than bypassed.
+
+Reverted both temporary edits; `git diff --stat host/main.cpp` is
+clean and the binary was rebuilt from the clean tree.
