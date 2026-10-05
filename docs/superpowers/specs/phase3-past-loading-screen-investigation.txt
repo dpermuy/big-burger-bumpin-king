@@ -8623,3 +8623,26 @@ Remaining candidates for the completion signal, not yet checked:
 - The `stb` stores at `sub_8249D1C0` (ppc_recomp.65.cpp:14600) and
   `sub_824A2A48` (ppc_recomp.65.cpp:28882), which Finding 137 did not
   finish. Neither is confirmed as writing the display object.
+
+Finding 139: the last two static candidates for writing the display
+object's field+92 are ruled out. Static search over the generated
+code finds no clearing store to that field on any path.
+
+- `sub_8249D1C0` (ppc_recomp.65.cpp:14600, `stb r11,92(r31)`): r31 is
+  the function's own argument (`mr r31,r4`), not the display object.
+  The display address is only loaded into r11 as a value stored into
+  that argument's +92 byte. Not a write to the display object.
+- `sub_824A2A48` (ppc_recomp.65.cpp:28882, `stb r10,92(r3)` with
+  r10 = 1): r3 is the function's argument object. It writes 1 to that
+  object's +92, and the display object is not involved.
+
+Static conclusion: no store in the generated code clears the display
+object's field+92 on any reachable path. Together with the live
+watchpoints (Findings 127, 132, 136), the only writer is the setup
+(sets it to 1), and nothing in this build's code ever clears it.
+
+So the completion signal is not produced by any guest code in the
+reachable path. It must come from host or device behavior the build
+does not model yet, or the clear sits on a branch this build's
+inputs never reach. Not resolved; recommend deciding the next step
+with the user rather than guessing further.
