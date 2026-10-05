@@ -7740,3 +7740,84 @@ host/main.cpp private/ppc/ppc_recomp.81.cpp` confirmed clean
 throughout, and no diagnostic edits were made to any source file this
 time -- the entire investigation used only live lldb commands against
 the unmodified, already-clean binary.
+
+Finding 123: identified the real missing method -- sub_8256B7D0, this
+class's own vtable slot+84, is the "attach manager" setter Finding
+121/122 inferred must exist. Confirmed live it never executes at all
+during a full run -- hit count 0, not even reaching its own internal
+guard check. Also corrects a wrong dismissal in Finding 121.
+
+Rather than keep reasoning about what SHOULD set field+6784, read the
+class's actual vtable data directly: broke at `__imp___xstart` (after
+SetupMemoryImage has mapped the image, unlike an earlier attempt at
+`main` which failed with "memory read failed" -- the guest image
+isn't loaded yet that early) and dumped 48 words (192 bytes) at the
+vtable address Finding 121 already computed (0x8207A630, guest,
+`lis r11,-32248`/`addi r11,r11,-22992`), byte-swapping each (host is
+little-endian, guest data is big-endian) to recover the real guest
+function address at each slot.
+
+This turned up a correction to Finding 121's own analysis: slot+48
+(0x30) resolves to 0x8256D010 -- the crashing function itself,
+confirming this is genuinely this object's own vtable -- and slot+84
+(0x54) resolves to 0x8256B7D0, the exact function Finding 121 found
+independently via the field+6784 offset-sweep but DISMISSED as an
+unrelated class, because its surrounding source text didn't show the
+same `lis r11,-32248`/`addi r11,r11,-22992` vtable-construction
+sequence nearby (that check only catches a CONSTRUCTOR setting its
+OWN vtable pointer; a virtual method doesn't re-set the vtable
+pointer at all, so the absence of that pattern proves nothing about
+class membership -- a real gap in that check, not caught at the
+time).
+
+Re-read sub_8256B7D0 (ppc_recomp.81.cpp:756-825+) with this
+confirmed: it's genuinely a two-parameter virtual method (`this`,
+flag). Guarded by `cmpwi cr6,r30,1` / `bne cr6,->loc_8256B90C`
+(r30 = the second parameter) -- only when called with flag==1 does it
+walk `*(this+264)` -> deref -> `+208` -> `+32` to resolve a real
+manager/owner reference, store it into field+6784 (line 805-806,
+confirming this is the exact field+6784 write Finding 121 already
+found and attributed to "an unrelated function"), set field+6788 from
+a related field, call sub_825789F8 (unexamined -- some setup/
+registration step), and then re-check the newly-attached manager's
+own field+224 (the SAME count check sub_8256D010 performs) -- strong
+structural evidence this genuinely is the method responsible for
+making sub_8256D010's later access safe.
+
+Live-confirmed via a breakpoint on `__imp__sub_8256B7D0` across a
+full run to the crash (and past it, via repeated `continue`): hit
+count 0. Not "called with flag=0 so it skips the write" -- never
+entered at all, at any point, for any object. Combined with Finding
+122's watchpoint result (field+6784 never written past construction),
+this is now airtight: the method that's supposed to run never runs,
+full stop.
+
+Attempted to find who's supposed to call vtable slot+84 (virtual
+dispatch, so no direct `bl sub_8256B7D0` exists anywhere --
+confirmed, grep for direct callers found only the function-mapping
+table entry). Tried the obvious static approach: scan every
+`// lwz rX,0(rY)` (vtable-pointer fetch) immediately followed within
+a few lines by `// lwz rX,84(rX)` (slot+84 fetch from that same
+register) across all of private/ppc/*.cpp. Found 53 candidate sites,
+but offset 84 is itself a common, small struct offset reused by many
+unrelated classes' own vtables (the same lesson as offsets 76 and
+6784 in earlier findings, just worse here since 84 is a much more
+common offset than either) -- distinguishing which of the 53, if any,
+actually dispatch on an instance of THIS specific class would require
+tracing each site's object provenance individually. Not done this
+finding; stopped here rather than grinding through 53 low-confidence
+candidates by hand.
+
+Next step, not started: either trace a subset of the 53 candidates
+(prioritizing ones in files already linked to this investigation's
+known call chain, e.g. ppc_recomp.57.cpp:6698/9306 and
+ppc_recomp.72.cpp, which also appeared in Finding 115/121's own
+whitelist-adjacent searches), or pivot to this report's second
+hypothesis (a missing/wrong host-kernel primitive specific to
+whatever subsystem is supposed to trigger this attachment, in the
+vein of Finding 115's kernel-surface diff).
+
+No source or binary changes in this finding; confirmed via `git diff
+--stat host/main.cpp private/ppc/ppc_recomp.81.cpp` showing no
+changes -- this investigation used only live lldb commands and static
+analysis against the unmodified, already-clean binary.
