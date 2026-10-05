@@ -3,6 +3,7 @@
 #include "shader_decode.h"
 #include <ppc_context.h>
 #include <string>
+#include <cstring>
 #include <vector>
 
 GpuCommandTracer g_gpuTracer;
@@ -373,6 +374,7 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                 // kRectangleList (8) is confirmed real and common in this
                 // project's own captured trace but also unsupported here.
                 bool havePrimType = true;
+                bool isRectList = false;
                 DrawPrimitiveType mappedPrimType = DrawPrimitiveType::Point;
                 switch (di.primType)
                 {
@@ -381,6 +383,7 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                     case 3: mappedPrimType = DrawPrimitiveType::LineStrip; break;
                     case 4: mappedPrimType = DrawPrimitiveType::Triangle; break;
                     case 6: mappedPrimType = DrawPrimitiveType::TriangleStrip; break;
+                    case 8: mappedPrimType = DrawPrimitiveType::Triangle; isRectList = true; break;
                     default: havePrimType = false; break;
                 }
 
@@ -481,7 +484,11 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                         }
                     }
 
-                    if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
+                    if (isRectList && isIndexed)
+                    {
+                        if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: indexed kRectangleList not supported yet, skipped\n", indent);
+                    }
+                    else if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
                     {
                         if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: vertex buffer size %u bytes out of sane range, skipped\n", indent, vertexByteSize);
                     }
@@ -524,6 +531,44 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             cmd.indexData = std::move(resolvedIndexData);
                             cmd.indexCount = resolvedIndexCount;
                             cmd.indexIs32Bit = indexIs32Bit;
+                        }
+                        else if (isRectList)
+                        {
+                            // kRectangleList (Xenia xenos.h PrimitiveType 0x08):
+                            // three vertices per rectangle, the fourth corner
+                            // implied as v1 + v2 - v0. Expanded to two triangles
+                            // (A,B,D) and (A,D,C), keeping each source record's
+                            // full stride so the translated vertex layout still
+                            // applies. The implied corner's extra attributes copy
+                            // v1's record (approximate, not Xenia-verified).
+                            uint32_t rectVertices = (bufferVertexCapacity < di.numIndices) ? bufferVertexCapacity : di.numIndices;
+                            rectVertices -= rectVertices % 3;
+                            cmd.vertexCount = 0;
+                            cmd.indexCount = 0;
+                            cmd.indexIs32Bit = false;
+                            if (rectVertices >= 3)
+                            {
+                                std::vector<uint8_t> expanded;
+                                expanded.reserve((size_t)rectVertices / 3 * 6 * realStride);
+                                auto recordAt = [&](uint32_t vi) { return cmd.vertexData.data() + (size_t)vi * realStride; };
+                                auto readPos = [&](const uint8_t* rec, float out[3]) { std::memcpy(out, rec, 12); };
+                                for (uint32_t r = 0; r + 2 < rectVertices; r += 3)
+                                {
+                                    const uint8_t* A = recordAt(r);
+                                    const uint8_t* B = recordAt(r + 1);
+                                    const uint8_t* C = recordAt(r + 2);
+                                    float pa[3], pb[3], pc[3];
+                                    readPos(A, pa); readPos(B, pb); readPos(C, pc);
+                                    float pd[3] = { pb[0] + pc[0] - pa[0], pb[1] + pc[1] - pa[1], pb[2] + pc[2] - pa[2] };
+                                    std::vector<uint8_t> dRecord(B, B + realStride);
+                                    std::memcpy(dRecord.data(), pd, 12);
+                                    auto append = [&](const uint8_t* rec) { expanded.insert(expanded.end(), rec, rec + realStride); };
+                                    append(A); append(B); append(dRecord.data());
+                                    append(A); append(dRecord.data()); append(C);
+                                }
+                                cmd.vertexData = std::move(expanded);
+                                cmd.vertexCount = (uint32_t)(cmd.vertexData.size() / realStride);
+                            }
                         }
                         else
                         {

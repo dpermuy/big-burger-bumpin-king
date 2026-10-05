@@ -8726,3 +8726,24 @@ So the first real gap is concrete: the renderer skips the game's
 rectangle-list draws. Implementing that is a renderer change (expand
 each rectangle to two triangles, or emit the third corner), not a
 kernel fix. Not implemented in this finding; needs a decision.
+
+Finding 144: rectangle-list draws (primType 8) are expanded to
+triangles in the draw-command builder. Trace-verified, not visually.
+
+Change (host/gpu_trace.cpp): primType 8 maps to the existing Triangle
+draw type with an `isRectList` flag. For non-indexed rectangle lists,
+each group of three source vertices A, B, C becomes two triangles,
+(A, B, D) and (A, D, C), where D = B + C - A on the position. Each
+vertex keeps its full source record stride so the translated vertex
+layout still applies. D's other attributes copy B's record, which is
+an approximation. Indexed rectangle lists are logged and skipped for
+now. No renderer change was needed.
+
+Verified: rebuilt clean; a 12 s windowed run logs 28 primType=8 draws
+each with vertexCount=6 (two triangles), and the renderer logs no
+errors. The window was not looked at, so the image itself is not
+confirmed.
+
+Still open: indexed rectangle lists, the approximated attribute
+interpolation on the implied corner, and whether the rectangles land
+where the game intends (needs a visual check).
