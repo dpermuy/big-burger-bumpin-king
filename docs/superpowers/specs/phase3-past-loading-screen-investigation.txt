@@ -8364,3 +8364,37 @@ Reverted both temporary edits (kernel_impl.cpp via git checkout;
 the guest-side printf and its cstdio include in the git-ignored
 private/ppc/ppc_recomp.66.cpp by hand). Rebuilt clean; `git status`
 shows no tracked changes.
+
+Finding 131: the 0x01000000 store to field+92 is NOT gated by the
+XVIDEO_MODE values. The real gate is field+28 of the same object,
+checked on entry to sub_824A78E0. Finding 130's hypothesis (height /
+hiDef control the store) was wrong.
+
+Walked the live disassembly of __imp__sub_824A78E0 (current clean
+binary, `disassemble --name ... --count 400`) backward from the store
+at +624 (`mov w9,#0x1000000; str w9,[x19,w11,uxtw]`):
+- +224 `cbz w9` on field+28 (loaded at +172 from the object). If
+  field+28 != 0 the function takes the +228..+312 path and returns
+  early via __restgprlr_20 -- no store.
+- field+28 == 0 falls to +316..+500, which calls __imp__XGetVideoMode.
+- Every path after XGetVideoMode (hiDef==0 at +544 -> +592; height
+  < 720 at +588 -> +592; height >= 720 -> +752 -> +768 height-vs-1080
+  -> +612; height >= 1080 -> +1244 -> +612) converges on +612 and
+  then falls straight into the +620/+624 store. Nothing between +612
+  and the store branches, so the store is unconditional past the
+  field+28 gate.
+
+Consistent with the source: `lwz r11,28(r31); cmpwi r11,0; beq
+->loc_824A7920` at ppc_recomp.66.cpp:5066-5071 (proceed only when
+field+28 is zero). sub_824A0B68 zeroes field+28 only on the path
+where field+92 == 0 (its own cbz at +392/+400), so when field+92 is
+nonzero (the stall) field+28 is never cleared either.
+
+Live watchpoint evidence from Finding 127 (90 s run, two writes only)
+means nothing else writes field+92, so no clearing path exists in
+this build. Result: sub_824A78E0 sets the bit whenever it runs with
+field+28 == 0, and sub_824A0B68 then spins forever on it.
+
+Open question for the next step: what should make field+28 nonzero
+(or otherwise stop sub_824A78E0 from running its display setup) on
+the normal path? That's the real missing piece, not the mode values.
