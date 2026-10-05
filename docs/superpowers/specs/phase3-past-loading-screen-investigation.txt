@@ -7676,3 +7676,67 @@ All temporary changes (the printf diagnostic and its `#include
 investigation; `git diff --stat host/main.cpp private/ppc/
 ppc_recomp.81.cpp` confirmed both clean, and the binary was rebuilt
 from the clean tree before this finding was written.
+
+Finding 122: live hardware watchpoint across the whole construction-
+to-crash window confirms, decisively, that nothing ever writes
+field+6784 of this object -- the constructor's own zero-init is the
+only write that ever happens. This is a genuinely missing setter/
+callback, not a timing race or a non-grep-matchable computed store.
+
+Found a clean, zero-source-modification way to read a PPC register at
+a function's very first instruction, reusable for future findings:
+PPCContext's first member is `r3` (ppc_context.h:310), so at a
+breakpoint on a function's entry address (before any instruction
+executes), the raw ARM64 calling-convention register `x0` still holds
+the unmodified `&ctx` argument, and reading 4 bytes there
+(`memory read --size 4 --format x $x0`) gives `ctx.r3.u32` directly --
+no DWARF, no disassembly-level register tracing required. Verified
+against Finding 121's printf-captured value (0xB5074FC0): exact
+match, and confirms heap allocation is deterministic run-to-run in
+this harness (no ASLR-equivalent), which is what makes computing a
+watch address from one run and using it as a fixed literal in a
+second live session valid here.
+
+Broke on sub_8256D250 (the real constructor, Finding 121), read the
+object address this way (0xB5074FC0, matching Finding 121 exactly),
+computed the host watch address for its field+6784
+(0x7000000000 + 0xB5074FC0 + 6784 = 0x70B5076A40), and set a 4-byte
+write watchpoint there immediately, before a single further
+instruction of the constructor itself executes -- covering every
+write to this field from the very first instant the object exists.
+Issued five `continue`s, which ran the process all the way through
+to Finding 118/119's known crash and then (since lldb's default
+crash-stop doesn't auto-resume) re-reported the same stopped
+EXC_BAD_ACCESS state four more times harmlessly.
+
+Result: the watchpoint fired exactly once, logged as `new value: 0`
+-- the constructor's own zero-init (Finding 121), nothing else.
+Hardware watchpoints trigger on every store to the watched address
+regardless of the value written or how the store instruction was
+generated (immediate offset, computed index, bulk copy -- all of
+them), so this is a strictly stronger result than the static grep
+sweep from Finding 121: not "no plain-immediate-offset store found,"
+but "no store of any kind happens," full stop, for this entire
+window.
+
+Net: field+6784 staying null through to the crash is not a timing
+race this project's boot ordering lost, and not a store pattern
+Finding 121's grep sweep missed. Something that is supposed to call
+a setter on this exact object -- attaching whatever manager/owner
+reference belongs there -- never runs at all in this project's
+current implementation, in the time between this object's
+construction and the first attempt to use that reference. The two
+live candidates for what that missing call chain might be: (1) some
+callback tied to the package-loading activity visible in the boot
+log right up until the crash (`s_generic.xen`, `w_saveload_fetm.xen`,
+etc. -- plausible, since this is the exact subsystem Finding 118's
+field+76 fix newly unblocked access to), or (2) a host-kernel
+primitive this project stubs or gets wrong, in the vein of Finding
+115's kernel-surface diff, specific to whatever subsystem owns this
+manager type. Neither investigated yet.
+
+No source or binary changes in this finding; `git diff --stat
+host/main.cpp private/ppc/ppc_recomp.81.cpp` confirmed clean
+throughout, and no diagnostic edits were made to any source file this
+time -- the entire investigation used only live lldb commands against
+the unmodified, already-clean binary.
