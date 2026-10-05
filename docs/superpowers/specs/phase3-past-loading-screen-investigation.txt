@@ -8398,3 +8398,29 @@ field+28 == 0, and sub_824A0B68 then spins forever on it.
 Open question for the next step: what should make field+28 nonzero
 (or otherwise stop sub_824A78E0 from running its display setup) on
 the normal path? That's the real missing piece, not the mode values.
+
+Finding 132: field+28 is itself set by sub_824A78E0 -- so it's a
+one-time latch, not a value the stall path ever clears.
+
+Watchpoint on field+28 (guest 0x826E212C, host 0x70826E212C) from
+`__imp___xstart` for a short run: one change, 0 -> 0x1000000, at
+`sub_824A78E0+9364`, called from `sub_824A84E0+252` <-
+`sub_825F8BD0+268` <- `sub_8244B040+3384` <- `sub_8212B130+232`.
+Live disasm of +9352..+9364: `ldr w8,[x20,#0xf8]` (object) ;
+`add w8,w8,#0x1c` ; `mov w10,#0x1000000` ; `str w10,[x19,w8,uxtw]`
+-- a real `stw 0x1000000, 28(r31)` on the function's tail. It runs
+after an optional call (`sub_820CD028`, +9316) and both paths
+converge on +9328, so the write always happens once the function
+gets past its entry gate.
+
+So one call to sub_824A78E0 does two things: sets field+28 nonzero
+(Finding 131's entry gate, now latched -- the next call returns
+early) and sets field+92 nonzero (Finding 131's store at +624). The
+only path that zeroes field+28 is sub_824A0B68's unblocked branch
+(cbz on field+92 == 0). In the stall that branch never runs, so
+field+28 stays latched and field+92 stays set.
+
+Remaining question: which event should clear field+92 (or unlatch
+field+28) after the first display setup. Nothing in this build
+writes field+92 after the first call (Finding 127), and the
+watchpoint shows nothing rewrites field+28 either.
