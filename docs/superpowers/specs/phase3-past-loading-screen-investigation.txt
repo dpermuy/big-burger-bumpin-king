@@ -9437,3 +9437,26 @@ structure in Finding 173.
 Open: whether a real console clears field+136 (for example at a scene
 change in a different function that this run never reaches), or whether
 the real game would never set it until quit. Neither is visible here.
+
+Finding 175: static search for other writers of canonical field+136. Found
+none that clear it.
+
+Method: every generated function that loads the canonical object pointer
+(`lis -32145` + `-20220`, guest 0x826EB104) and stores to offset 136 from a
+register. Two functions matched:
+- `sub_82451408` (ppc_recomp.58.cpp:4927): the 0 -> 1 setter (Finding 167).
+- `sub_82550850` (ppc_recomp.77.cpp:9450): a false match. The store is to a
+  stack local (`ctx.r1.u32 + 136`), not the object.
+
+So within functions that load the canonical pointer directly, the only store
+to field+136 is the setter. No clear.
+
+Limit: a function can hold the object through another register (copied from
+r3 or a field) and never load the global itself. This search would miss
+such a writer. Not checked.
+
+Read: the latch has no clear path reachable through the canonical pointer
+as loaded in these functions. Finding 173 and 174 stand: the game as built
+does not continue after loading. The missing clear, if any, is in code that
+either holds the object through another pointer or is never reached in this
+build.
