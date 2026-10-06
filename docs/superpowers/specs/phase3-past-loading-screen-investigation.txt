@@ -8986,3 +8986,17 @@ stall Finding 106 found in the first place, gated on the canonical object's
 boot patch in Finding 120 sets. So the static frame may be the same
 loading-complete gate still holding, rather than a separate frame-logic
 problem. Not verified: a live check of `field+136` during the frame loop.
+
+Finding 156: the loading-complete gate is open, so Finding 155's
+hypothesis is ruled out. The static frame is not caused by that flag.
+
+Live read (external attach to the running windowed build, about 8 s in),
+canonical object at guest 0x826EB104 (the Finding 113 object):
+- field+136 = 1 (the completion flag sub_8244AFB0 waits on, Finding 106)
+- field+76 = 1 (the boot-patched value, Finding 120)
+- field+72 = 1 (the mode selector, Finding 113)
+
+So the outer loop's completion condition is satisfied. The frame driver
+(`sub_824AAFF0`) runs inside that loop and presents frames, which matches
+the repeated VdSwap calls. The frame content does not change, so the
+scene the game builds is static for some other reason. Not identified.
