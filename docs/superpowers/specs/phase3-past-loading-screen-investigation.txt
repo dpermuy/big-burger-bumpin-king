@@ -9000,3 +9000,23 @@ So the outer loop's completion condition is satisfied. The frame driver
 (`sub_824AAFF0`) runs inside that loop and presents frames, which matches
 the repeated VdSwap calls. The frame content does not change, so the
 scene the game builds is static for some other reason. Not identified.
+
+Finding 157: the frame function is a present and timing wrapper. It does
+not build scene content.
+
+Read `sub_824A76D0` (ppc_recomp.66.cpp, body from the function start):
+- It runs a registered callback through a function pointer loaded from a
+  table at lis -32143 offset -540 (`bctrl`), then reads display field+16
+  bit 10.
+- When that bit is set and field+300 is nonzero, it calls `sub_820CC8E0`,
+  then `sub_820CCA68` (the VdSwap helper, with an argument from a table at
+  field+228, indexed by field+300), then returns.
+- It also records frame timing (`mftb` deltas into a global, field+220 and
+  field+224 from the frame-rate values in field+248..+260).
+
+So the swap is conditional on display field+16 bit 10 and the frame index
+field+300, and the scene's draw commands are not written here. The static
+content must come from the command builder that fills the ring buffer
+before this wrapper runs. Not located. Next step, not done: find which
+function writes the PM4 command stream each frame, and check whether it
+runs on each frame or once.
