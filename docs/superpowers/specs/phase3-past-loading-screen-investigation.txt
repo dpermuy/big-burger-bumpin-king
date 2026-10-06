@@ -9502,3 +9502,24 @@ Runtime execution check (lldb, auto-continue breakpoint on each of the 44,
 Result: no clear of canonical field+136 among the executed candidates. The 38
 that never ran are the only remaining static candidates, and they can only be
 checked by a run that reaches them, which this build does not do.
+
+Finding 178: keeping the frame loop running does not change what the game
+draws. The exit at frame 32 is not the only blocker.
+
+Evidence:
+- Finding 167 (threshold 100000000): presents continued to 178, no teardown,
+  but the draw list was the same: 177 rectangle draws and 24 point draws, one
+  rectangle per present.
+- Finding 171-172 (thresholds 10 and 30, watchdog raised): every value
+  eventually reaches teardown, so the loop always ends by threshold. Only
+  the timing changes.
+
+Read: the frame loop (`sub_8244AFB0`) drives presents, but the scene content
+does not advance even while it runs. The content must come from scene logic
+that is not running. The latch (Finding 174) is one blocker; the scene's own
+state machine is another, not yet found.
+
+Consequence for the next step: clearing or delaying field+136 alone will not
+produce a new scene. The next experiment has to show the scene logic running,
+for example by a watchpoint on the draw-list build, or by tracing which
+function builds the frame's draws each present while the loop runs.
