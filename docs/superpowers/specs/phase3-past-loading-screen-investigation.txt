@@ -9384,3 +9384,35 @@ the main thread does not return here, so either a next phase should start in
 build. Not resolved; the value of field+76 is still not the cause.
 
 main.cpp restored (watchdog 10 s, placeholder 1); rebuilt.
+
+Finding 173: `sub_8244B040` is a one-shot, not a state machine. It has no
+loop back to its top and no call that starts a next phase.
+
+Control-flow map (ppc_recomp.57.cpp, function range 1944-3020):
+- Early return at line 57 (1944+57).
+- Main body: a chain of flag-gated calls (loc_8244B098 .. loc_8244B5E8),
+  then `sub_8244AFB0` (the progress/frame loop, Finding 106).
+- After the loop: the drain (loc_8244B5F8, one back-branch, Finding 166),
+  then teardown (loc_8244B610: `sub_82413610`, `sub_82461BE8`,
+  `sub_824A3CC8`, `sub_8244D188`, `sub_8244E658`), then cleanup calls
+  (`sub_82129F38`, `sub_8212BF70`, `sub_82456578`, `sub_82457D30`,
+  `sub_8245DBC0`), then `sub_8212DBD0`, then return (line 1076).
+- Nothing after the teardown starts a new phase or re-enters the loop.
+
+Callers: the only caller found is the thread trampoline `sub_8212B130`
+(bctrl on the function pointer, Finding 165). It is reached from
+`sub_825DEC18`, which after the trampoline returns runs its own `b .`
+idle loop. So the top-level thread is one call deep and does not loop.
+
+Read: as built, this function treats "loading complete" (field+136 = 1) as
+the end of the whole session. A game that continued after loading would need
+either (a) field+136 cleared when the next phase starts (no clear found in
+this function), or (b) the teardown to be followed by a caller loop that
+runs the next phase (no such caller found in the code, since the trampoline
+does not loop). Neither is present in this build.
+
+Open: find the caller that should loop over phases, or the clear of
+field+136 that should start the next phase. Next step would be a watchpoint
+on canonical field+136 at the first write after loading, or the code that
+runs after the trampoline's `bl 0x823f3668` (the global at offset 9956 is
+checked there).
