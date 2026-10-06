@@ -9554,3 +9554,40 @@ Next (not done): find which game code writes the ring between 0 and 583
 dwords and what it waits on after the last write. Candidates: a loop on
 CP_RB_RPTR (ring space) or a fence, since the tracer shows the read side
 running and idle.
+
+Finding 180: the ring writer and the display flag. The submission stop
+(Finding 179) is caused by the teardown that follows the loading latch.
+
+Ring writer (watchpoint on CP_RB_WPTR, guest 0x7FC80714 = kGpuRegisterBase +
+0x1C5*4, from ring registration):
+- The store is in `sub_820B56B0` (+1736), reached through `sub_820B5B08`
+  and `sub_820B6220`/`sub_820B6080`.
+- Its callers include `sub_820CCA68` (the VdSwap helper) and the frame
+  wrapper `sub_824A76D0` (+768). So the per-frame submission runs from the
+  frame wrapper, through the present helper.
+- Also reached from `sub_820BCA68`, `sub_820B9D60`, `sub_820C8E58`,
+  `sub_820CD2E0` (boot-time paths).
+
+Display flag (watchpoint on the display object's word at guest 0x826E2120 =
+display 0x826E2110 + 16, which the frame wrapper reads, Finding 157):
+- Set by `sub_824A78E0` (+7752), called from `sub_824A84E0` and
+  `sub_825F8BD0`, from `sub_8244B040` (setup, early).
+- Cleared by `sub_824A3CC8` (+296), called from `sub_8244B040` (+5264), the
+  teardown on the loop-exit path (Finding 165).
+- The 8-byte value changes between the two states and back. I did not
+  isolate bit 10 alone, so the exact flag bit is not confirmed here.
+
+Chain, now closed:
+1. Loading latch (`field+136`) is set once (Finding 174).
+2. The per-tick function exits the loop and runs teardown (Finding 173).
+3. Teardown clears the display word read by the frame wrapper.
+4. The frame wrapper stops calling the ring-submit path (Finding 157's gate).
+5. CP_RB_WPTR stops moving, and frames parse zero packets (Finding 179).
+6. The picture freezes on the last submitted frame.
+
+Consequence: the stall at about 5 s is the teardown on the loading-exit path.
+The threshold only sets when that teardown happens (Finding 171-172). The fix
+needs the loop not to end into teardown, or a display re-setup after loading
+(`sub_824A78E0`) that the build never runs. The first is blocked on finding
+the missing next phase; the second would be a test: call the display setup
+again after the loop exits and see whether submissions resume.
