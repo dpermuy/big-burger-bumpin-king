@@ -8869,3 +8869,32 @@ full-width 1280x192 band that the window scissor would clip anyway.
 The black rectangle, which spans 1280x480, is not separately checked
 in a visual frame. Reverted the register print; host/ has no tracked
 changes.
+
+Finding 150: the black rectangle is drawn, but its shape is a slanted
+parallelogram, which suggests the fourth-corner rule is wrong for this
+game's vertex order.
+
+Earlier frames did not contain both rectangles: the dump captured only
+the cyan one, and the render loop logged `1 cmds`. Triggering the dump on
+a frame with two rectangle commands captured both (`render loop: 2 cmds`).
+
+Frame (1280x720 logical, dumped at half resolution): cyan band across the
+top right, black drawn over it. Black fills from the top edge down to a
+bottom edge at about 480 px, between x 0 and 1280, with a diagonal left
+edge running from (0, 0) to (640, 480) and a diagonal right edge from
+(640, 0) to (1280, 480). The bottom edge matches black's position extent.
+
+The shape is a parallelogram because the mapped inputs are
+A(-0.5,-0.5), B(639.5,-0.5), C(1279.5,479.5), and the fourth corner
+D = B + C - A puts the implied corner at (1919.5, 479.5). With three
+top-left, top-right, bottom-left inputs, that rule gives an axis-aligned
+rectangle. These inputs are not that arrangement, so the rule does not
+hold for this game's vertices. Xenia's D3D9 resolve comment (xenos.h:
+928-937) describes three vertices for a rectangle list without giving the
+corner order, so the rule is not confirmed from that source either.
+
+Next step, not done: test the candidate corner rules (for example D =
+A + C - B, or treating the three inputs as top-left, bottom-left,
+bottom-right) against the expected axis-aligned rectangles, and check the
+game's own vertex order. Reverted the renderer readback and the vertex
+print; host/ has no tracked changes.
