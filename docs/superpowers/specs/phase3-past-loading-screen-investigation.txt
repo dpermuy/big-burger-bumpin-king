@@ -9114,3 +9114,28 @@ Recommendation: stop chasing the callback. The remaining unknown is what
 the game's scene logic is waiting on, and that is better approached by a
 runtime trace of the game's own state variables across frames than by
 searching for this one slot.
+
+Finding 163: first runtime state trace (headless, per-present diff of the
+display object at 0x826E2110 and the canonical object, reverted after).
+
+Changes seen per frame (frames 1-32):
+- display +300 alternates 1 <-> 2 every frame (double-buffer index): the
+  frame logic runs.
+- canonical +12 advances by roughly 0.8 million ticks per frame (a
+  timestamp, read from the real timebase): the game's clock runs.
+- display +92 goes 1 -> 0 at frame 1 (the Finding 141 VdSwap placeholder
+  clears it, as intended).
+- canonical +136 goes 0 -> 1 at frame 30 (the loading-complete flag from
+  Finding 156).
+- display +308..+380 are filled in at frame 1 (per-frame state table).
+
+After frame 32 no other word changed in this run, and VdSwap stopped
+printing: about 33 presents total in 10 s headless. Earlier windowed runs
+presented about 590 frames, so this may be the headless run ending, not the
+game freezing.
+
+Read so far: the game's per-frame logic and clock are running, and the
+loading-complete flag is set at frame 30. The state that is still
+unexplained is why the scene content stays constant in the windowed run.
+Next: repeat the trace in the windowed run for a longer span, to see
+whether any state word changes after frame 32.
