@@ -9360,3 +9360,27 @@ main.cpp is restored to the committed value (1); rebuilt.
 Next (not done): extend the watchdog for a test-only run (its 10 s limit is
 a harness setting, Phase 2A) and rerun 10 and 30 to see whether teardown
 happens and what state the game reaches.
+
+Finding 172: with the watchdog raised to 120 s (test-only, reverted), thresholds
+10 and 30 both reach teardown within about 100 s. Teardown is the same
+path seen at thresholds 1 and 3 (6 `ExTerminateThread` messages each run,
+then the `MmFreePhysicalMemory` cleanup). Neither run printed `_xstart`
+returning. The threshold only changes how long the game runs before this
+teardown.
+
+Caveat: the present count did not print, because the runs were stopped with
+pkill before the exit summary. Time to teardown was not timed. The result
+for 10 and 30 is "teardown reached", not the present count.
+
+Consequence: the teardown is not caused by one bad threshold. Every threshold
+value tested ends in the same shutdown, just later. So the post-loop path
+(`sub_8244B040`: `sub_8244AFB0` returns, then drain and teardown, then the
+function returns, Finding 165) is the game's exit route after this loop, not
+a timing issue.
+
+Open: what the game should do after this loop completes. In the real game
+the main thread does not return here, so either a next phase should start in
+`sub_8244B040`, or the loop's completion should not reach teardown in this
+build. Not resolved; the value of field+76 is still not the cause.
+
+main.cpp restored (watchdog 10 s, placeholder 1); rebuilt.
