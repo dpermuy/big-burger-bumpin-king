@@ -9757,3 +9757,22 @@ Host bug (not fixed): `fmt::println` on a failing stdout throws out of a
 host thread and terminates the process. Fix options: catch around the print
 calls in the watchdog and kernel log paths, or switch those lines to
 `fprintf`. Left for a decision.
+
+Finding 186: host print path no longer aborts when stdout fails.
+
+Change: new `host/host_print.h` with `HostPrintln`, a `fmt::println` wrapper
+that catches and discards any exception. All 150 host print calls in
+main.cpp, kernel_impl.cpp and kernel_stubs.cpp now go through it.
+
+Why: `fmt::println` throws when stdout cannot be written. Thrown inside a
+std::thread (the watchdog, the GPU pump, guest logging), the exception
+escapes and calls std::terminate, which aborts the process (the crash in the
+pasted report, pid 24507, thread 9: watchdog `fmt::vprintln` -> `__cxa_throw`
+-> `terminate`).
+
+Test: stdout and stderr closed (`>&- 2>&-`), windowed. Before the change this
+path aborted. After, the host ran to the watchdog and exited with code 2
+(`std::_Exit(2)`, the watchdog's own timeout exit). Not an abort (134).
+
+Not changed: the watchdog's "10 seconds" text (cosmetic), and the 10 s
+watchdog itself.

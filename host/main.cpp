@@ -1,6 +1,7 @@
 #include "ppc_config.h"
 #include <ppc_context.h>
 #include <fmt/core.h>
+#include "host_print.h"
 #include <file.h>
 #include <image.h>
 #include "gpu_trace.h"
@@ -69,7 +70,7 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
         size_t offsetIntoAllocation = section.data - image.data.get();
         if (offsetIntoAllocation + section.size > image.size)
         {
-            fmt::println("Skipping section '{}': declared range exceeds allocated image size "
+            HostPrintln("Skipping section '{}': declared range exceeds allocated image size "
                 "(loader metadata, not part of the runtime image)", section.name);
             continue;
         }
@@ -83,7 +84,7 @@ static uint8_t* SetupMemoryImage(const char* xexPath)
         mappingCount++;
     }
 
-    fmt::println("Guest memory image ready: base={}, {} sections loaded, {} function mappings installed",
+    HostPrintln("Guest memory image ready: base={}, {} sections loaded, {} function mappings installed",
         static_cast<void*>(base), image.sections.size(), mappingCount);
 
     // Real Xbox 360 kernel/HAL boot code (outside any title's own executable) populates
@@ -167,18 +168,18 @@ int main(int argc, char** argv)
         constexpr int kWindowHeight = 720;
         if (!Renderer_Init(kWindowWidth, kWindowHeight))
         {
-            fmt::println("Failed to initialize Metal renderer (no GPU device available?) -- exiting.");
+            HostPrintln("Failed to initialize Metal renderer (no GPU device available?) -- exiting.");
             std::_Exit(1);
         }
     }
 
     if (!g_xdvdfsImage.Open(isoPath))
     {
-        fmt::println("Warning: failed to open ISO '{}' -- disc file access will report not-found for everything.", isoPath);
+        HostPrintln("Warning: failed to open ISO '{}' -- disc file access will report not-found for everything.", isoPath);
     }
     else
     {
-        fmt::println("Opened disc image: {}", isoPath);
+        HostPrintln("Opened disc image: {}", isoPath);
     }
 
     // Advances the tick field the guest reads via the pointer SetupMemoryImage wrote
@@ -241,7 +242,7 @@ int main(int argc, char** argv)
     ctx.r1.u64 = kStackBase + kStackSize - 0x10;
     ctx.r13.u64 = 0x82670000; // small-data-area base (confirmed via cross-reference, Phase 2R)
 
-    fmt::println("Calling _xstart...");
+    HostPrintln("Calling _xstart...");
 
     auto future = std::async(std::launch::async, [&]() {
         _xstart(ctx, base);
@@ -253,12 +254,12 @@ int main(int argc, char** argv)
         auto status = future.wait_for(std::chrono::seconds(10));
         if (status == std::future_status::timeout)
         {
-            fmt::println("_xstart did not return within 10 seconds (watchdog timeout) -- "
+            HostPrintln("_xstart did not return within 10 seconds (watchdog timeout) -- "
                 "this is an expected, informative outcome for Phase 2A, not a crash.");
             std::_Exit(2);
         }
 
-        fmt::println("_xstart returned normally.");
+        HostPrintln("_xstart returned normally.");
         return 0;
     }
 
@@ -272,13 +273,13 @@ int main(int argc, char** argv)
         auto status = future.wait_for(std::chrono::seconds(10));
         if (status == std::future_status::timeout)
         {
-            fmt::println("_xstart did not return within 10 seconds (watchdog timeout) -- "
+            HostPrintln("_xstart did not return within 10 seconds (watchdog timeout) -- "
                 "this is an expected, informative outcome for Phase 2A, not a crash.");
             watchdogResult.store(2);
         }
         else
         {
-            fmt::println("_xstart returned normally.");
+            HostPrintln("_xstart returned normally.");
             watchdogResult.store(0);
         }
         Renderer_RequestShutdown();

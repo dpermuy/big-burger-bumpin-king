@@ -1,6 +1,7 @@
 #include "ppc_config.h"
 #include <ppc_context.h>
 #include <fmt/core.h>
+#include "host_print.h"
 #include "xdvdfs.h"
 #include "gpu_trace.h"
 #include "renderer_metal.h"
@@ -44,13 +45,13 @@ static bool g_notifiedStartup = false; // real Xenia: only the first mask&1 list
 
 PPC_FUNC(__imp__KeBugCheck)
 {
-    fmt::println("[kernel] KeBugCheck: code=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
+    HostPrintln("[kernel] KeBugCheck: code=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
     std::_Exit(3);
 }
 
 PPC_FUNC(__imp__HalReturnToFirmware)
 {
-    fmt::println("[kernel] HalReturnToFirmware: routine=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
+    HostPrintln("[kernel] HalReturnToFirmware: routine=0x{:X} -- halting (real kernel never returns from this)", ctx.r3.u64);
     std::_Exit(4);
 }
 
@@ -149,7 +150,7 @@ PPC_FUNC(__imp__KeTlsAlloc)
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (g_tlsNextSlot >= 64)
     {
-        fmt::println("[kernel] KeTlsAlloc: out of TLS slots (64 max)");
+        HostPrintln("[kernel] KeTlsAlloc: out of TLS slots (64 max)");
         ctx.r3.u64 = 0xFFFFFFFF; // TLS_OUT_OF_INDEXES
         return;
     }
@@ -216,7 +217,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
     PPC_STORE_U32(baseAddressPtr, allocatedAddress);
     PPC_STORE_U32(regionSizePtr, alignedSize);
 
-    fmt::println("[kernel] NtAllocateVirtualMemory: {} bytes -> 0x{:X}", alignedSize, allocatedAddress);
+    HostPrintln("[kernel] NtAllocateVirtualMemory: {} bytes -> 0x{:X}", alignedSize, allocatedAddress);
 
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
@@ -402,7 +403,7 @@ PPC_FUNC(__imp__NtWaitForSingleObjectEx)
     auto it = g_handleTable.find(handle);
     if (it == g_handleTable.end())
     {
-        fmt::println("[kernel] NtWaitForSingleObjectEx: unknown handle 0x{:X}", handle);
+        HostPrintln("[kernel] NtWaitForSingleObjectEx: unknown handle 0x{:X}", handle);
         ctx.r3.u64 = 0xC0000008; // STATUS_INVALID_HANDLE
         return;
     }
@@ -694,7 +695,7 @@ PPC_FUNC(__imp__NtCreateFile)
         PPC_STORE_U32(ioStatusBlockPtr + 4, status == 0 ? 1 : 0); // FILE_OPENED
     }
 
-    fmt::println("[kernel] NtCreateFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    HostPrintln("[kernel] NtCreateFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
     ctx.r3.u64 = status;
 }
 
@@ -712,7 +713,7 @@ PPC_FUNC(__imp__NtOpenFile)
         PPC_STORE_U32(handleOutPtr, status == 0 ? handle : 0);
     }
 
-    fmt::println("[kernel] NtOpenFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
+    HostPrintln("[kernel] NtOpenFile: \"{}\" -> status=0x{:X} handle=0x{:X}", path, status, handle);
     ctx.r3.u64 = status;
 }
 
@@ -759,7 +760,7 @@ PPC_FUNC(__imp__NtReadFile)
 
     if (!validHandle)
     {
-        fmt::println("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
+        HostPrintln("[kernel] NtReadFile: unknown handle 0x{:X}", handle);
         if (ioStatusBlockPtr != 0)
         {
             PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
@@ -775,7 +776,7 @@ PPC_FUNC(__imp__NtReadFile)
         PPC_STORE_U32(ioStatusBlockPtr + 4, bytesToRead);
     }
 
-    fmt::println("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={} buffer=0x{:X}", handle, offset, length, bytesToRead, bufferPtr);
+    HostPrintln("[kernel] NtReadFile: handle=0x{:X} offset={} requested={} read={} buffer=0x{:X}", handle, offset, length, bytesToRead, bufferPtr);
 
     // Real NT I/O completion APC (distinct from the user-mode APC queueing in
     // NtQueueApcThread, Phase 3H). Cross-referenced against Xenia's real
@@ -834,7 +835,7 @@ PPC_FUNC(__imp__NtQueryInformationFile)
     auto it = g_fileState.find(handle);
     if (it == g_fileState.end())
     {
-        fmt::println("[kernel] NtQueryInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        HostPrintln("[kernel] NtQueryInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
         if (ioStatusBlockPtr != 0)
         {
             PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
@@ -865,7 +866,7 @@ PPC_FUNC(__imp__NtQueryInformationFile)
     }
     else
     {
-        fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        HostPrintln("[kernel] NtQueryInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
         if (ioStatusBlockPtr != 0)
         {
             PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
@@ -881,7 +882,7 @@ PPC_FUNC(__imp__NtQueryInformationFile)
         PPC_STORE_U32(ioStatusBlockPtr + 4, written);
     }
 
-    fmt::println("[kernel] NtQueryInformationFile: handle=0x{:X} class=0x{:X} -> {} bytes", handle, infoClass, written);
+    HostPrintln("[kernel] NtQueryInformationFile: handle=0x{:X} class=0x{:X} -> {} bytes", handle, infoClass, written);
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
@@ -896,7 +897,7 @@ PPC_FUNC(__imp__NtSetInformationFile)
     auto it = g_fileState.find(handle);
     if (it == g_fileState.end())
     {
-        fmt::println("[kernel] NtSetInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
+        HostPrintln("[kernel] NtSetInformationFile: unknown handle 0x{:X} class=0x{:X}", handle, infoClass);
         if (ioStatusBlockPtr != 0)
         {
             PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusInvalidHandle);
@@ -914,7 +915,7 @@ PPC_FUNC(__imp__NtSetInformationFile)
     }
     else
     {
-        fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
+        HostPrintln("[kernel] NtSetInformationFile: handle=0x{:X} unhandled class=0x{:X}", handle, infoClass);
         if (ioStatusBlockPtr != 0)
         {
             PPC_STORE_U32(ioStatusBlockPtr + 0, kStatusNoSuchDevice);
@@ -930,7 +931,7 @@ PPC_FUNC(__imp__NtSetInformationFile)
         PPC_STORE_U32(ioStatusBlockPtr + 4, 0);
     }
 
-    fmt::println("[kernel] NtSetInformationFile: handle=0x{:X} class=0x{:X} position={}", handle, infoClass, state.position);
+    HostPrintln("[kernel] NtSetInformationFile: handle=0x{:X} class=0x{:X} position={}", handle, infoClass, state.position);
     ctx.r3.u64 = 0; // STATUS_SUCCESS
 }
 
@@ -991,7 +992,7 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
         g_bumpAllocatorNext = allocatedAddress + alignedSize + kBumpAllocatorGap;
     }
 
-    fmt::println("[kernel] MmAllocatePhysicalMemoryEx: flags=0x{:X} size=0x{:X} protect=0x{:X} align=0x{:X} -> {} bytes at 0x{:X}",
+    HostPrintln("[kernel] MmAllocatePhysicalMemoryEx: flags=0x{:X} size=0x{:X} protect=0x{:X} align=0x{:X} -> {} bytes at 0x{:X}",
         (uint32_t)ctx.r3.u64, requestedSize, (uint32_t)ctx.r5.u64, alignment, alignedSize, allocatedAddress);
 
     ctx.r3.u64 = allocatedAddress; // Mm* functions return the address directly, not a status code
@@ -1297,7 +1298,7 @@ PPC_FUNC(__imp__ExCreateThread)
     // the queue-worker slot index at [r13+268].
     PPC_STORE_U8(tlsBlockBase + kTlsBlockCenter + 268, (uint8_t)tlsSlotIndex);
 
-    fmt::println("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X} tlsSlot={}",
+    HostPrintln("[kernel] ExCreateThread: entry=0x{:X} (via {}) stack=0x{:X}..0x{:X} handle=0x{:X} tlsSlot={}",
         entryAddress, xApiThreadStartup != 0 ? "XApiThreadStartup" : "StartAddress directly",
         stackBase, stackBase + kStackSize, handle, tlsSlotIndex);
 
@@ -1473,7 +1474,7 @@ PPC_FUNC(__imp__DbgPrint)
 
 PPC_FUNC(__imp__ExTerminateThread)
 {
-    fmt::println("[kernel] ExTerminateThread: exitCode=0x{:X} -- terminating this thread", ctx.r3.u64);
+    HostPrintln("[kernel] ExTerminateThread: exitCode=0x{:X} -- terminating this thread", ctx.r3.u64);
 
     if (g_currentThreadHandle != 0)
     {
