@@ -23,7 +23,7 @@ Paste this into a new session started in the repo
 ## The next question
 
 Find the writer of the flag at `obj+816` bit 0 (object = global at -29808, lis
--32143 offset -29808, guest 0x82710000 - 29808 = 0x82708BB0 for the global
+-32143 offset -29808, guest 0x82710000 - 29808 = 0x82708B90 for the global
 slot). `sub_82461BE8` (shutdown drain) waits while it is set (Finding 190).
 Also, find the producer of event handle 0x1004 (stored at guest 0x82660018,
 created by `sub_8212A710` via `sub_820A9750`). The worker `sub_82127EE0`
