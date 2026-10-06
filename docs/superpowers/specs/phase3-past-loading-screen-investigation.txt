@@ -9714,3 +9714,46 @@ to unblock.
 Caveat on the method: lldb conditional breakpoints do not fire on this
 binary with `*(unsigned int*)$x0`, so use unconditional logging.
 kernel_impl.cpp restored (git checkout); rebuilt.
+
+Finding 185: the worker's event handle is stored in global 0x82660018, and no
+generated code found signals that global. Also: the host crashed with an
+uncaught exception from its own print path.
+
+Handle storage (ppc_recomp.12.cpp, `sub_8212A710`):
+- Calls `sub_820A9750` (event creation, handle 0x1004 in r3) and stores r3 at
+  `r30 + 948`, where r30 = lis -32154 + -924 = 0x8265FC44. Address
+  0x8265FC44 + 948 = 0x82660018, the worker's wait global (Finding 183).
+So 0x1004 is the event the worker waits on, created on the boot path.
+
+Static search for the signal:
+- Functions that touch the -32154 table and call an event-set routine:
+  one match, `sub_82128B40` (ppc_recomp.12.cpp). It takes a key in r3,
+  searches a table at -32153 + 6932 (5 entries), and calls `sub_820A96D0`
+  (event set) on handle `table[index]` from the array at 0x8266001C
+  (`lis -32154`, `addi 28`). That array starts one word after 0x82660018,
+  so 0x1004 (at +24) is not in it.
+- No function in the generated code loads the handle at 0x82660018 for a set.
+  The worker's wait handle has no visible signaler.
+
+Read: the signal for this worker is either driven by a path this build does
+not reach, or is supplied by the host (for example the graphics interrupt
+callback `VdSetGraphicsInterruptCallback`, Finding 32/33, which runs from
+VdSwap). Not decided here.
+
+Crash (the user's pasted report, pid 24507, 22:48:13):
+- Crashed thread 9 is the host watchdog lambda (`main::$_3`), calling
+  `fmt::v11::vprintln`, which threw. Thread 10 was in the same
+  `vprintln` path (called from `NtCreateFile`'s log line) and was unwinding.
+  The uncaught throw reached `std::terminate` -> `abort()`.
+- `fmt::println` throws when stdout cannot be written. Two threads printing
+  at the same time, with the output stream failing, produce an uncaught
+  throw in a thread, which aborts the process. The host has no catch on this
+  path.
+- The stream failure is not identified. Likely cause: stdout was a pipe or
+  file that stopped accepting writes during my test runs (several logs were
+  removed or stopped while processes were still running). Not confirmed.
+
+Host bug (not fixed): `fmt::println` on a failing stdout throws out of a
+host thread and terminates the process. Fix options: catch around the print
+calls in the watchdog and kernel log paths, or switch those lines to
+`fprintf`. Left for a decision.
