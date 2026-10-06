@@ -9478,3 +9478,27 @@ caught. It could only find writers in code this run never reaches. To narrow
 the 305 to useful candidates, the next step is call-graph reachability from
 the frame loop (`sub_8244AFB0`) and the post-loop code, which is a larger
 analysis, not done here.
+
+Finding 177: call-graph reachability and execution check for the offset-136
+writers.
+
+Static call graph (direct `sub_...(ctx, base)` calls, generated code):
+- 3455 functions reachable from `sub_8244AFB0` (frame loop) and
+  `sub_8244B040` (per-tick, including teardown).
+- Of the 305 functions that store to offset 136 from a non-stack base
+  (Finding 176), 44 are in that reachable set.
+- Limit: indirect calls (`bctrl`) are not in the graph, so reachability is a
+  lower bound on what can run.
+
+Runtime execution check (lldb, auto-continue breakpoint on each of the 44,
+10 s windowed run, the same run as Finding 174):
+- Executed: `sub_82451408` (15 hits; the setter), `sub_82125BD8` (633),
+  `sub_821298C0` (1), `sub_8244D268` (1), `sub_824A78E0` (1), `sub_8257D5E0`
+  (1).
+- Not executed in this run: the other 38.
+- Canonical field+136 was written only by the setter (Finding 174), so none of
+  the six executed functions clears it in this run.
+
+Result: no clear of canonical field+136 among the executed candidates. The 38
+that never ran are the only remaining static candidates, and they can only be
+checked by a run that reaches them, which this build does not do.
