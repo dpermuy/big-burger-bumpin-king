@@ -9191,3 +9191,28 @@ exit decision after loading, not a blocked wait.
 Not yet confirmed: which condition selects shutdown (the -916 global and
 `r31+8` value at that point). Next step: read those two values at the
 moment `sub_8244AFB0` returns.
+
+Finding 166: the shutdown branch is taken because `sub_8244AFB0` returned
+and the post-loop code runs a normal drain-then-teardown sequence. The
+open question is now what `sub_8244AFB0` returning means: loading done, or
+quit.
+
+Probe (temporary, reverted; ppc_recomp.57.cpp restored from backup, grep
+confirms no TEMP-PROBE left):
+- Right after `sub_8244AFB0` returns: global at guest 0x8270FC6C
+  (lis -32143, offset -916) = 0; r27 object = 0xB91621F0; object+8 = 10.
+- Global 0 means the `sub_824A9DD8` branch is skipped. object+8 = 10 is
+  nonzero, so the code enters the drain loop (loc_8244B5F8) and calls
+  `sub_82453200` on the object.
+- Drain counts object+8 down 10 -> 9 -> ... -> 0, one per call. At 0 the
+  code runs teardown (`sub_824A3CC8` and the following calls).
+
+Read: the drain is a normal queue flush and the teardown is the game's own
+post-loop path. So the shutdown is not a fault. It is what the code does
+once `sub_8244AFB0` returns.
+
+Open: field+136 = 1 at frame 30 (Finding 156) was taken as the
+loading-complete signal. Since the return leads to shutdown, that flag may
+mean "exit requested" instead, or the loop returned for a different reason
+than the one it waits on. Next: read Finding 106's loop body to see which
+state `field+136` gates, and what sets it. Not yet read.
