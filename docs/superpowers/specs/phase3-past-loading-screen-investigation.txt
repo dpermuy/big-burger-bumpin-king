@@ -9591,3 +9591,30 @@ needs the loop not to end into teardown, or a display re-setup after loading
 (`sub_824A78E0`) that the build never runs. The first is blocked on finding
 the missing next phase; the second would be a test: call the display setup
 again after the loop exits and see whether submissions resume.
+
+Finding 181: the teardown is the cause of the submission stop. Without it,
+submissions continue, but the content they carry is the same small set.
+
+Test (temporary, reverted): placeholder 100000000, so the loop never ends and
+teardown never runs (same run shape as Finding 167). 12 s windowed:
+- CP_RB_WPTR moves: 212 (last at t=9972 ms). In the baseline run it stopped at
+  4936 ms with 37 moves (Finding 179).
+- Frames that parse packets: 1277 of 15400. Baseline: none after about 5 s.
+- Presents: 178 (baseline 33).
+
+Read: the display flag cleared by teardown (Finding 180) is what stops
+submission. Keeping the loop running from before teardown restores it.
+
+Caveat: this tests "no teardown", not option 2 as stated (re-running the
+display setup after the loop exits). Re-running the setup was not tested,
+because its arguments depend on two caller pointers and the frame loop would
+still need to run again afterward.
+
+Content: the submitted packets are not new scenes. Finding 178 showed 177
+rectangle draws and 24 point draws, one rectangle per present, the same as
+the baseline. So with submissions running, the game still draws one fixed
+rectangle set. The picture is frozen by the content, not only by the stop.
+The next blocker is the game's own state while the loop runs, which is
+loading-like: a fixed draw each frame.
+
+main.cpp restored to the committed value (1); rebuilt.
