@@ -9337,3 +9337,26 @@ the loading-threshold value before boot. Our build sets it to 1 (Finding
 118). The correct value is not in the game files or the XEX, so no value
 is derivable from this build. Any number is a choice, not a recovered
 value.
+
+Finding 171: threshold sweep on the placeholder (kLoadingProgressConfigSlot,
+host/main.cpp). Only the value changed each run. Windowed, about 12 s each.
+
+| value | presents | teardown messages | watchdog line |
+|-------|----------|-------------------|---------------|
+| 1     | 32       | 6 (teardown ran)  | yes           |
+| 3     | 91       | 6 (teardown ran)  | yes           |
+| 10    | 178      | 0                 | yes           |
+| 30    | 179      | 0                 | yes           |
+
+Read: teardown happens at about the value set (value 1 at about 32 presents,
+value 3 at about 91). Values 10 and 30 were still running when the 10 s
+watchdog ended the run. 178 presents is the same cap seen with 100000000
+(Finding 167), so the run length, not the threshold, limits these runs.
+Whether 10 or 30 reaches teardown or the next state is not known from this
+sweep.
+
+main.cpp is restored to the committed value (1); rebuilt.
+
+Next (not done): extend the watchdog for a test-only run (its 10 s limit is
+a harness setting, Phase 2A) and rerun 10 and 30 to see whether teardown
+happens and what state the game reaches.
