@@ -8851,3 +8851,21 @@ Caveat: the 1280x720 target size is assumed from the game's own
 AVIVO viewport value and the project's fixed window, not read from the
 game's render target. The black rectangle's placement and the rest of
 the frame are not checked. Indexed rectangle lists are still skipped.
+
+Finding 149: target size confirmed from the game's own scissor
+registers; the cyan band is a 1280x192 window region.
+
+Temporary print of writes (reverted):
+- PA_SC_SCREEN_SCISSOR_BR (0x200F) = 0x20002000: the maximum, so the
+  screen scissor does not constrain the frame.
+- PA_SC_WINDOW_SCISSOR_BR (0x2082) = 0x00C00500: x 1280, y 192. That is
+  a 1280x192 window region, and its bottom edge matches the cyan band's
+  bottom at about 191.5 px seen in Finding 148.
+- Smaller window regions (0x00100010, 16x16) also appear.
+
+So the 1280x720 logical target assumed in Finding 148 is consistent
+with the game's own scissor values, and the cyan rectangle is a
+full-width 1280x192 band that the window scissor would clip anyway.
+The black rectangle, which spans 1280x480, is not separately checked
+in a visual frame. Reverted the register print; host/ has no tracked
+changes.
