@@ -9776,3 +9776,29 @@ path aborted. After, the host ran to the watchdog and exited with code 2
 
 Not changed: the watchdog's "10 seconds" text (cosmetic), and the 10 s
 watchdog itself.
+
+Finding 187: the graphics interrupt path does not signal the worker's event
+0x1004. It signals its own event, 0x1017.
+
+Registration (lldb breakpoint on `__imp__VdSetGraphicsInterruptCallback`,
+boot): r3 = 0x820B5160 (the callback), r4 = 0x900FF7D0 (its context). Called
+from `sub_820BC968` <- `sub_820BCA68`. So the game does register it, at boot.
+
+Dispatch (host): two places. Vblank, source 0, once per VdSwap
+(kernel_impl.cpp ~1714). PM4 INTERRUPT packet, source 1, from the ring
+(gpu_trace.cpp ~297, Finding 36).
+
+Callback body (ppc_recomp.4.cpp, `sub_820B5160`, 11402-11559): reads the
+context's object at `ctx+10772`, then a handle at object `+20`, and signals
+it through the event-set helper `sub_820A96D0` (the call at +896). The
+earlier set-event log showed this call with handle 0x1017 (Finding 184).
+
+Read: the registered interrupt path works and signals event 0x1017. It does
+not signal 0x1004. The worker's event 0x1004 is stored in global 0x82660018
+(Finding 185), which is not the object this callback reads.
+
+Caveat: the callback signals only in some states (queue branches in the
+body), so this shows the path runs, not that no path can signal 0x1004.
+
+Conclusion: the graphics interrupt callback is not the signal for the
+worker. The worker's event still has no visible signaler (Finding 185).
