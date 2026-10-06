@@ -9061,3 +9061,21 @@ what holds the scene static is not yet tested. Next step, not done: find
 the function that should register this per-frame callback (a boot-time
 initializer, or a kernel call that takes a function pointer), then check
 whether it runs in this build.
+
+Finding 160: no writer found for the frame-callback slot (guest
+0x8270FE20). Two more paths ruled out.
+
+- Direct-offset search: no generated code loads or stores at offset -540
+  or -544 from a non-stack base, apart from one unrelated load
+  (ppc_recomp.61.cpp:12083, `lwz r18,-544(r6)`). The slot is not reached
+  by that addressing form.
+- Host-side registration: `VdSetGraphicsInterruptCallback` stores its
+  callback in the host tracer (`g_gpuTracer.SetGraphicsInterruptCallback`),
+  not in guest memory at that address. It is a separate callback
+  (interrupt/vblank), not this frame-wrapper pointer.
+
+So the slot's writer is not a plain store in the generated code, and not
+a host-side kernel call either. It may be written through a pointer
+computed at runtime, or by a boot path this build does not reach. Not
+resolved. Recommend pausing this chase: it has taken many rounds without
+converging on a single missing step.
