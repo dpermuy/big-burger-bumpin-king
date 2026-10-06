@@ -9860,3 +9860,31 @@ packets after frame 2 are absent). The loop state is still the loading state
 (Finding 182).
 
 kernel_impl.cpp restored (git checkout); rebuilt; no temp code committed.
+
+Finding 190: with the forced signal, the main thread is in shutdown, waiting
+in a drain loop for a flag at `obj+816` bit 0 to clear.
+
+Sample (forced signal at present 10, lldb attach at 9 s, full thread dump):
+- Main thread stack: `_xstart` -> `sub_825DEC18` trampoline ->
+  `sub_8244B040` (+5244, the post-loop part) -> `sub_82461BE8` (+264) ->
+  `sub_820AB5C8` -> `KeDelayExecutionThread`.
+- Worker threads: all in the `sub_820ABCE8` wait pattern (Finding 188) except
+  the one that finished.
+
+`sub_82461BE8` (shutdown drain, ppc_recomp.*):
+- Reads the global at -29808 (object `r28`). While `r28+816` bit 0 is set, it
+  runs one frame (`sub_824AAFF0`, the frame driver) and sleeps 10 ms
+  (`sub_82128B38`). Then it walks an intrusive list at `r28+8` and calls
+  `sub_8245B678` and `sub_82457DE0` on each entry.
+
+Read: the forced signal lets the worker finish, but the main thread then
+enters shutdown and waits for `obj+816` bit 0 to clear. That flag is set and
+does not clear in this run. So the shutdown waits on another external
+completion. This is the same kind of wait as the worker's (Findings 183, 188):
+a flag that a missing producer should clear.
+
+Not done: find the writer of `obj+816` bit 0 (the object is the global at
+-29808). It is probably the same producer class as 0x1004, or the GPU-done
+path the drain expects.
+
+Test patch reverted; kernel_impl.cpp at committed state; rebuilt.
