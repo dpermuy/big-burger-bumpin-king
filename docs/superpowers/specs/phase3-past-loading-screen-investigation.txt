@@ -9039,3 +9039,25 @@ behaving as the game's commands direct.
 Not identified: the game-state condition that holds the scene constant
 (likely a menu or loading state waiting on something the build does not
 yet supply). Not located in this finding.
+
+Finding 159: the per-frame callback that the frame wrapper calls is never
+registered. A possible explanation for the static scene, not confirmed.
+
+Live (external attach, windowed build, 8 s in): the callback pointer
+slot at guest 0x8270FE20 and its argument slot at 0x8270FE24 both read 0.
+`sub_824A76D0` (ppc_recomp.66.cpp, the frame wrapper) loads the pointer
+from that slot and calls it through `bctrl` only when it is nonzero, so
+the per-frame callback is skipped every frame.
+
+Static search: the only generated function that addresses that slot is
+`sub_824A76D0` itself (lis -32143, addi -540). No generated code writes it.
+So the registration is not in the generated code; it is either a
+mechanism the build does not reach (a boot path that never runs) or a
+host-side call that should set it and does not.
+
+Read: this is a second, independent missing registration, alongside the
+display-latch and frame-state chains from earlier findings. Whether it is
+what holds the scene static is not yet tested. Next step, not done: find
+the function that should register this per-frame callback (a boot-time
+initializer, or a kernel call that takes a function pointer), then check
+whether it runs in this build.
