@@ -9618,3 +9618,29 @@ The next blocker is the game's own state while the loop runs, which is
 loading-like: a fixed draw each frame.
 
 main.cpp restored to the committed value (1); rebuilt.
+
+Finding 182: with the loop kept alive (no teardown), the game's state does
+not advance. Only the buffer index and the clock change.
+
+Test (temporary, reverted): the state diff probe from Finding 163 on display
+0x826E2110 and the canonical object, with placeholder 100000000 (loop never
+ends). 14 s windowed, all frames 1-~180.
+
+Words that changed:
+- display +300: the double-buffer index, 1 <-> 2 every frame (177 changes).
+- canonical +12 and +20: the clock, rising every frame (176 each).
+- Everything else: at most 2 changes each, all in the first frames
+  (display +52, +56, +92, +308..+316, +368..+380, canonical +8). After
+  frame 32 no word other than the index and the clock changes.
+
+Read: the game runs its per-frame loop with the clock and buffer index
+moving, and every other state word is fixed from about frame 2 on. Nothing
+advances: no mode change, no scene pointer change, no progress counter. The
+game is in a wait, waiting on a condition that never becomes true. The
+fixed draw (Finding 181) is the state it is waiting in.
+
+Not identified: the condition. Candidates are the checks in the per-tick
+loop body (`sub_8244DC40` returns a pointer and tests its field +112, and
+the frame driver's inputs fields +212..+224, Finding 167 context).
+
+main.cpp, kernel_impl.cpp restored to committed state; rebuilt.
