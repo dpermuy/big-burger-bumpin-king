@@ -484,11 +484,7 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                         }
                     }
 
-                    if (isRectList && isIndexed)
-                    {
-                        if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: indexed kRectangleList not supported yet, skipped\n", indent);
-                    }
-                    else if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
+                    if (vertexByteSize == 0 || vertexByteSize > kMaxVertexBufferBytes)
                     {
                         if (logFile_) fprintf(logFile_, "%s-> DRAW_INDX_2: vertex buffer size %u bytes out of sane range, skipped\n", indent, vertexByteSize);
                     }
@@ -521,7 +517,83 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             ? currentVs.vertexStrideBytes : 12;
                         uint32_t bufferVertexCapacity = vertexByteSize / realStride;
 
-                        if (isIndexed)
+                        if (isRectList)
+                        {
+                            // kRectangleList (Xenia xenos.h PrimitiveType 0x08): three
+                            // vertices per rectangle, right angle at v1, fourth corner
+                            // D = v0 + v2 - v1. Expanded to triangles (A,B,C) and (A,C,D).
+                            // Indexed draws gather vertices through the index buffer;
+                            // non-indexed draws use the vertices in order. Each source
+                            // record keeps the full stride so the translated vertex layout
+                            // still applies. D's extra attributes copy B's record
+                            // (approximate, not Xenia-verified).
+                            std::vector<uint32_t> srcIdx;
+                            if (isIndexed)
+                            {
+                                uint32_t width = indexIs32Bit ? 4u : 2u;
+                                uint32_t n = (uint32_t)resolvedIndexData.size() / width;
+                                if (n > resolvedIndexCount) n = resolvedIndexCount;
+                                srcIdx.reserve(n);
+                                for (uint32_t k = 0; k < n; k++)
+                                {
+                                    uint32_t v;
+                                    if (indexIs32Bit) { std::memcpy(&v, resolvedIndexData.data() + (size_t)k * 4, 4); }
+                                    else { uint16_t h; std::memcpy(&h, resolvedIndexData.data() + (size_t)k * 2, 2); v = h; }
+                                    srcIdx.push_back(v);
+                                }
+                            }
+                            else
+                            {
+                                uint32_t n = (bufferVertexCapacity < di.numIndices) ? bufferVertexCapacity : di.numIndices;
+                                for (uint32_t k = 0; k < n; k++) srcIdx.push_back(k);
+                            }
+                            srcIdx.resize(srcIdx.size() - srcIdx.size() % 3);
+
+                            // Xenos PA_CL_VTE_CNTL (0x2206) bits 0-5 are the viewport
+                            // scale/offset enables. Clear means the position is a window
+                            // pixel coordinate; map it to NDC for the game's 1280x720 target.
+                            bool viewportOff = (gpuState_.ReadRegister(0x2206) & 0x3F) == 0;
+
+                            std::vector<uint8_t> expanded;
+                            expanded.reserve(srcIdx.size() / 3 * 6 * realStride);
+                            auto gather = [&](uint32_t idx, std::vector<uint8_t>& rec) -> bool
+                            {
+                                if (idx >= bufferVertexCapacity) return false;
+                                rec.assign(cmd.vertexData.data() + (size_t)idx * realStride,
+                                           cmd.vertexData.data() + (size_t)(idx + 1) * realStride);
+                                return true;
+                            };
+                            auto readPos = [](const std::vector<uint8_t>& rec, float out[3]) { std::memcpy(out, rec.data(), 12); };
+                            auto toNdc = [](float v[3]) { v[0] = (v[0] + 0.5f) * 2.0f / 1280.0f - 1.0f; v[1] = 1.0f - (v[1] + 0.5f) * 2.0f / 720.0f; };
+
+                            for (size_t r = 0; r + 2 < srcIdx.size(); r += 3)
+                            {
+                                std::vector<uint8_t> aRec, bRec, cRec;
+                                if (!gather(srcIdx[r], aRec) || !gather(srcIdx[r + 1], bRec) || !gather(srcIdx[r + 2], cRec))
+                                {
+                                    continue;
+                                }
+                                float pa[3], pb[3], pc[3];
+                                readPos(aRec, pa); readPos(bRec, pb); readPos(cRec, pc);
+                                float pd[3] = { pa[0] + pc[0] - pb[0], pa[1] + pc[1] - pb[1], pa[2] + pc[2] - pb[2] };
+                                if (viewportOff) { toNdc(pa); toNdc(pb); toNdc(pc); toNdc(pd); }
+                                std::memcpy(aRec.data(), pa, 12); std::memcpy(bRec.data(), pb, 12); std::memcpy(cRec.data(), pc, 12);
+                                std::vector<uint8_t> dRec(bRec);
+                                std::memcpy(dRec.data(), pd, 12);
+                                expanded.insert(expanded.end(), aRec.begin(), aRec.end());
+                                expanded.insert(expanded.end(), bRec.begin(), bRec.end());
+                                expanded.insert(expanded.end(), cRec.begin(), cRec.end());
+                                expanded.insert(expanded.end(), aRec.begin(), aRec.end());
+                                expanded.insert(expanded.end(), cRec.begin(), cRec.end());
+                                expanded.insert(expanded.end(), dRec.begin(), dRec.end());
+                            }
+                            cmd.vertexData = std::move(expanded);
+                            cmd.vertexCount = (uint32_t)(cmd.vertexData.size() / realStride);
+                            cmd.indexData.clear();
+                            cmd.indexCount = 0;
+                            cmd.indexIs32Bit = false;
+                        }
+                        else if (isIndexed)
                         {
                             // Final review finding I1 (indexed side): vertexCount
                             // isn't consumed by drawIndexedPrimitives (Metal
@@ -531,56 +603,6 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             cmd.indexData = std::move(resolvedIndexData);
                             cmd.indexCount = resolvedIndexCount;
                             cmd.indexIs32Bit = indexIs32Bit;
-                        }
-                        else if (isRectList)
-                        {
-                            // kRectangleList (Xenia xenos.h PrimitiveType 0x08):
-                            // three vertices per rectangle, the fourth corner
-                            // implied as v0 + v2 - v1 (the right angle sits at v1, the
-                            // game's top-right corner). Expanded to two triangles
-                            // (A,B,C) and (A,C,D), keeping each source record's
-                            // full stride so the translated vertex layout still
-                            // applies. The implied corner's extra attributes copy
-                            // v1's record (approximate, not Xenia-verified).
-                            uint32_t rectVertices = (bufferVertexCapacity < di.numIndices) ? bufferVertexCapacity : di.numIndices;
-                            rectVertices -= rectVertices % 3;
-                            cmd.vertexCount = 0;
-                            cmd.indexCount = 0;
-                            cmd.indexIs32Bit = false;
-                            if (rectVertices >= 3)
-                            {
-                                // Xenos PA_CL_VTE_CNTL (0x2206) bits 0-5 are the viewport
-                                // scale/offset enables. Clear means the position is a window
-                                // pixel coordinate the hardware uses directly; map it to
-                                // normalized device coordinates for the game's 1280x720 target.
-                                bool viewportOff = (gpuState_.ReadRegister(0x2206) & 0x3F) == 0;
-                                std::vector<uint8_t> expanded;
-                                expanded.reserve((size_t)rectVertices / 3 * 6 * realStride);
-                                auto recordAt = [&](uint32_t vi) { return cmd.vertexData.data() + (size_t)vi * realStride; };
-                                auto readPos = [&](const uint8_t* rec, float out[3]) { std::memcpy(out, rec, 12); };
-                                for (uint32_t r = 0; r + 2 < rectVertices; r += 3)
-                                {
-                                    const uint8_t* A = recordAt(r);
-                                    const uint8_t* B = recordAt(r + 1);
-                                    const uint8_t* C = recordAt(r + 2);
-                                    float pa[3], pb[3], pc[3];
-                                    readPos(A, pa); readPos(B, pb); readPos(C, pc);
-                                    float pd[3] = { pa[0] + pc[0] - pb[0], pa[1] + pc[1] - pb[1], pa[2] + pc[2] - pb[2] };
-                                    if (viewportOff) {
-                                        auto toNdc = [](float v[3]) { v[0] = (v[0] + 0.5f) * 2.0f / 1280.0f - 1.0f; v[1] = 1.0f - (v[1] + 0.5f) * 2.0f / 720.0f; };
-                                        toNdc(pa); toNdc(pb); toNdc(pc); toNdc(pd);
-                                    }
-                                    std::vector<uint8_t> dRecord(B, B + realStride);
-                                    std::memcpy(dRecord.data(), pd, 12);
-                                    auto append = [&](const uint8_t* rec) { expanded.insert(expanded.end(), rec, rec + realStride); };
-                                    std::vector<uint8_t> aRec(A, A + realStride), bRec(B, B + realStride), cRec(C, C + realStride);
-                                    std::memcpy(aRec.data(), pa, 12); std::memcpy(bRec.data(), pb, 12); std::memcpy(cRec.data(), pc, 12);
-                                    append(aRec.data()); append(bRec.data()); append(cRec.data());
-                                    append(aRec.data()); append(cRec.data()); append(dRecord.data());
-                                }
-                                cmd.vertexData = std::move(expanded);
-                                cmd.vertexCount = (uint32_t)(cmd.vertexData.size() / realStride);
-                            }
                         }
                         else
                         {

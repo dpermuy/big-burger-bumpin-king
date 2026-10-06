@@ -8920,3 +8920,23 @@ Visual checks (temporary offscreen readback, reverted):
 The two rectangles were checked in separate frames, because the game
 does not always submit both in the same frame. Renderer readback and
 the diagnostic print were reverted; only gpu_trace.cpp is changed.
+
+Finding 152: indexed rectangle lists are now expanded through the index
+buffer, but the path is untested: no indexed rectangle draw occurred in
+the 12 s captures.
+
+Change (host/gpu_trace.cpp): the rectangle branch is now the first
+branch of the vertex-count chain. For indexed draws it reads the resolved
+index buffer (16- or 32-bit, host little-endian after resolution) and
+gathers each triangle's three vertices by index, skipping any index beyond
+the vertex buffer's capacity. Non-indexed draws use vertices in order, as
+before. The fourth-corner rule and the window-to-NDC mapping are unchanged.
+The old indexed-rectangle skip is removed.
+
+Verified: rebuilt clean; a 12 s windowed run logs 28 non-indexed
+primType=8 draws with vertexCount=6, unchanged from Finding 151, and no
+skipped-draw lines. No indexed rectangle draw appeared, so the new indexed
+path has not run on real data.
+
+Open: confirm that indexed rectangle draws appear in a longer run, and
+check their output visually once one does.
