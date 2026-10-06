@@ -9278,3 +9278,37 @@ the game then tears down. The real value is a minimum loading time the game
 expects, which this build does not set. Choosing one would be a guess. The
 value should come from the game's own configuration or be measured from the
 real loading time.
+
+Finding 169: the config chain has no loading-time key. `field+76` is a direct
+copy of the placeholder global, and the chain's keys are display settings.
+
+Read `sub_82451630` (ppc_recomp.58.cpp, lines 4956-6395), the boot-time
+initializer:
+- The config lookups `sub_8244E8C0` use these names, read live from guest
+  memory (lldb, at the initializer's entry):
+    "fps" (fallback "f") -> writes object +36, +40, +44, +48 as 60.0 / fps
+    (60.0 at `-11516(r26)`, default 30 when the lookup is empty)
+    "xres" (fallback "x") and "yres" (fallback "y") -> display size
+  Other keys (offsets 4060-4076) were not read in this pass; none of the
+  keys read so far is a loading time.
+- `field+76` is written by one store, `stw r11,76(r23)` (line ~5681), where
+  r11 is the global at `lis -32143` offset -2172 (guest 0x8270F784). That is
+  our boot placeholder slot (Finding 118). No config lookup feeds field+76.
+
+Corrections to Finding 168:
+- Its unit ("seconds") was inferred from the accumulator's step size and
+  is still the best reading. But the threshold has no config source in this
+  initializer. Finding 168's chain was right that the placeholder is the
+  only source here; it was wrong to imply the config chain would supply a
+  loading time.
+
+Read: this build never sets `field+76` to a real value. The value the game
+expects is not in the config keys this initializer reads (fps, xres, yres).
+It may come from another source (a save, a profile, or a computed value
+written elsewhere). Not found yet.
+
+Next (not done): read the other config keys at offsets 4060-4076 (the
+remaining lookups in this function) to rule out a loading-time key, then
+search for other writers to field+76 (the store list is in the
+ppc_recomp.51.cpp range, many objects, so use a watchpoint on the
+canonical object's +76 at boot).
