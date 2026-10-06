@@ -8965,3 +8965,24 @@ VdSwap re-presents the last draw list. The static content is most likely
 because the frame logic is not advancing, not because it waits for a pad.
 Next step, not done: find what the idle main thread would normally be
 driven by to build new frames.
+
+Finding 155: the frame driver is inside the original outer loop. Frame
+building may be gated by the same loading-complete flag as Finding 106.
+
+Traced the frame path (static, from the generated source):
+- `sub_820CCA68` is the helper that calls `VdSwap` (three call sites).
+- `sub_824A76D0` is the frame function that calls it
+  (ppc_recomp.66.cpp:13468), reached via `sub_824AAFF0`
+  (ppc_recomp.66.cpp:13468 caller chain).
+- `sub_824AAFF0` is called from `sub_8244AFB0`, the outer loop of
+  Finding 106 (ppc_recomp.57.cpp:1918, inside that function's range), and
+  from several other places.
+- The time base is real (`__rdtsc` reads `cntvct_el0`, ppc_context.h:731),
+  so frame pacing does not explain the static frame.
+
+Read: frames are issued from `sub_8244AFB0`'s loop, and that loop was the
+stall Finding 106 found in the first place, gated on the canonical object's
+`field+136`. Finding 113 traced `field+136` back to `field+76`, which the
+boot patch in Finding 120 sets. So the static frame may be the same
+loading-complete gate still holding, rather than a separate frame-logic
+problem. Not verified: a live check of `field+136` during the frame loop.
