@@ -9675,3 +9675,42 @@ the earlier invalid-handle wait (Finding 165) was a different retry loop
 
 Caveat on method: the NtWait breakpoint did not stop in several attempts
 (lldb ran without a stop), so the handle was read by attach, not at the wait.
+
+Finding 184: handle 0x1004 is an event created on the game's boot path. The
+observed set calls never signal it, so the worker's wait has no signal in
+the runs so far. This is the best candidate for the wait condition, not
+proven.
+
+Creation (temporary logging of NtCreateMutant/NtCreateEvent, reverted):
+- NtCreateEvent returns 0x1004 (the first event; mutants 0x1000, 0x1002,
+  0x1003 come before it). Caller `sub_820A9750` (+280) is the event helper.
+- Break on NtCreateEvent, first calls: `sub_820A9750` <- `sub_8212A710`
+  <- `sub_8212D9A8` <- `sub_8212DAE8` <- `sub_8244B040` (+252). So the event
+  is created by the game's boot path inside the per-tick function, before the
+  progress loop.
+
+Signal side:
+- Set-event calls observed: NtSetEvent handle 0x100A (`sub_820A96D0` <-
+  `sub_82128B40` / `sub_820B5160`), 0x1017, and KeSetEvent on an object
+  pointer (0x82673A78, from `sub_822C1D10`, a thread entry). None targets
+  0x1004 in the observed calls.
+- A conditional breakpoint for handle 0x1004 did not fire, and a control with
+  0x100A did not fire either. The conditional breakpoints themselves do not
+  work here, so those runs prove nothing. Discarded.
+- Unconditional logging (breakpoint commands): 2 set calls in a 45 s run,
+  neither on 0x1004.
+
+Read: the worker waits on 0x1004, and no observed set call signals it. The
+worker's wait is therefore the stall candidate. Not proven: the set call that
+should signal 0x1004 may run on a path this build never reaches (the same
+class of issue as the latch), or the handle may be meant to be signaled by a
+call that is not implemented as a set.
+
+Next: find the code that should set 0x1004: a set/pulse call on the handle
+from `sub_820A9750`'s caller chain or from the other event helper
+`sub_820A96D0`, along the boot path. Or find which code the worker is meant
+to unblock.
+
+Caveat on the method: lldb conditional breakpoints do not fire on this
+binary with `*(unsigned int*)$x0`, so use unconditional logging.
+kernel_impl.cpp restored (git checkout); rebuilt.
