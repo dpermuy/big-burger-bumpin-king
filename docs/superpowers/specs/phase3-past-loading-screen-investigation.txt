@@ -9216,3 +9216,38 @@ loading-complete signal. Since the return leads to shutdown, that flag may
 mean "exit requested" instead, or the loop returned for a different reason
 than the one it waits on. Next: read Finding 106's loop body to see which
 state `field+136` gates, and what sets it. Not yet read.
+
+Finding 167: the early exit is caused by our boot placeholder. The
+loading-progress threshold field+76 is 1, so the game ends loading at
+frame 30 and takes the shutdown path. Raising the placeholder keeps frames
+running past 32.
+
+Chain, now read from code and live:
+- `sub_8244AFB0` (the frame loop) runs frames while canonical field+136 == 0,
+  and exits when it is nonzero (ppc_recomp.57.cpp, loop tail).
+- Hardware watchpoint on canonical field+136 (set at the loop's entry):
+  the only write of 1 is inside `sub_82451408` (ppc_recomp.58.cpp, store
+  at `stw r11,136(r31)`, ~line 4927 of the file).
+- That store is conditional: a float progress accumulator (global at
+  -29812) must exceed a threshold, and the threshold is `lwz r10,76(r31)`,
+  i.e. field+76. The gate `cmpwi r10,0` also requires field+76 > 0.
+- Our boot placeholder (host/main.cpp, kLoadingProgressConfigSlot = 0x8270F784,
+  Finding 118) sets that source to 1. A threshold of 1 is passed almost
+  at once, so field+136 becomes 1 at frame 30.
+
+Experiment (temporary, reverted, not committed): placeholder 100000000
+instead of 1. Result, 40 s windowed run: `present signals received: 178`
+(was 33), no teardown messages, the frame loop keeps running. The draw
+list did not visibly change: 177 rectangle draws and 24 point draws, one
+rectangle per present. So frames continue, but this run does not show that
+the picture changes. Not yet verified visually.
+
+Read: the stall at frame 32 was our placeholder ending loading early, not a
+blocked call. The real progress threshold is unknown. The number 1 was a
+minimum gate guess (Finding 118), not a researched value. 100000000 is a
+test value, not a fix.
+
+Recommendation: find the real meaning and unit of field+76 (what sets the
+loading-progress threshold in the console's configuration), and find what
+the accumulator at -29812 measures, before choosing a value. Until then,
+keep the committed placeholder unchanged.
