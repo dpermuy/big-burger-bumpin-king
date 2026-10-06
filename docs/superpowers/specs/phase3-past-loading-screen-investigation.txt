@@ -8825,3 +8825,29 @@ the game builds its rectangle vertices is the next step. Not done.
 
 Reverted the gpu_state print; `git status` shows no tracked changes in
 host/. The renderer is unchanged by this finding.
+
+Finding 148: the cyan rectangle appears once rectangle positions are
+mapped to normalized coordinates when the viewport is off. Verified
+visually on one frame.
+
+Register check: PA_CL_VTE_CNTL (0x2206) takes two values in this run:
+0x00000300 (viewport scale/offset enables bits 0-5 all clear) and
+0x0000043F (enables set). Xenos treats a position as a window pixel
+coordinate when those enables are clear; the renderer had been
+treating every position as NDC.
+
+Change (host/gpu_trace.cpp, rectangle-list expansion only): when
+PA_CL_VTE_CNTL bits 0-5 are all clear, each rectangle position (and the
+implied fourth corner) maps from window pixels to NDC for a 1280x720
+target: x' = (x + 0.5) * 2 / 1280 - 1, y' = 1 - (y + 0.5) * 2 / 720.
+Positions with viewport enabled are unchanged.
+
+Visual check (temporary offscreen readback in the renderer, reverted):
+the cyan rectangle now fills the top band of the frame, down to about
+191 px, matching its position extent. The black rectangle is also
+mapped and was not separately checked.
+
+Caveat: the 1280x720 target size is assumed from the game's own
+AVIVO viewport value and the project's fixed window, not read from the
+game's render target. The black rectangle's placement and the rest of
+the frame are not checked. Indexed rectangle lists are still skipped.

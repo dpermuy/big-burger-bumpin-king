@@ -548,6 +548,11 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                             cmd.indexIs32Bit = false;
                             if (rectVertices >= 3)
                             {
+                                // Xenos PA_CL_VTE_CNTL (0x2206) bits 0-5 are the viewport
+                                // scale/offset enables. Clear means the position is a window
+                                // pixel coordinate the hardware uses directly; map it to
+                                // normalized device coordinates for the game's 1280x720 target.
+                                bool viewportOff = (gpuState_.ReadRegister(0x2206) & 0x3F) == 0;
                                 std::vector<uint8_t> expanded;
                                 expanded.reserve((size_t)rectVertices / 3 * 6 * realStride);
                                 auto recordAt = [&](uint32_t vi) { return cmd.vertexData.data() + (size_t)vi * realStride; };
@@ -560,11 +565,17 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                                     float pa[3], pb[3], pc[3];
                                     readPos(A, pa); readPos(B, pb); readPos(C, pc);
                                     float pd[3] = { pb[0] + pc[0] - pa[0], pb[1] + pc[1] - pa[1], pb[2] + pc[2] - pa[2] };
+                                    if (viewportOff) {
+                                        auto toNdc = [](float v[3]) { v[0] = (v[0] + 0.5f) * 2.0f / 1280.0f - 1.0f; v[1] = 1.0f - (v[1] + 0.5f) * 2.0f / 720.0f; };
+                                        toNdc(pa); toNdc(pb); toNdc(pc); toNdc(pd);
+                                    }
                                     std::vector<uint8_t> dRecord(B, B + realStride);
                                     std::memcpy(dRecord.data(), pd, 12);
                                     auto append = [&](const uint8_t* rec) { expanded.insert(expanded.end(), rec, rec + realStride); };
-                                    append(A); append(B); append(dRecord.data());
-                                    append(A); append(dRecord.data()); append(C);
+                                    std::vector<uint8_t> aRec(A, A + realStride), bRec(B, B + realStride), cRec(C, C + realStride);
+                                    std::memcpy(aRec.data(), pa, 12); std::memcpy(bRec.data(), pb, 12); std::memcpy(cRec.data(), pc, 12);
+                                    append(aRec.data()); append(bRec.data()); append(dRecord.data());
+                                    append(aRec.data()); append(dRecord.data()); append(cRec.data());
                                 }
                                 cmd.vertexData = std::move(expanded);
                                 cmd.vertexCount = (uint32_t)(cmd.vertexData.size() / realStride);
