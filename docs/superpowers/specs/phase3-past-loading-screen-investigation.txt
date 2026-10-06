@@ -9251,3 +9251,30 @@ Recommendation: find the real meaning and unit of field+76 (what sets the
 loading-progress threshold in the console's configuration), and find what
 the accumulator at -29812 measures, before choosing a value. Until then,
 keep the committed placeholder unchanged.
+
+Finding 168: field+76 is a loading-duration threshold in seconds, and the
+accumulator is elapsed time. Our placeholder of 1 is one second.
+
+Live read (temporary probe in VdSwap, reverted), per present:
+- accumulator (global 0x82708B8C, the float at offset -29812) rises about
+  0.033-0.035 per present: 0.0 (presents 1-2), 0.083, 0.117, 0.151, ...,
+  0.966 (present 29), 1.000351 (present 30).
+- field+76 = 1 and field+80 = 1.0 throughout.
+- field+136 goes 0 -> 1 at present 30, the first present where the
+  accumulator is >= field+76.
+
+Read from code (sub_82451408, ppc_recomp.58.cpp): each call adds a float
+built from the timebase delta (mftb / __rdtsc, the same clock as
+Finding 75) to the accumulator. The threshold is compared against that
+accumulator. The step size, about 0.034 per present, matches elapsed
+seconds at the harness's present rate, so the unit is seconds.
+
+Caveat: the unit comes from the step size and the code path, not from the
+constant in the float formula, which is not fully decoded. Treat it as
+seconds with high but not full confidence.
+
+Consequence: a threshold of 1 means loading ends after about one second, and
+the game then tears down. The real value is a minimum loading time the game
+expects, which this build does not set. Choosing one would be a guess. The
+value should come from the game's own configuration or be measured from the
+real loading time.
