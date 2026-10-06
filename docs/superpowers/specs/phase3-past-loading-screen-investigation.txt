@@ -9079,3 +9079,19 @@ a host-side kernel call either. It may be written through a pointer
 computed at runtime, or by a boot path this build does not reach. Not
 resolved. Recommend pausing this chase: it has taken many rounds without
 converging on a single missing step.
+
+Finding 161: write-watchpoint on the frame-callback slot (guest
+0x8270FE20, host 0x708270FE20), set at `__imp___xstart`, run to the
+watchdog exit: one hit only, a store of 0. No store of a nonzero value
+occurred in the run.
+
+Read: the slot is never registered in this build. Hardware watchpoints
+catch every store regardless of addressing form, so this closes the
+question that Finding 160 left open. It does not show what the game
+expects that callback to do.
+
+Note: my first attempt used a mistyped host address (0x70827FE20) and
+set no valid watchpoint; it was rerun with the correct address. The
+backtrace of the single zero store was not captured (the script's
+backtrace came after the second continue), so the writer of that zero
+is unknown. It is not the registration.
