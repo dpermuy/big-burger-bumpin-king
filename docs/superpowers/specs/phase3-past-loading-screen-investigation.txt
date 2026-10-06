@@ -8940,3 +8940,10 @@ path has not run on real data.
 
 Open: confirm that indexed rectangle draws appear in a longer run, and
 check their output visually once one does.
+
+Finding 153: the indexed rectangle path still has no real input. A
+40 s windowed run submitted the same fixed draw set every frame: 28
+non-indexed `primType=8` draws (vertexCount 6) and 24 `primType=1`
+point placeholders. No indexed draw of any type appeared, so the indexed
+path from Finding 152 cannot be checked visually until the game submits
+an indexed rectangle list. Left untested, not reverted.
