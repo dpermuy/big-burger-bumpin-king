@@ -9460,3 +9460,21 @@ as loaded in these functions. Finding 173 and 174 stand: the game as built
 does not continue after loading. The missing clear, if any, is in code that
 either holds the object through another pointer or is never reached in this
 build.
+
+Finding 176: broadened the offset-136 search to any non-stack base register.
+The count is too large to check by hand, and runtime evidence already covers
+this case.
+
+- Static: 305 generated functions store to offset 136 through a non-stack
+  register (371 stores). Most are for unrelated objects, since offset 136 is
+  common.
+- Runtime: the watchpoint on the canonical object's field+136 (Finding 174)
+  is pointer-independent. It catches every write to that memory, however the
+  code reached it. It showed only the setter, and no clear, in a run through
+  teardown.
+
+So the broader static search cannot find a clear that the run would have
+caught. It could only find writers in code this run never reaches. To narrow
+the 305 to useful candidates, the next step is call-graph reachability from
+the frame loop (`sub_8244AFB0`) and the post-loop code, which is a larger
+analysis, not done here.
