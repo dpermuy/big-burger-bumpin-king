@@ -8947,3 +8947,21 @@ non-indexed `primType=8` draws (vertexCount 6) and 24 `primType=1`
 point placeholders. No indexed draw of any type appeared, so the indexed
 path from Finding 152 cannot be checked visually until the game submits
 an indexed rectangle list. Left untested, not reverted.
+
+Finding 154: a connected idle controller does not change the static draw
+set. Input is ruled out as the reason the frame is fixed. Diagnostic only,
+reverted.
+
+Test: temporarily made XamInputGetCapabilities and XamInputGetState report
+user 0 as a connected gamepad with no buttons and neutral sticks (instead
+of "device not connected"). Ran 40 s windowed. The draw set was unchanged:
+28 non-indexed primType=8 draws and 24 point placeholders, 597 drawn
+frames. XamInputGetState is not logged by a stub, so the log does not show
+whether the game called it; the unchanged output is the evidence that the
+game's frame content does not depend on this input in this run.
+
+Read: the main guest thread is in its idle loop (Finding 136), and
+VdSwap re-presents the last draw list. The static content is most likely
+because the frame logic is not advancing, not because it waits for a pad.
+Next step, not done: find what the idle main thread would normally be
+driven by to build new frames.
