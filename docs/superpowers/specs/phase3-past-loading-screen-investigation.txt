@@ -9095,3 +9095,22 @@ set no valid watchpoint; it was rerun with the correct address. The
 backtrace of the single zero store was not captured (the script's
 backtrace came after the second continue), so the writer of that zero
 is unknown. It is not the registration.
+
+Finding 162: the frame-callback registration is still not found in the
+generated code, and the search has stopped converging.
+
+Checked: `addi` of -544 and -548 from any base (only stack-relative hits and
+one unrelated `addi r7,r11,-548` at ppc_recomp.33.cpp:18055, whose base is
+not confirmed to be the display region); direct offsets -540 and -544 from
+any non-stack base (one unrelated load). The runtime watchpoint (Finding
+161) showed no nonzero store to the slot across the run.
+
+Read: the callback is not registered by any store this build reaches. The
+frame wrapper's per-frame callback may be optional, meaning the scene the
+build draws is produced without it. That would make the callback a red
+herring for the static frame. Not tested.
+
+Recommendation: stop chasing the callback. The remaining unknown is what
+the game's scene logic is waiting on, and that is better approached by a
+runtime trace of the game's own state variables across frames than by
+searching for this one slot.
