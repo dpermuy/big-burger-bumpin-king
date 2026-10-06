@@ -9644,3 +9644,34 @@ loop body (`sub_8244DC40` returns a pointer and tests its field +112, and
 the frame driver's inputs fields +212..+224, Finding 167 context).
 
 main.cpp, kernel_impl.cpp restored to committed state; rebuilt.
+
+Finding 183: sampling shows two guest threads. The main thread is paced;
+the worker is blocked in a wait on handle 0x1004. The handle's creation and
+its signaler are not identified.
+
+Samples (all threads, loop kept alive with placeholder 1e8, 4 samples):
+- Main thread: `sub_825DEC18` -> trampoline `sub_8212B130` -> `sub_8244B040`
+  -> `sub_8244AFB0` -> `sub_82451408` -> `sub_820AB5C8` ->
+  `KeDelayExecutionThread`. This is the progress loop's frame pacing
+  (a sleep), not a wait on game state.
+- Worker: `sub_820ABCE8` (XApiThreadStartup entry) -> `sub_82127EE0` (retry
+  loop) -> `sub_820AB238` (wait wrapper) -> `NtWaitForSingleObjectEx` (the
+  blocking path, +500). Sampled four times, always in the same place.
+
+The worker's handle comes from a global: `lwz r3,24(r31)` with r31 = lis
+-32154, so the handle is at guest 0x82660018. Its busy flag is at 0x82672630
+(`stw r11,9632(r30)`, lis -32153, set to 1 while waiting, 0 after).
+
+Read at one attach instant: handle = 0x1004, busy flag = 0. Mixed. The
+handle is not in the creation log (threads 0x1005/0x1009/...; file 0x1001),
+so its object is created by a path that does not log. The flag read 0 at
+that instant, so the attach may have landed between waits.
+
+Not established: what handle 0x1004 is (event, semaphore or thread), and
+which thread should signal it. Next: find the code that creates the object
+behind 0x1004 (a Create/Ke call that returns it), then the signal site. Note
+the earlier invalid-handle wait (Finding 165) was a different retry loop
+(`sub_82496C28`), not this worker.
+
+Caveat on method: the NtWait breakpoint did not stop in several attempts
+(lldb ran without a stop), so the handle was read by attach, not at the wait.
