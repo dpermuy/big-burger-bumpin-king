@@ -9802,3 +9802,31 @@ body), so this shows the path runs, not that no path can signal 0x1004.
 
 Conclusion: the graphics interrupt callback is not the signal for the
 worker. The worker's event still has no visible signaler (Finding 185).
+
+Finding 188: boot creates the worker thread right after the event, and the
+worker is one-shot. The thread creator is not a wait on 0x1004. The event's
+producer is still unknown.
+
+Boot order (lldb, breakpoint on `__imp__sub_820AB2F8`, first hits):
+- Called from `sub_8212A710` (+608) and from another boot function (+`sub_8212B210`).
+- Its arguments: r5 = 0x900FFAD0 (context), r8 = 0x82127EE0 (the worker's
+  entry), r3 = 0 (no handle). So `sub_820AB2F8` starts a thread at
+  `sub_82127EE0` (or `sub_8212B210`). It is a thread creator, not a wait.
+- Sequence in `sub_8212A710`: create event (`sub_820A9750`, handle 0x1004
+  stored at 0x82660018) -> `sub_823F0DF0` -> `sub_820A97F0` (thread-start
+  wrapper, Finding 188) -> `sub_821284E0`.
+
+Worker: `sub_82127EE0` (ppc_recomp.11.cpp:37490-37527) sets its busy flag at
+0x82672630 to 1, then loops `wait(0x1004, -1)` until the wait returns 0, then
+clears the flag and exits. So it is a one-shot startup wait: it runs once,
+after the event is signaled, and exits.
+- No generated code reads the busy flag (0x82672630) for a handshake.
+- No visible code sets 0x1004.
+
+Read: 0x1004 is a "work available / startup complete" event the worker waits
+for once. The producer is missing from visible boot code. The likely producer
+is a path that runs after the in-game phase starts (the one that the latch
+(Finding 174) and teardown (Finding 180) cut off), which would fit the stall
+at frame 32. Not proven: the producer could also be a host path. The check
+for that is whether the worker's event should be set once the loop reaches a
+state this build never enters.
