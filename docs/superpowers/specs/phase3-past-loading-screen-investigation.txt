@@ -9139,3 +9139,24 @@ loading-complete flag is set at frame 30. The state that is still
 unexplained is why the scene content stays constant in the windowed run.
 Next: repeat the trace in the windowed run for a longer span, to see
 whether any state word changes after frame 32.
+
+Finding 164: correction to Finding 158. The guest stops presenting after
+frame 32. The static screen is the last frame, held by the renderer.
+
+Windowed state trace (probe from Finding 163, reverted after), 40 s run:
+- The state trace shows changes only through frame 32 (last change:
+  disp+300 2->1 at f32). No word changes after that.
+- `present signals received: 33` in the run summary: the guest called
+  VdSwap 33 times. The renderer's `drawn frames: 596` counts the renderer
+  redrawing the held frame, not new guest frames.
+- The run ends with the watchdog message "_xstart did not return within
+  10 seconds".
+
+Corrected read: Finding 158 said the game kept presenting the same
+command set. That was wrong. The guest's frame loop stops at frame 32,
+and the repeated draws are the renderer repeating the last frame. The
+static screen is a stall, not a steady idle.
+
+Next step, not done: find where the guest's main thread blocks after its
+33rd VdSwap (last VdSwap, then the next call that never returns). This is
+the actual stall point.
