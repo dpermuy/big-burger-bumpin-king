@@ -9830,3 +9830,33 @@ is a path that runs after the in-game phase starts (the one that the latch
 at frame 32. Not proven: the producer could also be a host path. The check
 for that is whether the worker's event should be set once the loop reaches a
 state this build never enters.
+
+Finding 189: forced signal of event 0x1004 keeps the game running. It does not
+bring new drawing.
+
+Test (temporary, reverted, not committed): at present 10, set handle 0x1004
+signaled under g_stateMutex and notify g_handleSignalCv (same as NtSetEvent).
+15 s windowed.
+
+Baseline vs forced:
+- CP_RB_WPTR moves: 37 (last at 4.9 s) vs 3470 (last at 9.99 s).
+- Frames with packets: 0 after 5 s vs 10962.
+- Presents: 33 vs 3692.
+- Teardown messages: 6 vs 1 (the worker's own thread exit).
+- Worker `sub_82127EE0` finishes after the signal (its busy flag clears).
+- Draw calls (DRAW_INDX): 51 total, all in the first third of the log, none
+  after. Shader loads: 114 total.
+- Interrupt packets (INTERRUPT): about 3700 after the signal.
+
+Read: 0x1004 is the signal the worker needs, and with it the command
+submission runs for the whole window. But the game then submits only interrupt
+and state packets. No new draws. So the stall is one more layer down: the
+game's frame content (its draw list) is no longer built after the early
+phase, even with submission running. The signal unblocks the pipeline; it is
+not the scene.
+
+Not done: find what builds the draw list in the in-game state (the draw
+packets after frame 2 are absent). The loop state is still the loading state
+(Finding 182).
+
+kernel_impl.cpp restored (git checkout); rebuilt; no temp code committed.
