@@ -9160,3 +9160,34 @@ static screen is a stall, not a steady idle.
 Next step, not done: find where the guest's main thread blocks after its
 33rd VdSwap (last VdSwap, then the next call that never returns). This is
 the actual stall point.
+
+Finding 165: the stall is the main thread exiting into shutdown after the
+loading loop completes, not a blocked call. The one failing wait is a side
+effect, not the stall.
+
+Evidence:
+- Invalid-handle wait (handle 0x1007, never created) returns
+  STATUS_INVALID_HANDLE at once; it is logged once. Caller
+  `sub_820AB238` (wrapper), called from `sub_82127EE0` and `sub_82496C28`
+  (retry loops). The single log line means the retry does not repeat; not
+  the stall.
+- Attach at about 6 s, all threads: the guest main thread (thread #9,
+  `_xstart`) is at `sub_825DEC18+96`, the `b .` tail after
+  `sub_8212B130` returned. `sub_8212B130` is a thread trampoline that
+  `bctrl`s the per-tick function `sub_8244B040`. So `sub_8244B040`
+  returned.
+- Inside `sub_8244B040` (ppc_recomp.57.cpp ~2740-2810): after
+  `sub_8244AFB0` (the Finding 106 loop, gated on canonical `field+136`,
+  set to 1 at frame 30, Finding 156), the code reads a global (lis -32143,
+  offset -916) and `r31+8`. If `r31+8 == 0` it goes to loc_8244B610 and
+  calls the teardown `sub_824A3CC8` (plus `sub_8244D188`, `sub_8244E658`).
+  That matches the teardown messages in the log (ExTerminateThread,
+  MmFreePhysicalMemory, ObDeleteSymbolicLink) right before the watchdog.
+
+Read: loading completes at frame 30, the loop returns, and the game takes
+the shutdown branch instead of the in-game branch. The stall is a wrong
+exit decision after loading, not a blocked wait.
+
+Not yet confirmed: which condition selects shutdown (the -916 global and
+`r31+8` value at that point). Next step: read those two values at the
+moment `sub_8244AFB0` returns.
