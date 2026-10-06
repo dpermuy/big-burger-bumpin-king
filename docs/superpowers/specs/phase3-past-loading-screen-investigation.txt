@@ -9416,3 +9416,24 @@ field+136 that should start the next phase. Next step would be a watchpoint
 on canonical field+136 at the first write after loading, or the code that
 runs after the trampoline's `bl 0x823f3668` (the global at offset 9956 is
 checked there).
+
+Finding 174: field+136 is written once in the run (0 -> 1, inside
+`sub_82451408`, the same write as Finding 167) and never cleared. Nothing
+resets it after loading, so there is no next phase to start from it.
+
+Watchpoint on canonical field+136, set at `sub_8244AFB0` entry, continued
+through the teardown to the watchdog exit:
+- One real write, `sub_82451408+1912` (the 0 -> 1 set), called from
+  `sub_8244AFB0+400`, from `sub_8244B040+4856`.
+- The "hit" at the watchpoint's creation is an artifact of setting it, not
+  a write.
+- No further write, including during the teardown.
+
+Read: the flag is a one-way latch. Once set, it stays set, and the loop
+never runs again. Finding 173 found no code that clears it. So this build
+has no reset path for loading completion, which matches the one-shot
+structure in Finding 173.
+
+Open: whether a real console clears field+136 (for example at a scene
+change in a different function that this run never reaches), or whether
+the real game would never set it until quit. Neither is visible here.
