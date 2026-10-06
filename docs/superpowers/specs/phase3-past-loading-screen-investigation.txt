@@ -9312,3 +9312,28 @@ remaining lookups in this function) to rule out a loading-time key, then
 search for other writers to field+76 (the store list is in the
 ppc_recomp.51.cpp range, many objects, so use a watchpoint on the
 canonical object's +76 at boot).
+
+Finding 170: the game never writes `field+76` itself. Its only writer in
+the run is the boot copy from the placeholder global. The real value has to
+come from the console, and this build has no copy of it.
+
+Watchpoint on canonical field+76 (lldb, set at `sub_82451630` entry; one
+write of the run after that entry):
+- `sub_82451630+5128` (ppc_recomp.58.cpp, `stw r11,76(r23)`), copying the
+  global at -2172 (guest 0x8270F784, our placeholder slot). No other write
+  to field+76 occurred before the watchdog exit.
+- The first "hit" was the watchpoint being set, not a write (the expression
+  value is printed as an 8-byte value, so it is not a 4-byte store).
+
+Checked for a game-side source of the value:
+- `config/BigBumpin.toml` is the recompiler's build settings, not game
+  config.
+- The keys read by `sub_82451630` (fps, xres, yres) are display settings.
+- Writes before `sub_82451630`'s entry are not covered by this watchpoint.
+  Not checked: a boot-time write to 0x8270F784 earlier than that entry.
+
+Read: the game expects the console to have set the global at 0x8270F784 to
+the loading-threshold value before boot. Our build sets it to 1 (Finding
+118). The correct value is not in the game files or the XEX, so no value
+is derivable from this build. Any number is a choice, not a recovered
+value.
