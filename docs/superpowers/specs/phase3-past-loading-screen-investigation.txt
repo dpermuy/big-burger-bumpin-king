@@ -9523,3 +9523,34 @@ Consequence for the next step: clearing or delaying field+136 alone will not
 produce a new scene. The next experiment has to show the scene logic running,
 for example by a watchpoint on the draw-list build, or by tracing which
 function builds the frame's draws each present while the loop runs.
+
+Finding 179: the game stops submitting GPU commands at about 5 s. Every
+frame after that parses zero packets. This is the real stall point for the
+picture, not the loop exit.
+
+Evidence (gpu_trace.log, 12 s windowed run, the same build as Finding 178):
+- Ring base 0xB9131000 (read from RegisterRingBuffer's arguments), size
+  2^(14+3) = 128 KB.
+- CP_RB_WPTR changes: 37 in the whole run. The last is at t=4936 ms
+  (565 -> 583 dwords). No change after that.
+- After that, each frame logs `(parsed 0 packets, offset 124 -> 124)`. The
+  15,724 "frame" entries in the run are these empty frames, not new work.
+- Ring writer functions found by a watchpoint on the first ring word
+  (`sub_820B5030`, called from `sub_820B6560`, `sub_820BCA68`,
+  `sub_820B9D60`) ran once or twice, at boot. The per-frame writes are
+  therefore inline stores in game code, not these functions. Not located.
+
+Read: the draw-list stops changing because the game stops writing commands
+to the ring at about 5 s. Its last submission is at 583 dwords. The present
+at frame 32 (Finding 164) is after the submissions have stopped, so the
+held frame is the last one the game built.
+
+This does not contradict Finding 178. Keeping the loop running adds presents
+but no new commands, because the game is not writing commands at all after
+about 5 s. The loop exit and the submission stop are both real, and the
+submission stop comes first.
+
+Next (not done): find which game code writes the ring between 0 and 583
+dwords and what it waits on after the last write. Candidates: a loop on
+CP_RB_RPTR (ring space) or a fence, since the tracer shows the read side
+running and idle.
