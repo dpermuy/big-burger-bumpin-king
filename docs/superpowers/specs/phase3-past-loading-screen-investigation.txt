@@ -8898,3 +8898,25 @@ A + C - B, or treating the three inputs as top-left, bottom-left,
 bottom-right) against the expected axis-aligned rectangles, and check the
 game's own vertex order. Reverted the renderer readback and the vertex
 print; host/ has no tracked changes.
+
+Finding 151: the corrected corner rule gives axis-aligned rectangles.
+Both were visually checked on their own frames.
+
+Derived from the mapped positions. The game's three vertices for a
+rectangle have the right angle at the second vertex (v1). For the cyan
+rectangle: (-1,1), (1,1), (1,0.467). For the black one: (-1,1), (0,1),
+(0,-0.333). So the fourth corner is D = v0 + v2 - v1, not v1 + v2 - v0.
+Triangles split along the diagonal v0-v2: (v0, v1, v2) and (v0, v2, D).
+
+Change (host/gpu_trace.cpp): D = A + C - B, and the triangles become
+(A,B,C) and (A,C,D). Attributes of D still copy B's record.
+
+Visual checks (temporary offscreen readback, reverted):
+- Cyan: a full-width band, top 192 px, exactly matching the game's
+  window scissor (1280x192, Finding 149).
+- Black: an axis-aligned rectangle covering x 0-640, y 0-480 (the
+  expected extent of its three vertices).
+
+The two rectangles were checked in separate frames, because the game
+does not always submit both in the same frame. Renderer readback and
+the diagnostic print were reverted; only gpu_trace.cpp is changed.

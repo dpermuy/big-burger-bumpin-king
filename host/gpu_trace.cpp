@@ -536,8 +536,9 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                         {
                             // kRectangleList (Xenia xenos.h PrimitiveType 0x08):
                             // three vertices per rectangle, the fourth corner
-                            // implied as v1 + v2 - v0. Expanded to two triangles
-                            // (A,B,D) and (A,D,C), keeping each source record's
+                            // implied as v0 + v2 - v1 (the right angle sits at v1, the
+                            // game's top-right corner). Expanded to two triangles
+                            // (A,B,C) and (A,C,D), keeping each source record's
                             // full stride so the translated vertex layout still
                             // applies. The implied corner's extra attributes copy
                             // v1's record (approximate, not Xenia-verified).
@@ -564,7 +565,7 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                                     const uint8_t* C = recordAt(r + 2);
                                     float pa[3], pb[3], pc[3];
                                     readPos(A, pa); readPos(B, pb); readPos(C, pc);
-                                    float pd[3] = { pb[0] + pc[0] - pa[0], pb[1] + pc[1] - pa[1], pb[2] + pc[2] - pa[2] };
+                                    float pd[3] = { pa[0] + pc[0] - pb[0], pa[1] + pc[1] - pb[1], pa[2] + pc[2] - pb[2] };
                                     if (viewportOff) {
                                         auto toNdc = [](float v[3]) { v[0] = (v[0] + 0.5f) * 2.0f / 1280.0f - 1.0f; v[1] = 1.0f - (v[1] + 0.5f) * 2.0f / 720.0f; };
                                         toNdc(pa); toNdc(pb); toNdc(pc); toNdc(pd);
@@ -574,8 +575,8 @@ uint32_t GpuCommandTracer::ScanBuffer(PPCContext& ctx, uint8_t* base, uint32_t b
                                     auto append = [&](const uint8_t* rec) { expanded.insert(expanded.end(), rec, rec + realStride); };
                                     std::vector<uint8_t> aRec(A, A + realStride), bRec(B, B + realStride), cRec(C, C + realStride);
                                     std::memcpy(aRec.data(), pa, 12); std::memcpy(bRec.data(), pb, 12); std::memcpy(cRec.data(), pc, 12);
-                                    append(aRec.data()); append(bRec.data()); append(dRecord.data());
-                                    append(aRec.data()); append(dRecord.data()); append(cRec.data());
+                                    append(aRec.data()); append(bRec.data()); append(cRec.data());
+                                    append(aRec.data()); append(cRec.data()); append(dRecord.data());
                                 }
                                 cmd.vertexData = std::move(expanded);
                                 cmd.vertexCount = (uint32_t)(cmd.vertexData.size() / realStride);
