@@ -9020,3 +9020,22 @@ content must come from the command builder that fills the ring buffer
 before this wrapper runs. Not located. Next step, not done: find which
 function writes the PM4 command stream each frame, and check whether it
 runs on each frame or once.
+
+Finding 158: the static frame is the game's own repeating command set,
+not a tracer or ring artifact.
+
+Counted the traced frame blocks from a 12 s windowed run (gpu_trace.log,
+"starting offset"): the ring start offsets vary (0, 2332, 124, 988, 700 and
+others), so the read pointer does advance. The offsets cycle through the
+same small set, so the game writes the same command content each frame.
+The tracer is not re-reading one stuck region.
+
+Read: the screen is what the game draws in its current state. Its frame
+content is static because its own state machine is not advancing (the
+earlier controller test, Finding 154, and the loading-complete flags,
+Finding 156, are not the cause). Renderer, tracer and ring handling are
+behaving as the game's commands direct.
+
+Not identified: the game-state condition that holds the scene constant
+(likely a menu or loading state waiting on something the build does not
+yet supply). Not located in this finding.
